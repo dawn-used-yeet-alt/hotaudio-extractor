@@ -120,6 +120,19 @@ bunx tsc --noEmit # typecheck
 bun run build     # emit dist/ via tsup
 ```
 
+When something breaks against the live site, run the staged probe to see
+exactly which stage failed and why:
+
+```bash
+bun ./scripts/live-probe.ts https://hotaudio.net/u/user/track-slug
+bun ./scripts/live-probe.ts https://hotaudio.net/u/user/track-slug --full --out probe.json
+```
+
+It walks page fetch → state decrypt → key exchange → signer → listen →
+HAX0 parse → sample key derivation → sample decrypt (plus an opt-in full
+download), with per-stage timing and fix hints. `--json` prints a
+machine-readable report. Manual use only — never in CI.
+
 Project layout:
 
 ```

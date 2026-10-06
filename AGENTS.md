@@ -33,6 +33,7 @@ All three must pass before committing. Tests must stay offline.
 ## Rules
 
 - Do not add network calls to tests. Mock via the `fetchFn` option.
+- `scripts/live-probe.ts` is the only file allowed to touch the real site. It is manual-only: never import it from `src/` or `tests/`, never run it in CI.
 - Keep `node:fs` imports dynamic and confined to `downloadHotaudioToFile` and `src/cli.ts` so browser bundles stay clean.
 - `signer.ts`, `env_hashes.ts`, `nozzle_raw.ts`, and `PINNED_NOZZLE_VERSION` are pinned to one upstream player build — update all four together or not at all.
 - `erasableSyntaxOnly` is on: no enums, namespaces, or parameter properties.

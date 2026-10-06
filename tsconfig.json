@@ -16,5 +16,5 @@
     "ignoreDeprecations": "6.0",
     "types": ["bun", "node"]
   },
-  "include": ["src"]
+  "include": ["src", "scripts", "tests"]
 }

@@ -10,6 +10,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `docs/` (API, CLI, architecture), `CONTRIBUTING.md`, MIT `LICENSE`, and CI typecheck/test/build workflow.
 - `tsup` build emitting `dist/` with types; package `exports`/`files`/`engines` metadata.
 - `AGENTS.md` agent guidance; README notes the fast-but-unstable tradeoff and points at coldvideo-downloader for slow-and-stable.
+- `scripts/live-probe.ts` staged live-site diagnostic (per-stage timing, failure hints, JSON report); manual use only.
 
 ### Changed
 

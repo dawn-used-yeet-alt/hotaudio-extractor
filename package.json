@@ -41,6 +41,7 @@
     "build": "tsup src/index.ts src/cli.ts --format esm --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "probe": "bun ./scripts/live-probe.ts",
     "prepublishOnly": "bun run build",
     "download": "bun ./src/cli.ts"
   },
