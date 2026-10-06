@@ -96,7 +96,7 @@ See [docs/CLI.md](docs/CLI.md) for all flags and exit codes.
 | `deriveSegmentKey` / `parseHax0Header` / `decryptSegmentSlice` | HAX0 primitives |
 | `HOTAUDIO_PATTERN` / `isHotaudioUrl` | Share-link detection |
 
-Options: `{ userAgent?, fetchFn?, apiBase?, onProgress? }`. Pass a custom `fetchFn` for proxies or test mocks. Full signatures live in [docs/API.md](docs/API.md).
+Options: `{ userAgent?, fetchFn?, apiBase?, onProgress?, timeoutMs? }`. Pass a custom `fetchFn` for proxies or test mocks. `timeoutMs` (default 30s) bounds page/listen/range attempts; the bulk `.hax` fetch has no timeout. Full signatures live in [docs/API.md](docs/API.md).
 
 Long tracks automatically page `first:<segmentIndex>` listen handshakes and memoize intermediate tree-node keys. One X25519 session is reused per track; every request still gets a fresh signature and nonce.
 

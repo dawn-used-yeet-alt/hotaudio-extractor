@@ -1,6 +1,6 @@
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { decryptHotaudioState, performKeyExchange, sha256 } from './crypto.ts';
-import { fetchWithRetry } from './retry.ts';
+import { fetchWithRetry, FETCH_API_TIMEOUT_MS } from './retry.ts';
 import { signHotaudioPayload } from './signer.ts';
 import { HOTAUDIO_API_BASE, HOTAUDIO_UA } from './constants.ts';
 import type {
@@ -28,6 +28,8 @@ export interface HandshakeOptions {
   userAgent?: string;
   fetchFn?: HotaudioFetch;
   apiBase?: string;
+  /** Per-attempt timeout in ms for page and listen requests. Defaults to 30s. */
+  timeoutMs?: number;
 }
 
 /** Extract the raw `__ha_state` value from track page HTML, or null when absent. */
@@ -85,7 +87,9 @@ export async function loadHotaudioHandshake(
   const userAgent = opts.userAgent ?? HOTAUDIO_UA;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
   const apiBase = opts.apiBase ?? HOTAUDIO_API_BASE;
-  const pageRes = await fetchWithRetry(fetchFn, pageUrl, { headers: { 'User-Agent': userAgent } });
+  const pageRes = await fetchWithRetry(fetchFn, pageUrl, { headers: { 'User-Agent': userAgent } }, {
+    timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
+  });
   if (!pageRes.ok) return null;
   return loadHandshakeFromHtml(await pageRes.text(), apiBase);
 }
@@ -123,6 +127,8 @@ export async function listenRequest(
       Referer: 'https://hotaudio.net/',
     },
     body: encBody,
+  }, {
+    timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
   });
   if (!listenRes.ok) {
     throw new Error(`Hotaudio listen API returned ${listenRes.status} for first=${first}`);

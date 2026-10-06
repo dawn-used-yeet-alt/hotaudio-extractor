@@ -8,7 +8,7 @@ import {
 } from './listen.ts';
 import type { HotaudioListenResponse, HotaudioProgressCallback } from './types.ts';
 import { HOTAUDIO_UA } from './constants.ts';
-import { fetchWithRetry } from './retry.ts';
+import { fetchWithRetry, FETCH_API_TIMEOUT_MS } from './retry.ts';
 import type { DownloadOptions } from './download.ts';
 
 export interface HotaudioStreamSession {
@@ -31,11 +31,12 @@ async function fetchRange(
   start: number,
   end: number,
   signal: AbortSignal,
+  timeoutMs: number = FETCH_API_TIMEOUT_MS,
 ): Promise<Uint8Array> {
   const res = await fetchWithRetry(fetchFn, url, {
     headers: { 'User-Agent': HOTAUDIO_UA, Range: `bytes=${start}-${end}` },
     signal,
-  });
+  }, { timeoutMs });
   // Some mirrors ignore Range and return 200 with the full file.
   if (!res.ok || (res.status !== 206 && res.status !== 200)) {
     throw new Error(`Hotaudio range fetch returned ${res.status}`);
@@ -107,7 +108,7 @@ export async function extractHotaudioStream(
   if (!initial.url) return null;
   const haxUrl = initial.url;
 
-  const head = await fetchRange(fetchFn, haxUrl, 0, 15, signal).catch(() => null);
+  const head = await fetchRange(fetchFn, haxUrl, 0, 15, signal, opts.timeoutMs).catch(() => null);
   if (!head || head.length < 16) return null;
   const headCopy = new Uint8Array(16);
   headCopy.set(head.subarray(0, 16));
@@ -115,7 +116,7 @@ export async function extractHotaudioStream(
   const headerLength = view.getUint32(8, true);
   const fileLength = view.getUint32(4, true);
   if (headerLength < 16 || headerLength > fileLength) return null;
-  const headerBytes = await fetchRange(fetchFn, haxUrl, 0, headerLength - 1, signal).catch(
+  const headerBytes = await fetchRange(fetchFn, haxUrl, 0, headerLength - 1, signal, opts.timeoutMs).catch(
     () => null,
   );
   if (!headerBytes) return null;
@@ -153,7 +154,7 @@ export async function extractHotaudioStream(
       if (signal.aborted || aborted) break;
       const seg = hax.segments[i];
       const nextOff = i + 1 < hax.segmentCount ? hax.segments[i + 1].offset : fileLength;
-      const slice = await fetchRange(fetchFn, haxUrl, seg.offset, nextOff - 1, signal);
+      const slice = await fetchRange(fetchFn, haxUrl, seg.offset, nextOff - 1, signal, opts.timeoutMs);
       let segKey: Uint8Array;
       try {
         segKey = await deriveSegmentKey(keysMap, hax.segmentCount, i, nodeKeyCache);

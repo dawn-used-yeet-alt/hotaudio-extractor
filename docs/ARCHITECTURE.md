@@ -14,9 +14,17 @@ track page HTML
 
 Long tracks hold more segments than one branch covers. The downloader
 catches the `Key missing in keys map` error, pages `first:<segmentIndex>`
-(with a small forward lookahead, 3 in flight, stride 8), merges the new
-branches, clears the node-key cache, and resumes. `keys` returned to the
-caller are the union of all fetched branches.
+for exactly the missing index, merges the new branch, clears the node-key
+cache, and resumes. `keys` returned to the caller are the union of all
+fetched branches.
+
+Measured against the live API, each `first:<n>` response unlocks a small
+window starting at segment `n` (typically `[n..n+7]`), and concurrent
+requests show no latency benefit over sequential ones — the server
+effectively serializes per track. Exact-miss sequential paging is therefore
+optimal: every request is provably needed, minimizing both wall time and
+server load. (An earlier 3-in-flight stride-8 lookahead was removed after
+measurement showed it only added redundant requests.)
 
 ## Listen encryption
 
@@ -94,7 +102,10 @@ transient statuses (408/425/429/5xx), honoring `Retry-After` on 429.
 Other statuses return immediately, and caller-aborted requests
 (streaming `AbortSignal`) are never retried. A single transient failure
 therefore no longer aborts a multi-minute, multi-hundred-request track
-download.
+download. Small API calls (page, listen, ranges) additionally carry a
+per-attempt timeout (`timeoutMs`, default 30s) so one stalled request —
+observed live at 66s — degrades into a bounded retry instead of an
+unbounded stall; the bulk `.hax` transfer is intentionally exempt.
 
 ## Streaming (`src/stream.ts`)
 The browser path fetches only the 16-byte prefix to learn `headerLength`,

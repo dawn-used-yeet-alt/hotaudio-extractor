@@ -6,8 +6,17 @@ export const FETCH_RETRY_ATTEMPTS = 3;
 export const FETCH_RETRY_BASE_DELAY_MS = 500;
 /** Upper bound for a single retry wait (caps Retry-After). */
 export const FETCH_RETRY_MAX_DELAY_MS = 10000;
+/** Default per-attempt timeout for small API calls (page, listen, ranges). */
+export const FETCH_API_TIMEOUT_MS = 30000;
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export interface FetchRetryOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+  /** Per-attempt timeout in ms. Undefined = no timeout (bulk transfers). */
+  timeoutMs?: number;
+}
 
 /** True for transient HTTP statuses worth retrying (429/5xx class). */
 export function isRetryableStatus(status: number): boolean {
@@ -33,38 +42,72 @@ function backoffMs(baseDelayMs: number, attempt: number, res?: Response): number
 }
 
 /**
- * Fetch with retries for transient failures: network errors and
- * retryable statuses (429/5xx). Other statuses return as-is. Aborted
- * requests (caller `signal`) are never retried.
+ * Combine a caller signal with a timeout into one signal. Caller aborts
+ * and timeouts both abort the combined signal; cleanup clears the timer.
+ */
+function withTimeout(
+  callerSignal: AbortSignal | null | undefined,
+  timeoutMs: number | undefined,
+): { signal: AbortSignal | undefined; cleanup: () => void } {
+  if (timeoutMs === undefined) return { signal: callerSignal ?? undefined, cleanup: () => {} };
+  const ctrl = new AbortController();
+  let onAbort: (() => void) | undefined;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      ctrl.abort(callerSignal.reason);
+    } else {
+      onAbort = () => ctrl.abort(callerSignal.reason);
+      callerSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+  const timer = setTimeout(() => {
+    ctrl.abort(new DOMException('Request timed out', 'TimeoutError'));
+  }, timeoutMs);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return {
+    signal: ctrl.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      if (callerSignal && onAbort) callerSignal.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+/**
+ * Fetch with retries for transient failures: network errors, timeouts,
+ * and retryable statuses (429/5xx). Other statuses return as-is.
+ * Caller-aborted requests are never retried.
  */
 export async function fetchWithRetry(
   fetchFn: HotaudioFetch,
   url: string,
   init: RequestInit = {},
-  attempts: number = FETCH_RETRY_ATTEMPTS,
-  baseDelayMs: number = FETCH_RETRY_BASE_DELAY_MS,
+  opts: FetchRetryOptions = {},
 ): Promise<Response> {
+  const attempts = Math.max(1, opts.attempts ?? FETCH_RETRY_ATTEMPTS);
+  const baseDelayMs = opts.baseDelayMs ?? FETCH_RETRY_BASE_DELAY_MS;
+  const callerSignal = init.signal;
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= Math.max(1, attempts); attempt++) {
-    let res: Response;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const { signal, cleanup } = withTimeout(callerSignal, opts.timeoutMs);
     try {
-      res = await fetchFn(url, init);
+      const res = await fetchFn(url, signal ? { ...init, signal } : init);
+      cleanup();
+      if (res.ok || !isRetryableStatus(res.status)) return res;
+      try {
+        await res.arrayBuffer();
+      } catch {
+        // Body drain is best-effort (keeps pooled connections reusable).
+      }
+      lastErr = new Error(`Request failed with HTTP ${res.status}`);
+      if (attempt >= attempts) return res;
+      await sleep(backoffMs(baseDelayMs, attempt, res));
     } catch (err) {
-      // Never retry a caller-aborted request.
-      if (init.signal?.aborted || attempt >= attempts) throw err;
+      cleanup();
+      if (callerSignal?.aborted || attempt >= attempts) throw err;
       lastErr = err;
       await sleep(backoffMs(baseDelayMs, attempt));
-      continue;
     }
-    if (res.ok || !isRetryableStatus(res.status)) return res;
-    try {
-      await res.arrayBuffer();
-    } catch {
-      // Body drain is best-effort (keeps pooled connections reusable).
-    }
-    lastErr = new Error(`Request failed with HTTP ${res.status}`);
-    if (attempt >= attempts) return res;
-    await sleep(backoffMs(baseDelayMs, attempt, res));
   }
   throw lastErr instanceof Error ? lastErr : new Error('Request failed');
 }

@@ -24,6 +24,8 @@ export {
   FETCH_RETRY_ATTEMPTS,
   FETCH_RETRY_BASE_DELAY_MS,
   FETCH_RETRY_MAX_DELAY_MS,
+  FETCH_API_TIMEOUT_MS,
+  type FetchRetryOptions,
 } from './retry.ts';
 export { PINNED_NOZZLE_VERSION, signHotaudioPayload } from './signer.ts';
 export {

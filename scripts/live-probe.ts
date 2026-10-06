@@ -311,6 +311,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       listenRequest(handshake!, -1, {
         userAgent: opts.userAgent,
         apiBase: opts.apiBase,
+        timeoutMs: opts.timeoutMs,
       }).catch((err) => {
         throw new Error(`listen API failed: ${describeFetchError(err)}`);
       }),
@@ -359,7 +360,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
         key = await deriveSegmentKey(keysMap, hax.segmentCount, i, nodeCache);
       } catch (err) {
         if (!(err instanceof Error) || !err.message.startsWith('Key missing in keys map')) throw err;
-        const extra = await listenRequest(handshake!, i, { userAgent: opts.userAgent, apiBase: opts.apiBase }).catch(
+        const extra = await listenRequest(handshake!, i, { userAgent: opts.userAgent, apiBase: opts.apiBase, timeoutMs: opts.timeoutMs }).catch(
           (listenErr: unknown) => {
             throw new Error(`paging listen (first=${i}) failed: ${describeFetchError(listenErr)}`);
           },
@@ -401,6 +402,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
         downloadHotaudioBuffer(opts.url, {
           userAgent: opts.userAgent,
           apiBase: opts.apiBase,
+          timeoutMs: opts.timeoutMs,
           onProgress: ({ phase, loaded, total }) => {
             lastPhase = `${phase} ${loaded}/${total}`;
             log(`  ${phase} ${loaded}/${total}`);

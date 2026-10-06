@@ -22,6 +22,8 @@ export interface DownloadOptions {
   fetchFn?: HotaudioFetch;
   apiBase?: string;
   onProgress?: HotaudioProgressCallback;
+  /** Per-attempt timeout in ms for page/listen/range requests. Defaults to 30s. Not applied to the bulk `.hax` fetch. */
+  timeoutMs?: number;
 }
 
 export interface HotaudioBufferResult {
@@ -42,6 +44,7 @@ function optsOf(o: DownloadOptions) {
     fetchFn: o.fetchFn ?? globalThis.fetch,
     apiBase: o.apiBase,
     onProgress: o.onProgress,
+    timeoutMs: o.timeoutMs,
   };
 }
 
@@ -52,15 +55,16 @@ function toKeysMap(keys: Record<string, string>): Record<number, Uint8Array> {
 }
 
 /**
- * Key-branch paging lookahead.
+ * Key-branch paging.
  *
- * Each listen request costs a signature plus a round trip, so paging one
- * segment at a time dominates wall time on long tracks. On a cache miss the
- * downloader fetches the missing index plus forward strides concurrently.
- * Fanout is intentionally small to avoid stressing the API.
+ * Measured against the live API: each `first:<n>` response unlocks a small
+ * window starting at segment `n` (typically `[n..n+7]`), and concurrent
+ * requests show no latency benefit over sequential ones (the server
+ * effectively serializes per track). So on a cache miss the downloader
+ * requests exactly the missing index — no lookahead, no fanout. Every
+ * request is provably needed, which minimizes both wall time and server
+ * load regardless of how the windows vary.
  */
-const PREFETCH_FANOUT = 3;
-const PREFETCH_STRIDE = 8;
 
 function isMissingKey(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith('Key missing in keys map');
@@ -165,17 +169,9 @@ export async function downloadWithHandshake(
       segKey = await deriveSegmentKey(keysMap, hax.segmentCount, i, cache);
     } catch (err) {
       if (!isMissingKey(err)) throw err;
-      const wanted = [i];
-      for (let k = 1; k < PREFETCH_FANOUT; k++) {
-        const j = i + k * PREFETCH_STRIDE;
-        if (j < hax.segmentCount) wanted.push(j);
-      }
-      const branches = await Promise.all(wanted.map((j) => listenRequest(handshake, j, o)));
-      let merged = 0;
-      for (const extra of branches) {
-        merged += mergeBranchKeys(keysMap, extra.keys, hexToBytes);
-        Object.assign(allKeys, extra.keys);
-      }
+      const extra = await listenRequest(handshake, i, o);
+      const merged = mergeBranchKeys(keysMap, extra.keys, hexToBytes);
+      Object.assign(allKeys, extra.keys);
       if (merged === 0) throw err;
       cache.clear();
       segKey = await deriveSegmentKey(keysMap, hax.segmentCount, i, cache);
