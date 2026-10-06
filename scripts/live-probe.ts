@@ -405,11 +405,26 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
   if (opts.full) {
     await stage(plan[9], async () => {
       let lastPhase = '';
+      let listenCount = 0;
+      let listenMs = 0;
+      const baseFetch = globalThis.fetch;
+      const countingFetch = (async (input: unknown, init?: RequestInit) => {
+        const u = String((input as { url?: unknown })?.url ?? input);
+        if (!u.includes('/api/v1/audio/listen')) return baseFetch(u, init);
+        const t0 = Date.now();
+        try {
+          return await baseFetch(u, init);
+        } finally {
+          listenMs += Date.now() - t0;
+          listenCount++;
+        }
+      }) as typeof fetch;
       const { value: res, ms } = await timed(() =>
         downloadHotaudioBuffer(opts.url, {
           userAgent: opts.userAgent,
           apiBase: opts.apiBase,
           timeoutMs: opts.timeoutMs,
+          fetchFn: countingFetch,
           onProgress: ({ phase, loaded, total }) => {
             lastPhase = `${phase} ${loaded}/${total}`;
             log(`  ${phase} ${loaded}/${total}`);
@@ -421,7 +436,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       }
       const speed = res.buffer.length / Math.max(ms / 1000, 0.001);
       return {
-        detail: `${fmtBytes(res.buffer.length)} in ${(ms / 1000).toFixed(1)}s (${fmtBytes(speed)}/s), ${res.segmentCount} segments, last progress: ${lastPhase || 'n/a'}`,
+        detail: `${fmtBytes(res.buffer.length)} in ${(ms / 1000).toFixed(1)}s (${fmtBytes(speed)}/s), ${res.segmentCount} segments, ${listenCount} listen requests (${(listenMs / 1000).toFixed(1)}s), last progress: ${lastPhase || 'n/a'}`,
       };
     });
   }

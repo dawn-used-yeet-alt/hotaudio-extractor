@@ -94,13 +94,15 @@ export async function fetchWithRetry(
       const res = await fetchFn(url, signal ? { ...init, signal } : init);
       cleanup();
       if (res.ok || !isRetryableStatus(res.status)) return res;
-      try {
-        await res.arrayBuffer();
-      } catch {
-        // Body drain is best-effort (keeps pooled connections reusable).
-      }
       lastErr = new Error(`Request failed with HTTP ${res.status}`);
       if (attempt >= attempts) return res;
+      try {
+        // Release the body without consuming it (only when retrying, so
+        // callers can still read error payloads from the final response).
+        await res.body?.cancel();
+      } catch {
+        // Best-effort (keeps pooled connections reusable).
+      }
       await sleep(backoffMs(baseDelayMs, attempt, res));
     } catch (err) {
       cleanup();

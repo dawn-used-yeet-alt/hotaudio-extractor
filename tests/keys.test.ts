@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { downloadHaxBuffer, parseSavedKeys } from '../src/download.ts';
-import { extractListenKey, fetchHotaudioTracks, haxUrlForTrackKey, listHotaudioTracks, loadHandshakeFromHtml } from '../src/listen.ts';
+import { extractListenKey, fetchHotaudioTracks, haxUrlForTrackKey, listHotaudioTracks, listenRequest, loadHandshakeFromHtml } from '../src/listen.ts';
 import { API_BASE, HAX_URL, PAGE_URL, buildFixture } from './fixture.ts';
 
 describe('parseSavedKeys', () => {
@@ -53,6 +53,23 @@ describe('loadHandshakeFromHtml track selection', () => {
     expect(selected?.tid).toBe('7');
     expect(await loadHandshakeFromHtml(html, 'https://mock.test', 'nope')).toBeNull();
     expect((await loadHandshakeFromHtml(html, 'https://mock.test'))?.tid).toBe('7');
+  });
+});
+
+describe('listenRequest failures (mocked network)', () => {
+  test('surfaces plaintext error bodies', async () => {
+    const { pageHtml } = await buildFixture();
+    const handshake = await loadHandshakeFromHtml(pageHtml, API_BASE);
+    const failing = ((_url: string) => Promise.resolve(new Response('bad signature', { status: 401 }))) as typeof fetch;
+    await expect(listenRequest(handshake!, -1, { fetchFn: failing, apiBase: API_BASE })).rejects.toThrow(/401.*bad signature/);
+  });
+
+  test('rejects non-crypt success bodies instead of decrypting garbage', async () => {
+    const { pageHtml } = await buildFixture();
+    const handshake = await loadHandshakeFromHtml(pageHtml, API_BASE);
+    const plain = ((_url: string) =>
+      Promise.resolve(new Response('{"oops":true}', { status: 200, headers: { 'Content-Type': 'text/plain' } }))) as typeof fetch;
+    await expect(listenRequest(handshake!, -1, { fetchFn: plain, apiBase: API_BASE })).rejects.toThrow(/non-crypt body/);
   });
 });
 

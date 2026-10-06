@@ -37,6 +37,7 @@ measurement showed it only added redundant requests.)
 - The page URL's `?key=` param (private/unlisted tracks) is forwarded as a listen-URL query string, mirroring the player.
 - Server validation, all measured: garbage `pid` → 400; garbage `tick` → 401 (`bad signature`, plaintext body); real ticks stay valid for hours across sessions. `pid`/`tick`/`track.key` must be server-issued — the page fetch cannot be skipped.
 - Status handling mirrors the player: 401 is retried (bounded), 403 is fatal ("refresh page" upstream). Success bodies are ChaCha-encrypted (`application/vnd.hotaudio.crypt+json`); anything else is surfaced as plaintext instead of decrypting garbage.
+- Concurrency changes nothing: cross-track concurrent requests take the same per-request time as sequential ones, and same-track fanout showed no benefit (server-side per-request floor ~1s dominates). The downloader stays sequential — simplest and politest.
 
 ## HAX0 container
 
