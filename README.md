@@ -7,6 +7,7 @@ Standalone [hotaudio.net](https://hotaudio.net) audio extractor with no applicat
 - Offline decryption of saved `.hax` containers with saved keys
 - CLI plus a small typed library API
 - Runtime dependencies: `@noble/ciphers`, `@noble/curves` only
+- Fast and lightweight, but unstable: it tracks hotaudio.net internals and can break when the site changes. If you need slow and stable, use [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) instead.
 
 > Note: this project is for interoperability and personal archiving. Download only content you have the right to access, and comply with hotaudio.net's terms of service and applicable law.
 
