@@ -174,7 +174,10 @@ let haxUrl = '';
 
 if (/^https?:\/\//i.test(source)) {
   const seed = keysArg ? (await loadKeys()).keys : undefined;
-  const res = await downloadHotaudioBuffer(source, { onProgress, trackId: trackId ?? undefined, apiBase, initialKeys: seed });
+  const res = await downloadHotaudioBuffer(source, { onProgress, trackId: trackId ?? undefined, apiBase, initialKeys: seed }).catch((err: unknown) => {
+    console.error(`Download failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  });
   buffer = res.buffer;
   keys = res.keys;
   haxUrl = res.haxUrl;
@@ -190,7 +193,10 @@ if (/^https?:\/\//i.test(source)) {
     console.error(trackId ? `Track not found in HTML file: ${trackId}` : 'Could not decrypt __ha_state from HTML file');
     process.exit(1);
   }
-  const res = await downloadWithHandshake(handshake, { onProgress, initialKeys: keysArg ? (await loadKeys()).keys : undefined });
+  const res = await downloadWithHandshake(handshake, { onProgress, initialKeys: keysArg ? (await loadKeys()).keys : undefined }).catch((err: unknown) => {
+    console.error(`Download failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  });
   buffer = res.buffer;
   keys = res.keys;
   haxUrl = res.haxUrl;
