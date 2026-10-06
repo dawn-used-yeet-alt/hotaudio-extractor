@@ -58,6 +58,17 @@ import { decryptHaxBuffer } from 'hotaudio-extractor';
 const { buffer } = await decryptHaxBuffer(haxBytes, savedKeys);
 ```
 
+Repeat downloads skip the handshake entirely — branch keys are
+deterministic per track and `.hax` URLs are stable:
+
+```ts
+import { downloadHaxBuffer, parseSavedKeys } from 'hotaudio-extractor';
+
+const saved = parseSavedKeys(await readFile('keys.json', 'utf8'));
+const { buffer } = await downloadHaxBuffer(saved.haxUrl!, saved.keys);
+// or via CLI: hotaudio-download --keys keys.json --out track.m4a
+```
+
 ## CLI
 
 Build first (`bun run build`), or run from source with Bun:

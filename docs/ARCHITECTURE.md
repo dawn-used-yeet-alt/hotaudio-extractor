@@ -51,7 +51,6 @@ Each segment slice (from its offset to the next, or `fileLength`) is an
 independent ChaCha20-Poly1305 ciphertext under a zero nonce.
 
 ## Segment key tree
-
 Keys form a binary tree above the leaf segments. Given `segmentCount`:
 
 ```
@@ -65,6 +64,27 @@ Derivation starts at the nearest known ancestor in `keysMap` and hashes
 down: `child = SHA-256(parent || branchByte)` where `branchByte` is the
 low byte of the node index at that level. Consecutive segments share most
 of their path, so a per-extraction `Map` cache makes this effectively free.
+
+## Branch semantics and key cache
+
+Measured against the live API (899-segment track):
+
+- Any `first <= 0` is the initial call: returns the `.hax` URL plus one
+  branch (here node `16`, covering ~127 leaves).
+- `first:<n>` (n ≥ 1) returns a small window starting at segment `n`
+  (typically `[n..n+7]`), without a URL.
+- Out-of-range `first` clamps to the last leaf key.
+- Branch keys are deterministic per (track, `first`): byte-identical
+  across sessions with different ticks. The page `tick` is a per-load
+  nonce; keys do not depend on it.
+- `.hax` CDN URLs are stable per track.
+
+Consequences: the downloader pages exactly the missing index (no
+lookahead — every request is provably needed), and saved keys stay valid
+for repeat downloads: fetch the `.hax` from the CDN and decrypt with zero
+page/listen requests (`downloadHaxBuffer`, CLI `--keys` mode). If the
+track's key material ever rotates server-side, decrypt fails closed on
+the ChaCha auth tag — re-run online mode for fresh keys.
 
 ## Signer (`src/signer.ts`)
 

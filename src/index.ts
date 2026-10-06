@@ -57,8 +57,12 @@ export {
   downloadHotaudioBuffer,
   downloadWithHandshake,
   downloadHotaudioToFile,
+  downloadHaxBuffer,
+  parseSavedKeys,
   type DownloadOptions,
   type HotaudioBufferResult,
+  type SavedHotaudioKeys,
+  type ParsedKeysFile,
 } from './download.ts';
 export { extractHotaudioStream, type HotaudioStreamSession } from './stream.ts';
 export type {

@@ -14,6 +14,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Network resilience: `fetchWithRetry` retries transient failures (network errors, 429/5xx) with backoff across page, listen, `.hax`, and range fetches; small API calls carry a 30s per-attempt timeout so stalls degrade into bounded retries.
 - Faster long-track downloads: exact-miss sequential key paging replaces the stride lookahead (fewer requests, less wall time — see `docs/ARCHITECTURE.md`).
 - Committed offline integration test: full download + deterministic paging against a mocked network (`tests/download.test.ts`).
+- Key cache: `SavedHotaudioKeys` envelope, `parseSavedKeys`, `downloadHaxBuffer`, CLI cached (`--keys`/`--hax-url`) and simplified offline (`--hax`) modes; `--save-keys` writes the envelope.
+- Track selection: `trackId` option and CLI `--track` for multi-track pages.
 
 ### Changed
 

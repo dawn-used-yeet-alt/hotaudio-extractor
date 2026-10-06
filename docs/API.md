@@ -43,6 +43,16 @@ downloading audio. Long tracks need follow-up
 Pure offline decrypt. `allKeys` must cover every segment. Returns
 `{ buffer, segmentCount, duration, mime }`.
 
+### `downloadHaxBuffer(haxUrl, allKeys, opts?)`
+
+Cached download: fetch the `.hax` container and decrypt with saved keys.
+No page fetch, no listen requests.
+
+### `parseSavedKeys(input)`
+
+Parse a `--keys` value: saved-keys envelope or bare `{ index: hex }` map,
+from JSON text or an object. Returns `{ keys, haxUrl?, pageUrl?, title? }`.
+
 ## Browser playback
 
 ### `extractHotaudio(url, opts?): Promise<HotaudioResult | null>`

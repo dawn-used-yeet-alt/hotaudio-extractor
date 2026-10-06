@@ -30,6 +30,8 @@ export interface HandshakeOptions {
   apiBase?: string;
   /** Per-attempt timeout in ms for page and listen requests. Defaults to 30s. */
   timeoutMs?: number;
+  /** Track id to extract from multi-track pages. Defaults to the page's primary track. */
+  trackId?: string;
 }
 
 /** Extract the raw `__ha_state` value from track page HTML, or null when absent. */
@@ -42,6 +44,7 @@ export function extractHaState(html: string): string | null {
 export async function loadHandshakeFromHtml(
   html: string,
   apiBase: string = HOTAUDIO_API_BASE,
+  trackId?: string,
 ): Promise<HotaudioHandshake | null> {
   const stateB64 = extractHaState(html);
   if (!stateB64) return null;
@@ -51,13 +54,26 @@ export async function loadHandshakeFromHtml(
   } catch {
     return null;
   }
-  return buildHandshake(state, apiBase);
+  return buildHandshake(state, apiBase, trackId);
 }
 
 async function buildHandshake(
   state: HotaudioState,
   apiBase: string,
+  trackId?: string,
 ): Promise<HotaudioHandshake | null> {
+  if (trackId) {
+    if (!state.tracks[trackId]) return null;
+    const session = await performKeyExchange(state.key);
+    return {
+      state,
+      tid: trackId,
+      track: state.tracks[trackId],
+      clientPubHex: session.clientPubHex,
+      Ee: session.Ee,
+      apiBase,
+    };
+  }
   // Integer-like track ids sort numerically under Object.keys(), which can
   // hide the page's primary track. Honor the page-provided order first.
   const orderedIds = Array.isArray(state.order)
@@ -91,7 +107,7 @@ export async function loadHotaudioHandshake(
     timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
   });
   if (!pageRes.ok) return null;
-  return loadHandshakeFromHtml(await pageRes.text(), apiBase);
+  return loadHandshakeFromHtml(await pageRes.text(), apiBase, opts.trackId);
 }
 
 /**
