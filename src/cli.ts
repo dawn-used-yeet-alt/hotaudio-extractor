@@ -2,7 +2,7 @@
 /**
  * hotaudio-download — download and decrypt a hotaudio track.
  *
- *   hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL]
+ *   hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL] [--keys resume.json]
  *   hotaudio-download <URL | HTML file> --list-tracks
  *   hotaudio-download --keys keys.json [--hax-url URL] [--out file.m4a]
  *   hotaudio-download --hax audio.hax --keys keys.json [--out file.m4a]
@@ -25,7 +25,7 @@ import type { HotaudioProgress } from './types.ts';
 
 function usage(exitCode: number = 1): never {
   console.error(`Usage:
-  hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL]
+  hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL] [--keys resume.json]
   hotaudio-download <URL | HTML file> --list-tracks
   hotaudio-download --keys keys.json [--hax-url URL] [--out file.m4a]
   hotaudio-download --hax audio.hax --keys keys.json [--out file.m4a]`);
@@ -173,7 +173,8 @@ let keys: Record<string, string>;
 let haxUrl = '';
 
 if (/^https?:\/\//i.test(source)) {
-  const res = await downloadHotaudioBuffer(source, { onProgress, trackId: trackId ?? undefined, apiBase });
+  const seed = keysArg ? (await loadKeys()).keys : undefined;
+  const res = await downloadHotaudioBuffer(source, { onProgress, trackId: trackId ?? undefined, apiBase, initialKeys: seed });
   buffer = res.buffer;
   keys = res.keys;
   haxUrl = res.haxUrl;
@@ -189,7 +190,7 @@ if (/^https?:\/\//i.test(source)) {
     console.error(trackId ? `Track not found in HTML file: ${trackId}` : 'Could not decrypt __ha_state from HTML file');
     process.exit(1);
   }
-  const res = await downloadWithHandshake(handshake, { onProgress });
+  const res = await downloadWithHandshake(handshake, { onProgress, initialKeys: keysArg ? (await loadKeys()).keys : undefined });
   buffer = res.buffer;
   keys = res.keys;
   haxUrl = res.haxUrl;

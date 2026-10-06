@@ -17,6 +17,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Key cache: `SavedHotaudioKeys` envelope, `parseSavedKeys`, `downloadHaxBuffer`, CLI cached (`--keys`/`--hax-url`) and simplified offline (`--hax`) modes; `--save-keys` writes the envelope.
 - Track selection: `trackId` option and CLI `--track` for multi-track pages.
 - Track discovery: `fetchHotaudioTracks` / `listHotaudioTracks` and CLI `--list-tracks`; `haxUrlForTrackKey` derives the container URL without a listen call.
+- Resume: `initialKeys` seeds the key map so interrupted downloads refetch only missing branches (CLI online mode accepts `--keys`).
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error surfacing, conditional response decrypt.
 
 ### Changed

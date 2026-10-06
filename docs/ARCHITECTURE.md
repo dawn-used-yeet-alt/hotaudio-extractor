@@ -96,7 +96,9 @@ Two finer behaviors, both measured, neither worth gaming:
   then 8 leaves across repeats; jackpots up to 128 observed). Width is not
   a deterministic function of `first`, so no seeding strategy beats
   miss-driven paging — which harvests lucky wide branches automatically
-  by merging everything returned.
+  by merging everything returned. Re-requesting one `first` until a wide
+  branch lands was measured and rejected: negative expected value versus
+  just moving on.
 - The `.hax` URL is derivable from the track key
   (`https://cdn.hotaudio.net/a/<key>.hax`, confirmed across tracks and
   sessions). The downloader still uses the server-issued URL; the probe

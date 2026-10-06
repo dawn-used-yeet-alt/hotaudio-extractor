@@ -48,6 +48,22 @@ Pure offline decrypt. `allKeys` must cover every segment. Returns
 Cached download: fetch the `.hax` container and decrypt with saved keys.
 No page fetch, no listen requests.
 
+### Resuming interrupted downloads
+
+Pass previously saved keys as `initialKeys` — they seed the key map, so
+only still-missing branches are fetched:
+
+```ts
+const saved = parseSavedKeys(await readFile('keys.json', 'utf8'));
+const res = await downloadHotaudioBuffer(pageUrl, { initialKeys: saved.keys });
+// or via CLI: hotaudio-download <URL> --keys keys.json --save-keys keys.json
+```
+
+Branch keys are deterministic per track, so seeds from older sessions stay
+valid. Malformed seed entries are skipped (paged fresh); well-formed but
+stale seeds fail closed at decrypt time (ChaCha auth error) — drop `--keys`
+and re-run for fresh keys.
+
 ### `parseSavedKeys(input)`
 
 Parse a `--keys` value: saved-keys envelope or bare `{ index: hex }` map,

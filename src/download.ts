@@ -26,6 +26,12 @@ export interface DownloadOptions {
   timeoutMs?: number;
   /** Track id to extract from multi-track pages. Defaults to the page's primary track. */
   trackId?: string;
+  /**
+   * Previously saved branch keys to seed the key map (resume/extend).
+   * Merged with freshly fetched branches; branch keys are deterministic
+   * per track, so keys from older sessions remain valid.
+   */
+  initialKeys?: Record<string, string>;
 }
 
 export interface HotaudioBufferResult {
@@ -48,6 +54,7 @@ function optsOf(o: DownloadOptions) {
     onProgress: o.onProgress,
     timeoutMs: o.timeoutMs,
     trackId: o.trackId,
+    initialKeys: o.initialKeys,
   };
 }
 
@@ -228,6 +235,16 @@ export async function downloadWithHandshake(
   const keysMap = toKeysMap(initial.keys);
   const cache = new Map<number, Uint8Array>();
   const allKeys: Record<string, string> = { ...initial.keys };
+  if (o.initialKeys) {
+    // Seeds must be well-formed hex: a corrupt seed would derive a wrong
+    // (but valid-shaped) key and fail closed at decrypt time instead of
+    // paging. Invalid entries are skipped so paging refetches them.
+    for (const [k, v] of Object.entries(o.initialKeys)) {
+      if (!/^\d+$/.test(k) || typeof v !== 'string' || v.length === 0 || v.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(v)) continue;
+      allKeys[k] = v;
+      keysMap[parseInt(k, 10)] = hexToBytes(v);
+    }
+  }
 
   const slices: Uint8Array[] = [];
   let total = 0;

@@ -15,6 +15,8 @@ Online (full pipeline):
 hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
 hotaudio-download page.html --out track.m4a
 hotaudio-download https://hotaudio.net/u/user/track-slug --save-keys keys.json --out track.m4a
+# resume with previously saved keys (only missing branches are refetched)
+hotaudio-download https://hotaudio.net/u/user/track-slug --keys keys.json --save-keys keys.json --out track.m4a
 ```
 
 Cached (saved keys, no page fetch, no listen calls):
@@ -36,7 +38,7 @@ hotaudio-download --hax audio.hax --keys keys.json --out track.m4a
 | --- | --- |
 | `--out <path>` | Output `.m4a` path. Defaults to the sanitized track title. |
 | `--save-keys <path>` | Write a saved-keys envelope (keys + `.hax` URL + metadata) for later cached/offline use. |
-| `--keys <path \| JSON>` | Saved-keys envelope or bare `{ index: hex }` map (file or inline JSON). |
+| `--keys <path \| JSON>` | Saved-keys envelope or bare `{ index: hex }` map (file or inline JSON). In online mode, seeds the key map (resume). |
 | `--hax <path>` | Local `.hax` container (offline mode). |
 | `--hax-url <URL>` | `.hax` URL override for cached mode (defaults to the envelope's URL). |
 | `--track <id>` | Track id for multi-track pages (defaults to the page's primary track). |
