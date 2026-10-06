@@ -134,9 +134,12 @@ function str(v: string | undefined, flag: string): string {
 }
 
 async function timed<T>(fn: () => Promise<T>): Promise<{ value: T; ms: number }> {
-  const t0 = performance.now();
+  // Date.now, not performance.now: the signer sandbox replaces the global
+  // performance object with frozen shims, so performance.now() stops
+  // advancing after the signer initializes. Date stays real.
+  const t0 = Date.now();
   const value = await fn();
-  return { value, ms: Math.round(performance.now() - t0) };
+  return { value, ms: Date.now() - t0 };
 }
 
 async function fetchTimed(
@@ -176,10 +179,10 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
 
   async function stage(name: string, fn: () => Promise<{ detail: string }>): Promise<boolean> {
     log(`${c.cyan}▶${c.reset} ${name}`);
-    const t0 = performance.now();
+    const t0 = Date.now();
     try {
       const { detail } = await fn();
-      const ms = Math.round(performance.now() - t0);
+      const ms = Date.now() - t0;
       stages.push({ name, status: 'pass', ms, detail });
       log(`${c.green}✔${c.reset} ${name} ${c.dim}(${ms}ms)${c.reset} — ${detail}`);
       if (ms > SLOW_STAGE_MS && !name.startsWith('full download')) {
@@ -192,7 +195,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       }
       return true;
     } catch (err) {
-      const ms = Math.round(performance.now() - t0);
+      const ms = Date.now() - t0;
       const message = err instanceof Error ? err.message : String(err);
       const hint = hintOf(name, message);
       stages.push({ name, status: 'fail', ms, detail: message, hint });

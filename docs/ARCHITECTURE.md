@@ -72,13 +72,18 @@ re-capture `nozzle.js` and `env_hashes.ts` for the new version and bump
 `PINNED_NOZZLE_VERSION` together — they must stay in sync.
 
 Known quirk: in non-browser runtimes (Node/Bun) the *first* signature per
-process takes ~2 minutes while a bundled environment probe spins on a
-browser API the shim does not provide; later signatures in the same process
-are instant. Every CLI run therefore pays a one-time ~2-minute cost. The
-live probe (`scripts/live-probe.ts`) flags this on the signer stage. Do not
-"fix" the shim to shortcut it without a live acceptance test — the
-fingerprint it computes under the timeout may be exactly what the server
-expects.
+process has been observed to take ~123s (later signatures are instant), but
+on other runs the first signature takes ~0.5s. The cause is not yet
+identified — CPU profiling a slow run is the next step. The live probe
+(`scripts/live-probe.ts`) flags any non-download stage over 30s, so a
+recurrence is visible immediately. Do not "fix" the shim blindly: the
+fingerprint it computes may be exactly what the server expects, and any
+shim change needs a live acceptance test.
+
+Side effect to know about: the sandbox replaces the *global* `performance`
+object (frozen `now()`/`timeOrigin`) and `Date` subclass — `Date.now()` stays
+real, but `performance.now()` stops advancing in the host process after the
+signer initializes. The probe therefore times stages with `Date.now()`.
 
 ## Streaming (`src/stream.ts`)
 
