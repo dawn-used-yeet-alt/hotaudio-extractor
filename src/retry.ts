@@ -9,7 +9,7 @@ export const FETCH_RETRY_MAX_DELAY_MS = 10000;
 /** Default per-attempt timeout for small API calls (page, listen, ranges). */
 export const FETCH_API_TIMEOUT_MS = 30000;
 
-const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_STATUS = new Set([401, 408, 425, 429, 500, 502, 503, 504]);
 
 export interface FetchRetryOptions {
   attempts?: number;

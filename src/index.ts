@@ -44,6 +44,7 @@ export {
 } from './hax_decoder.ts';
 export {
   extractHaState,
+  extractListenKey,
   listHotaudioTracks,
   haxUrlForTrackKey,
   fetchHotaudioTracks,

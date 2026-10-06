@@ -84,6 +84,7 @@ describe('fetchWithRetry', () => {
   });
 
   test('classifies statuses', () => {
+    expect(isRetryableStatus(401)).toBe(true);
     expect(isRetryableStatus(429)).toBe(true);
     expect(isRetryableStatus(503)).toBe(true);
     expect(isRetryableStatus(403)).toBe(false);

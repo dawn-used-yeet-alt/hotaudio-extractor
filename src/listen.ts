@@ -22,6 +22,8 @@ export interface HotaudioHandshake {
   /** Session secret (SHA-256 of the shared secret). */
   Ee: Uint8Array;
   apiBase: string;
+  /** Page-URL `?key=` param, forwarded to listen requests (private/unlisted tracks). */
+  listenKey?: string;
 }
 
 export interface HandshakeOptions {
@@ -72,6 +74,15 @@ export function listHotaudioTracks(html: string): HotaudioTrackInfo[] | null {
  */
 export function haxUrlForTrackKey(trackKey: string): string {
   return `https://cdn.hotaudio.net/a/${trackKey}.hax`;
+}
+
+/** Extract the page-URL `?key=` param the player forwards to listen requests. */
+export function extractListenKey(pageUrl: string): string | null {
+  try {
+    return new URL(pageUrl).searchParams.get('key');
+  } catch {
+    return null;
+  }
 }
 
 /** Build a handshake from already-fetched page HTML. */
@@ -141,7 +152,9 @@ export async function loadHotaudioHandshake(
     timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
   });
   if (!pageRes.ok) return null;
-  return loadHandshakeFromHtml(await pageRes.text(), apiBase, opts.trackId);
+  const handshake = await loadHandshakeFromHtml(await pageRes.text(), apiBase, opts.trackId);
+  if (handshake) handshake.listenKey = extractListenKey(pageUrl) ?? undefined;
+  return handshake;
 }
 
 /** Fetch a track page and list its tracks (for `--track` discovery). */
@@ -180,7 +193,8 @@ export async function listenRequest(
   const reqNonce = (await sha256(UTF8_ENC.encode(sig))).subarray(0, 12);
   const encBody = chacha20poly1305(Ee, reqNonce).encrypt(UTF8_ENC.encode(payloadStr));
 
-  const listenRes = await fetchWithRetry(fetchFn, `${apiBase}/api/v1/audio/listen`, {
+  const listenUrl = `${apiBase}/api/v1/audio/listen${handshake.listenKey ? `?key=${encodeURIComponent(handshake.listenKey)}` : ''}`;
+  const listenRes = await fetchWithRetry(fetchFn, listenUrl, {
     method: 'POST',
     headers: {
       'X-Signature': sig,
@@ -195,12 +209,24 @@ export async function listenRequest(
     timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
   });
   if (!listenRes.ok) {
-    throw new Error(`Hotaudio listen API returned ${listenRes.status} for first=${first}`);
+    const snippet = await listenRes.text().then((t) => t.slice(0, 300)).catch(() => '');
+    throw new Error(
+      `Hotaudio listen API returned ${listenRes.status} for first=${first}${snippet ? `: ${snippet}` : ''}`,
+    );
   }
 
+  // Success bodies are encrypted (`application/vnd.hotaudio.crypt+json`);
+  // anything else is a plaintext error — surface it instead of decrypting garbage.
+  // A missing content-type (mocks) still takes the decrypt path.
+  const contentType = listenRes.headers.get('content-type') ?? '';
+  const respBuf = new Uint8Array(await listenRes.arrayBuffer());
+  if (contentType && !contentType.includes('hotaudio.crypt')) {
+    throw new Error(
+      `Hotaudio listen API returned a non-crypt body for first=${first}: ${UTF8_DEC.decode(respBuf).slice(0, 300)}`,
+    );
+  }
   // Responses use the same secret with the first nonce byte incremented,
   // which separates the request and response nonce domains.
-  const respBuf = new Uint8Array(await listenRes.arrayBuffer());
   const respNonce = new Uint8Array(reqNonce);
   respNonce[0] = (respNonce[0] + 1) & 0xff;
   const decoded = chacha20poly1305(Ee, respNonce).decrypt(respBuf);

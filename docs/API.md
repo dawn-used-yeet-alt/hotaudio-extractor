@@ -88,6 +88,7 @@ Full-download fallback used by `extractHotaudio`.
 - `haxUrlForTrackKey(trackKey)` — derive the `.hax` container URL without a listen call (`https://cdn.hotaudio.net/a/<key>.hax`).
 - `extractHaState(html)` — raw `__ha_state` string or `null`.
 - `listenRequest(handshake, first, opts?)` — one encrypted listen call. `first: -1` for the initial call, `first: <segmentIndex>` for paging.
+- `extractListenKey(pageUrl)` — page-URL `?key=` param forwarded to listen requests (private/unlisted tracks).
 - `mergeBranchKeys(keysMap, keys, fromHex)` — merge a follow-up response; returns new-key count.
 - `signHotaudioPayload(payload, timestampSeconds?)` — raw `X-Signature` value
 - `fetchWithRetry` / `isRetryableStatus` — transient-failure retries used by all network reads.

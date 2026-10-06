@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { downloadHaxBuffer, parseSavedKeys } from '../src/download.ts';
-import { fetchHotaudioTracks, haxUrlForTrackKey, listHotaudioTracks, loadHandshakeFromHtml } from '../src/listen.ts';
+import { extractListenKey, fetchHotaudioTracks, haxUrlForTrackKey, listHotaudioTracks, loadHandshakeFromHtml } from '../src/listen.ts';
 import { API_BASE, HAX_URL, PAGE_URL, buildFixture } from './fixture.ts';
 
 describe('parseSavedKeys', () => {
@@ -71,5 +71,11 @@ describe('track listing', () => {
 
   test('derives the container URL from a track key', () => {
     expect(haxUrlForTrackKey('abc123')).toBe('https://cdn.hotaudio.net/a/abc123.hax');
+  });
+
+  test('extracts the forwarded listen key', () => {
+    expect(extractListenKey('https://hotaudio.net/u/a/b?key=secret123')).toBe('secret123');
+    expect(extractListenKey('https://hotaudio.net/u/a/b')).toBeNull();
+    expect(extractListenKey('not a url')).toBeNull();
   });
 });

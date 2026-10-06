@@ -34,6 +34,9 @@ measurement showed it only added redundant requests.)
 - Request body: payload encrypted with ChaCha20-Poly1305 under `Ee`.
 - Response nonce: request nonce with the first byte incremented by one.
 - Headers include `X-Key` (client ephemeral pubkey), the vendor content type, `Origin`/`Referer`, and the default UA.
+- The page URL's `?key=` param (private/unlisted tracks) is forwarded as a listen-URL query string, mirroring the player.
+- Server validation, all measured: garbage `pid` → 400; garbage `tick` → 401 (`bad signature`, plaintext body); real ticks stay valid for hours across sessions. `pid`/`tick`/`track.key` must be server-issued — the page fetch cannot be skipped.
+- Status handling mirrors the player: 401 is retried (bounded), 403 is fatal ("refresh page" upstream). Success bodies are ChaCha-encrypted (`application/vnd.hotaudio.crypt+json`); anything else is surfaced as plaintext instead of decrypting garbage.
 
 ## HAX0 container
 
