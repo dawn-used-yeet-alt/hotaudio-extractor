@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.m4a
+*.hax
+*.log
+.DS_Store
+bench-result.json
+.env
+.env.local

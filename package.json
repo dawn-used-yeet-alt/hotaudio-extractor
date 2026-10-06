@@ -1,0 +1,57 @@
+{
+  "name": "hotaudio-extractor",
+  "version": "0.1.0",
+  "description": "Standalone hotaudio.net audio extractor: page handshake, request signing, X25519 listen key exchange, HAX0 decrypt, MSE streaming and full-track download.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dawn-used-yeet-alt/hotaudio-extractor.git"
+  },
+  "keywords": [
+    "hotaudio",
+    "audio",
+    "extractor",
+    "download",
+    "mse",
+    "x25519",
+    "chacha20poly1305"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "hotaudio-download": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18",
+    "bun": ">=1.0"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "bun run build",
+    "download": "bun ./src/cli.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.3.0",
+    "@noble/curves": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/node": "^24.12.3",
+    "tsup": "^8.5.1",
+    "typescript": "~6.0.2"
+  }
+}
