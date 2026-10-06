@@ -40,6 +40,7 @@ hotaudio-download --hax audio.hax --keys keys.json --out track.m4a
 | `--hax <path>` | Local `.hax` container (offline mode). |
 | `--hax-url <URL>` | `.hax` URL override for cached mode (defaults to the envelope's URL). |
 | `--track <id>` | Track id for multi-track pages (defaults to the page's primary track). |
+| `--list-tracks` | List track ids + titles on the page (URL or HTML file), in page order. |
 | `--api-base <URL>` | Listen API base (defaults to `https://hotaudio.net`). |
 | `--help`, `-h` | Show usage. |
 

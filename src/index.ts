@@ -44,12 +44,16 @@ export {
 } from './hax_decoder.ts';
 export {
   extractHaState,
+  listHotaudioTracks,
+  haxUrlForTrackKey,
+  fetchHotaudioTracks,
   loadHandshakeFromHtml,
   loadHotaudioHandshake,
   listenRequest,
   mergeBranchKeys,
   type HotaudioHandshake,
   type HandshakeOptions,
+  type HotaudioTrackInfo,
 } from './listen.ts';
 export {
   decryptHaxBuffer,

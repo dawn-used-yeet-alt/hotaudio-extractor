@@ -36,6 +36,7 @@ export interface Fixture {
   expected: Uint8Array;
   rootHex: string;
   haxBytes: Uint8Array;
+  pageHtml: string;
 }
 
 export async function buildFixture(): Promise<Fixture> {
@@ -170,5 +171,5 @@ export async function buildFixture(): Promise<Fixture> {
       off += p.length;
     }
   }
-  return { fetchFn, listenCalls: () => listenCount, expected, rootHex: bytesToHex(root), haxBytes };
+  return { fetchFn, listenCalls: () => listenCount, expected, rootHex: bytesToHex(root), haxBytes, pageHtml };
 }

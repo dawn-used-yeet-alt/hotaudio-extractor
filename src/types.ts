@@ -14,7 +14,8 @@ export interface HotaudioState {
 
 export interface HotaudioListenResponse {
   url: string;
-  length15s: number;
+  /** Absent on the wire in observed responses; kept for compatibility. */
+  length15s?: number;
   keys: Record<string, string>;
 }
 

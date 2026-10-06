@@ -86,6 +86,18 @@ page/listen requests (`downloadHaxBuffer`, CLI `--keys` mode). If the
 track's key material ever rotates server-side, decrypt fails closed on
 the ChaCha auth tag — re-run online mode for fresh keys.
 
+Two finer behaviors, both measured, neither worth gaming:
+
+- Branch *width* rotates per request (same `first` returned 32, then 8,
+  then 8 leaves across repeats; jackpots up to 128 observed). Width is not
+  a deterministic function of `first`, so no seeding strategy beats
+  miss-driven paging — which harvests lucky wide branches automatically
+  by merging everything returned.
+- The `.hax` URL is derivable from the track key
+  (`https://cdn.hotaudio.net/a/<key>.hax`, confirmed across tracks and
+  sessions). The downloader still uses the server-issued URL; the probe
+  warns if derivation ever disagrees (CDN layout tripwire).
+
 ## Signer (`src/signer.ts`)
 
 `signHotaudioPayload` evaluates a pinned `nozzle.js` build

@@ -40,6 +40,40 @@ export function extractHaState(html: string): string | null {
   return m?.[1] ?? null;
 }
 
+export interface HotaudioTrackInfo {
+  id: string;
+  key: string;
+  title: string;
+}
+
+/**
+ * List every track on a page in page order. Returns null when the page
+ * has no decryptable state. Used for `--track` discovery.
+ */
+export function listHotaudioTracks(html: string): HotaudioTrackInfo[] | null {
+  const stateB64 = extractHaState(html);
+  if (!stateB64) return null;
+  let state: HotaudioState;
+  try {
+    state = decryptHotaudioState(stateB64);
+  } catch {
+    return null;
+  }
+  const ordered = Array.isArray(state.order) ? state.order.map(String) : [];
+  const ids = [...ordered.filter((id) => state.tracks[id]), ...Object.keys(state.tracks).filter((id) => !ordered.includes(id))];
+  return ids.map((id) => ({ id, key: state.tracks[id].key, title: state.tracks[id].title }));
+}
+
+/**
+ * Derive the `.hax` container URL from a track key, without any listen
+ * call. Observed rule (stable across tracks and sessions):
+ * `https://cdn.hotaudio.net/a/<key>.hax`. Informational — the downloader
+ * still uses the server-issued URL; the probe warns if they ever differ.
+ */
+export function haxUrlForTrackKey(trackKey: string): string {
+  return `https://cdn.hotaudio.net/a/${trackKey}.hax`;
+}
+
 /** Build a handshake from already-fetched page HTML. */
 export async function loadHandshakeFromHtml(
   html: string,
@@ -108,6 +142,20 @@ export async function loadHotaudioHandshake(
   });
   if (!pageRes.ok) return null;
   return loadHandshakeFromHtml(await pageRes.text(), apiBase, opts.trackId);
+}
+
+/** Fetch a track page and list its tracks (for `--track` discovery). */
+export async function fetchHotaudioTracks(
+  pageUrl: string,
+  opts: HandshakeOptions = {},
+): Promise<HotaudioTrackInfo[] | null> {
+  const userAgent = opts.userAgent ?? HOTAUDIO_UA;
+  const fetchFn = opts.fetchFn ?? globalThis.fetch;
+  const pageRes = await fetchWithRetry(fetchFn, pageUrl, { headers: { 'User-Agent': userAgent } }, {
+    timeoutMs: opts.timeoutMs ?? FETCH_API_TIMEOUT_MS,
+  });
+  if (!pageRes.ok) return null;
+  return listHotaudioTracks(await pageRes.text());
 }
 
 /**

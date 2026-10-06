@@ -3,6 +3,7 @@
  * hotaudio-download — download and decrypt a hotaudio track.
  *
  *   hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL]
+ *   hotaudio-download <URL | HTML file> --list-tracks
  *   hotaudio-download --keys keys.json [--hax-url URL] [--out file.m4a]
  *   hotaudio-download --hax audio.hax --keys keys.json [--out file.m4a]
  *
@@ -18,13 +19,14 @@ import {
   parseSavedKeys,
   type SavedHotaudioKeys,
 } from './download.ts';
-import { loadHandshakeFromHtml } from './listen.ts';
+import { loadHandshakeFromHtml, fetchHotaudioTracks, listHotaudioTracks } from './listen.ts';
 import { HOTAUDIO_API_BASE } from './constants.ts';
 import type { HotaudioProgress } from './types.ts';
 
 function usage(exitCode: number = 1): never {
   console.error(`Usage:
   hotaudio-download <URL | HTML file> [--out file.m4a] [--save-keys keys.json] [--track id] [--api-base URL]
+  hotaudio-download <URL | HTML file> --list-tracks
   hotaudio-download --keys keys.json [--hax-url URL] [--out file.m4a]
   hotaudio-download --hax audio.hax --keys keys.json [--out file.m4a]`);
   process.exit(exitCode);
@@ -52,6 +54,7 @@ const keysArg = arg('--keys');
 const trackId = arg('--track');
 const apiBaseArg = arg('--api-base');
 const apiBase = apiBaseArg ?? undefined;
+const listTracks = process.argv.includes('--list-tracks');
 
 const fs = await import('node:fs/promises');
 const path = await import('node:path');
@@ -86,8 +89,7 @@ async function loadKeys(): Promise<{ keys: Record<string, string>; haxUrl?: stri
   }
 }
 
-async function saveKeys(
-  pageUrl: string | undefined,
+async function saveKeys(  pageUrl: string | undefined,
   haxUrl: string,
   title: string | undefined,
   keys: Record<string, string>,
@@ -103,6 +105,23 @@ async function saveKeys(
   };
   await fs.writeFile(saveKeysPath, JSON.stringify(envelope, null, 2));
   console.error(`Keys saved to ${saveKeysPath}`);
+}
+
+// ---- Track listing: every track on the page, in page order ----
+if (listTracks) {
+  if (!source) usage();
+  const tracks = /^https?:\/\//i.test(source)
+    ? await fetchHotaudioTracks(source, { apiBase })
+    : await fs
+      .readFile(source, 'utf8')
+      .then((html) => listHotaudioTracks(html))
+      .catch(() => null);
+  if (!tracks || tracks.length === 0) {
+    console.error('No tracks found (missing or undecryptable page state)');
+    process.exit(1);
+  }
+  for (const t of tracks) console.log(`${t.id}\t${t.title}`);
+  process.exit(0);
 }
 
 // ---- Offline mode: local .hax + saved keys, no network ----

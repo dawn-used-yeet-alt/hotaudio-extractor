@@ -84,6 +84,8 @@ Full-download fallback used by `extractHotaudio`.
 
 - `loadHotaudioHandshake(pageUrl, opts?)` — page fetch + state decrypt + key exchange.
 - `loadHandshakeFromHtml(html, apiBase?)` — same without the page fetch.
+- `fetchHotaudioTracks(pageUrl, opts?)` / `listHotaudioTracks(html)` — every track on a page, in page order.
+- `haxUrlForTrackKey(trackKey)` — derive the `.hax` container URL without a listen call (`https://cdn.hotaudio.net/a/<key>.hax`).
 - `extractHaState(html)` — raw `__ha_state` string or `null`.
 - `listenRequest(handshake, first, opts?)` — one encrypted listen call. `first: -1` for the initial call, `first: <segmentIndex>` for paging.
 - `mergeBranchKeys(keysMap, keys, fromHex)` — merge a follow-up response; returns new-key count.

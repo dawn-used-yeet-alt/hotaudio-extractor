@@ -14,6 +14,7 @@ import { downloadHotaudioBuffer } from '../src/download.ts';
 import { decryptSegmentSlice, deriveSegmentKey, parseHax0Header } from '../src/hax_decoder.ts';
 import {
   extractHaState,
+  haxUrlForTrackKey,
   listenRequest,
   loadHandshakeFromHtml,
   mergeBranchKeys,
@@ -321,7 +322,13 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     firstKeys = initial.keys;
     const n = Object.keys(firstKeys).length;
     if (n === 0) throw new Error('listen response contained zero keys');
-    return { detail: `HTTP 200 in ${ms}ms, keys=${n} ${JSON.stringify(firstKeys)}, hax=${haxUrl}` };
+    const derived = haxUrlForTrackKey(handshake!.track.key);
+    return {
+      detail: `HTTP 200 in ${ms}ms, keys=${n} ${JSON.stringify(firstKeys)}, hax=${haxUrl}`,
+      warn: haxUrl !== derived
+        ? `server URL differs from the derived container URL (${derived}) — CDN layout may have changed`
+        : undefined,
+    };
   }))) { skipRemaining(6, plan); return finish(); }
 
   // 7. HAX header fetch + parse.
