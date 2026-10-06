@@ -1,5 +1,7 @@
 # hotaudio-extractor
 
+> I made this when using bun and didn't really think of doing anything else. Either pr a fix or use bun thx.
+
 Standalone [hotaudio.net](https://hotaudio.net) audio extractor with no application dependencies. It performs the track page handshake, request signing, X25519 listen key exchange, and HAX0 container decryption. Works in browsers, Node.js, Bun, and workers.
 
 - Full-track download to playable `.m4a` bytes (any runtime with `fetch`)
