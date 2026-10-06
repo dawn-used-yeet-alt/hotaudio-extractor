@@ -71,6 +71,15 @@ When the upstream player build changes, signatures break. The fix is to
 re-capture `nozzle.js` and `env_hashes.ts` for the new version and bump
 `PINNED_NOZZLE_VERSION` together — they must stay in sync.
 
+Known quirk: in non-browser runtimes (Node/Bun) the *first* signature per
+process takes ~2 minutes while a bundled environment probe spins on a
+browser API the shim does not provide; later signatures in the same process
+are instant. Every CLI run therefore pays a one-time ~2-minute cost. The
+live probe (`scripts/live-probe.ts`) flags this on the signer stage. Do not
+"fix" the shim to shortcut it without a live acceptance test — the
+fingerprint it computes under the timeout may be exactly what the server
+expects.
+
 ## Streaming (`src/stream.ts`)
 
 The browser path fetches only the 16-byte prefix to learn `headerLength`,

@@ -19,7 +19,7 @@ import {
   mergeBranchKeys,
   type HotaudioHandshake,
 } from '../src/listen.ts';
-import { hexToBytes, bytesToHex } from '../src/crypto.ts';
+import { decryptHotaudioState, hexToBytes, bytesToHex } from '../src/crypto.ts';
 import { signHotaudioPayload } from '../src/signer.ts';
 import { HOTAUDIO_UA, HOTAUDIO_API_BASE } from '../src/constants.ts';
 import { isHotaudioUrl } from '../src/index.ts';
@@ -156,6 +156,12 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(2)} MiB`;
 }
 
+/**
+ * Slow-stage threshold. Full downloads are excluded: long tracks
+ * legitimately take minutes.
+ */
+const SLOW_STAGE_MS = 30000;
+
 export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResult[]; ok: boolean }> {
   const c = opts.noColor || !process.stderr.isTTY ? blankAnsi() : ANSI;
   const stages: StageResult[] = [];
@@ -176,6 +182,14 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       const ms = Math.round(performance.now() - t0);
       stages.push({ name, status: 'pass', ms, detail });
       log(`${c.green}✔${c.reset} ${name} ${c.dim}(${ms}ms)${c.reset} — ${detail}`);
+      if (ms > SLOW_STAGE_MS && !name.startsWith('full download')) {
+        log(
+          `  ${c.yellow}warn:${c.reset} ${name} took ${(ms / 1000).toFixed(0)}s` +
+            (name.startsWith('request signer')
+              ? ' — the signer pays a one-time per-process init cost in non-browser runtimes; later signatures in this run are instant'
+              : ' — unusually slow; check network conditions'),
+        );
+      }
       return true;
     } catch (err) {
       const ms = Math.round(performance.now() - t0);
@@ -222,20 +236,27 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     ).catch((err) => {
       throw new Error(`page request failed: ${describeFetchError(err)}`);
     });
-    if (!res.ok) throw new Error(`page returned HTTP ${res.status}`);
+    const snapshot = headerSnapshot(res);
+    if (!res.ok) throw new Error(`page returned HTTP ${res.status} (${snapshot})`);
     html = await res.text();
     const state = extractHaState(html);
     return {
-      detail: `HTTP 200 in ${ms}ms, ${fmtBytes(html.length)}, __ha_state ${state ? `present (${fmtBytes(state.length)})` : 'MISSING'}`,
+      detail: `HTTP 200 in ${ms}ms, ${fmtBytes(html.length)}, ${snapshot}, __ha_state ${state ? `present (${fmtBytes(state.length)})` : 'MISSING'}`,
     };
   }))) { skipRemaining(1, plan); return finish(); }
 
-  // 2. State decrypt + handshake (includes key exchange, staged separately below).
+  // 2. State decrypt, then track selection: kept separate so a failure
+  // points at either page crypto or the track table, not both.
   if (!(await stage(plan[1], async () => {
     const raw = extractHaState(html);
     if (!raw) throw new Error('__ha_state not found in page HTML');
+    try {
+      decryptHotaudioState(raw);
+    } catch (err) {
+      throw new Error(`__ha_state decrypt failed: ${describeFetchError(err)}`);
+    }
     handshake = await loadHandshakeFromHtml(html, opts.apiBase);
-    if (!handshake) throw new Error('__ha_state present but failed to decrypt');
+    if (!handshake) throw new Error('__ha_state decrypted but track selection failed (no usable tracks/order)');
     const trackCount = Object.keys(handshake.state.tracks).length;
     return {
       detail: `pid=${handshake.state.pid} tick=${handshake.state.tick} tracks=${trackCount} tid=${handshake.tid} title=${JSON.stringify(handshake.track.title)} serverPub=${handshake.state.key}`,
@@ -314,9 +335,17 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
         key = await deriveSegmentKey(keysMap, hax.segmentCount, i, nodeCache);
       } catch (err) {
         if (!(err instanceof Error) || !err.message.startsWith('Key missing in keys map')) throw err;
-        const extra = await listenRequest(handshake!, i, { userAgent: opts.userAgent, apiBase: opts.apiBase });
+        const extra = await listenRequest(handshake!, i, { userAgent: opts.userAgent, apiBase: opts.apiBase }).catch(
+          (listenErr: unknown) => {
+            throw new Error(`paging listen (first=${i}) failed: ${describeFetchError(listenErr)}`);
+          },
+        );
         const merged = mergeBranchKeys(keysMap, extra.keys, hexToBytes);
-        if (merged === 0) throw new Error(`segment ${i}: key missing and paging returned no new keys`);
+        if (merged === 0) {
+          throw new Error(
+            `segment ${i}: key missing and paging (first=${i}) returned no new keys (${Object.keys(keysMap).length} keys known)`,
+          );
+        }
         paged++;
         nodeCache.clear();
         key = await deriveSegmentKey(keysMap, hax.segmentCount, i, nodeCache);
@@ -350,6 +379,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
           apiBase: opts.apiBase,
           onProgress: ({ phase, loaded, total }) => {
             lastPhase = `${phase} ${loaded}/${total}`;
+            log(`  ${phase} ${loaded}/${total}`);
           },
         }),
       );
@@ -407,6 +437,12 @@ function describeFetchError(err: unknown): string {
   return String(err);
 }
 
+/** Compact header snapshot for diagnosing blocks (Cloudflare) and mirrors. */
+function headerSnapshot(res: Response): string {
+  const pick = (n: string) => res.headers.get(n) ?? '—';
+  return `content-type=${pick('content-type')} content-length=${pick('content-length')} cf-mitigated=${pick('cf-mitigated')} server=${pick('server')}`;
+}
+
 function hintOf(stage: string, message: string): string | undefined {
   if (stage === 'page fetch') {
     if (/403/.test(message)) {
@@ -421,6 +457,9 @@ function hintOf(stage: string, message: string): string | undefined {
     if (/__ha_state not found/.test(message)) {
       return 'Page markup changed: the `var __ha_state = "..."` embed is gone or renamed. Update extractHaState in src/listen.ts.';
     }
+    if (/track selection failed/.test(message)) {
+      return 'State decrypted but no track was selected: the tracks table is empty or `order` no longer matches it. Inspect the state JSON from a passing run.';
+    }
     return 'Page crypto changed: ChaCha20-Poly1305 state decrypt (trailing-32-byte key, zero nonce) no longer matches. See decryptHotaudioState in src/crypto.ts.';
   }
   if (stage === 'request signer') {
@@ -430,8 +469,22 @@ function hintOf(stage: string, message: string): string | undefined {
     if (/40[13]/.test(message)) {
       return 'Listen API rejected the request: stale tick, bad signature, or blocked UA. Re-run to rule out a stale tick; then suspect signer drift.';
     }
+    return 'Listen response failed to decrypt/parse: the response nonce scheme (first byte +1) or the session-secret derivation likely changed. See listenRequest in src/listen.ts.';
+  }
+  if (stage.startsWith('hax header')) {
+    if (/range fetch returned/.test(message)) {
+      return 'HAX host rejected the ranged request. The .hax URL may be expired/single-use, or the mirror stopped honoring Range. Re-run; the URL is fresh per run.';
+    }
+    if (/short header prefix|implausible lengths/.test(message)) {
+      return 'Container length table changed shape. The 16-byte prefix layout (magic, fileLength, headerLength, extraLength) no longer matches. See parseHax0Header in src/hax_decoder.ts.';
+    }
+    if (/Invalid HAX0 magic/.test(message)) {
+      return 'URL did not return a HAX0 container: wrong/expired .hax URL, or the container format was replaced. Check the listen stage output URL.';
+    }
+    return 'HAX0 metadata parsing failed: the bencoded metadata dict (codec, durationMs, segmentCount, segments) changed shape. See parseHax0Header in src/hax_decoder.ts.';
   }
   if (stage.startsWith('sample key derivation')) {
+    if (/paging listen/.test(message)) return 'Key paging request itself failed — treat as a listen-stage failure (see above), not a key-tree problem.';
     return 'Key-tree layout or paging protocol changed. See deriveSegmentKey in src/hax_decoder.ts and docs/ARCHITECTURE.md.';
   }
   if (stage.startsWith('sample decrypt') || stage.startsWith('full download')) {
@@ -456,6 +509,7 @@ async function main(): Promise<void> {
       full: opts.full,
       sampleSegments: opts.sampleSegments,
       timeoutMs: opts.timeoutMs,
+      userAgent: opts.userAgent,
       apiBase: opts.apiBase,
     },
     stages,
