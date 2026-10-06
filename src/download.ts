@@ -11,6 +11,7 @@ import {
   type HotaudioHandshake,
 } from './listen.ts';
 import { HOTAUDIO_UA } from './constants.ts';
+import { fetchWithRetry } from './retry.ts';
 import type {
   HotaudioFetch,
   HotaudioProgressCallback,
@@ -143,7 +144,7 @@ export async function downloadWithHandshake(
   const initial = await listenRequest(handshake, -1, o);
   if (!initial.url) throw new Error('Hotaudio listen API returned no .hax url');
 
-  const haxRes = await o.fetchFn(initial.url, { headers: { 'User-Agent': o.userAgent } });
+  const haxRes = await fetchWithRetry(o.fetchFn, initial.url, { headers: { 'User-Agent': o.userAgent } });
   if (!haxRes.ok) throw new Error(`Hotaudio .hax fetch returned ${haxRes.status}`);
   const haxBytes = new Uint8Array(await haxRes.arrayBuffer());
   o.onProgress?.({ phase: 'fetching', loaded: haxBytes.length, total: haxBytes.length });

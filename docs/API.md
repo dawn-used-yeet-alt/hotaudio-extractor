@@ -77,7 +77,8 @@ Full-download fallback used by `extractHotaudio`.
 - `extractHaState(html)` — raw `__ha_state` string or `null`.
 - `listenRequest(handshake, first, opts?)` — one encrypted listen call. `first: -1` for the initial call, `first: <segmentIndex>` for paging.
 - `mergeBranchKeys(keysMap, keys, fromHex)` — merge a follow-up response; returns new-key count.
-- `signHotaudioPayload(payload, timestampSeconds?)` — raw `X-Signature` value.
+- `signHotaudioPayload(payload, timestampSeconds?)` — raw `X-Signature` value
+- `fetchWithRetry` / `isRetryableStatus` — transient-failure retries used by all network reads.
 - `performKeyExchange(serverPubHex)` — ephemeral X25519 session.
 - `decryptHotaudioState(stateB64)` — page state decrypt.
 

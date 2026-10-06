@@ -8,6 +8,7 @@ import {
 } from './listen.ts';
 import type { HotaudioListenResponse, HotaudioProgressCallback } from './types.ts';
 import { HOTAUDIO_UA } from './constants.ts';
+import { fetchWithRetry } from './retry.ts';
 import type { DownloadOptions } from './download.ts';
 
 export interface HotaudioStreamSession {
@@ -31,7 +32,7 @@ async function fetchRange(
   end: number,
   signal: AbortSignal,
 ): Promise<Uint8Array> {
-  const res = await fetchFn(url, {
+  const res = await fetchWithRetry(fetchFn, url, {
     headers: { 'User-Agent': HOTAUDIO_UA, Range: `bytes=${start}-${end}` },
     signal,
   });

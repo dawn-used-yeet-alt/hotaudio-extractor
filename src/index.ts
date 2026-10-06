@@ -18,6 +18,13 @@ export const HOTAUDIO_PATTERN =
 export const HOTAUDIO_REGEX = HOTAUDIO_PATTERN;
 
 export { HOTAUDIO_UA, HOTAUDIO_API_BASE, HOTAUDIO_STREAM_READY_TIMEOUT_MS } from './constants.ts';
+export {
+  fetchWithRetry,
+  isRetryableStatus,
+  FETCH_RETRY_ATTEMPTS,
+  FETCH_RETRY_BASE_DELAY_MS,
+  FETCH_RETRY_MAX_DELAY_MS,
+} from './retry.ts';
 export { PINNED_NOZZLE_VERSION, signHotaudioPayload } from './signer.ts';
 export {
   hexToBytes,

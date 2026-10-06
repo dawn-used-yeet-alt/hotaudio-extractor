@@ -20,7 +20,7 @@ import {
   type HotaudioHandshake,
 } from '../src/listen.ts';
 import { decryptHotaudioState, hexToBytes, bytesToHex } from '../src/crypto.ts';
-import { signHotaudioPayload } from '../src/signer.ts';
+import { signHotaudioPayload, PINNED_NOZZLE_VERSION } from '../src/signer.ts';
 import { HOTAUDIO_UA, HOTAUDIO_API_BASE } from '../src/constants.ts';
 import { isHotaudioUrl } from '../src/index.ts';
 
@@ -177,14 +177,18 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     log(`${c.yellow}warn:${c.reset} URL does not match the canonical share pattern; continuing anyway.`);
   }
 
-  async function stage(name: string, fn: () => Promise<{ detail: string }>): Promise<boolean> {
+  async function stage(
+    name: string,
+    fn: () => Promise<{ detail: string; warn?: string }>,
+  ): Promise<boolean> {
     log(`${c.cyan}▶${c.reset} ${name}`);
     const t0 = Date.now();
     try {
-      const { detail } = await fn();
+      const { detail, warn } = await fn();
       const ms = Date.now() - t0;
       stages.push({ name, status: 'pass', ms, detail });
       log(`${c.green}✔${c.reset} ${name} ${c.dim}(${ms}ms)${c.reset} — ${detail}`);
+      if (warn) log(`  ${c.yellow}warn:${c.reset} ${warn}`);
       if (ms > SLOW_STAGE_MS && !name.startsWith('full download')) {
         log(
           `  ${c.yellow}warn:${c.reset} ${name} took ${(ms / 1000).toFixed(0)}s` +
@@ -220,6 +224,7 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
 
   const plan = [
     'page fetch',
+    'upstream nozzle version',
     'page state decrypt',
     'key exchange',
     'request signer',
@@ -248,9 +253,25 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     };
   }))) { skipRemaining(1, plan); return finish(); }
 
-  // 2. State decrypt, then track selection: kept separate so a failure
-  // points at either page crypto or the track table, not both.
+  // 2. Upstream nozzle version vs the pinned signer build. Informational:
+  // drift earns a warning, not a failure — the pinned build may still be
+  // accepted (the API does not necessarily track the player release).
   if (!(await stage(plan[1], async () => {
+    const m = html.match(/\/nozzle\.js\?v=([A-Za-z0-9]+)/);
+    const live = m?.[1] ?? null;
+    if (!live) throw new Error('no nozzle.js reference found in page HTML');
+    const drift = live !== PINNED_NOZZLE_VERSION;
+    return {
+      detail: `live=${live} pinned=${PINNED_NOZZLE_VERSION}${drift ? ' (DRIFT)' : ' (match)'}`,
+      warn: drift
+        ? `player moved to nozzle ${live}; pinned signer is ${PINNED_NOZZLE_VERSION}. Extraction still works until the API rejects old signatures — consider re-pinning (see docs/ARCHITECTURE.md).`
+        : undefined,
+    };
+  }))) { skipRemaining(2, plan); return finish(); }
+
+  // 3. State decrypt, then track selection: kept separate so a failure
+  // points at either page crypto or the track table, not both.
+  if (!(await stage(plan[2], async () => {
     const raw = extractHaState(html);
     if (!raw) throw new Error('__ha_state not found in page HTML');
     try {
@@ -264,28 +285,28 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     return {
       detail: `pid=${handshake.state.pid} tick=${handshake.state.tick} tracks=${trackCount} tid=${handshake.tid} title=${JSON.stringify(handshake.track.title)} serverPub=${handshake.state.key}`,
     };
-  }))) { skipRemaining(2, plan); return finish(); }
+  }))) { skipRemaining(3, plan); return finish(); }
 
-  // 3. Key exchange timing (re-run explicitly to isolate it).
-  if (!(await stage(plan[2], async () => {
+  // 4. Key exchange timing (re-run explicitly to isolate it).
+  if (!(await stage(plan[3], async () => {
     const { ms } = await timed(async () => {
       const h = await loadHandshakeFromHtml(html, opts.apiBase);
       if (!h) throw new Error('handshake rebuild failed');
       handshake = h;
     });
     return { detail: `ephemeral X25519 session established in ${ms}ms, clientPub=${handshake!.clientPubHex}` };
-  }))) { skipRemaining(3, plan); return finish(); }
+  }))) { skipRemaining(4, plan); return finish(); }
 
-  // 4. Signer.
-  if (!(await stage(plan[3], async () => {
+  // 5. Signer.
+  if (!(await stage(plan[4], async () => {
     const probe = JSON.stringify({ tid: 'probe', pid: 'probe', key: 'probe', tick: 'probe', first: -1 });
     const { value: sig, ms } = await timed(async () => signHotaudioPayload(probe));
     if (!sig || sig.length < 16) throw new Error(`signer returned suspicious value (length ${sig?.length ?? 0})`);
     return { detail: `signature computed in ${ms}ms, sig=${sig}` };
-  }))) { skipRemaining(4, plan); return finish(); }
+  }))) { skipRemaining(5, plan); return finish(); }
 
-  // 5. Initial listen request.
-  if (!(await stage(plan[4], async () => {
+  // 6. Initial listen request.
+  if (!(await stage(plan[5], async () => {
     const { value: initial, ms } = await timed(() =>
       listenRequest(handshake!, -1, {
         userAgent: opts.userAgent,
@@ -300,10 +321,10 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     const n = Object.keys(firstKeys).length;
     if (n === 0) throw new Error('listen response contained zero keys');
     return { detail: `HTTP 200 in ${ms}ms, keys=${n} ${JSON.stringify(firstKeys)}, hax=${haxUrl}` };
-  }))) { skipRemaining(5, plan); return finish(); }
+  }))) { skipRemaining(6, plan); return finish(); }
 
-  // 6. HAX header fetch + parse.
-  if (!(await stage(plan[5], async () => {
+  // 7. HAX header fetch + parse.
+  if (!(await stage(plan[6], async () => {
     const head = await fetchRange(haxUrl, 0, 15, opts).catch((err) => {
       throw new Error(`range fetch failed: ${describeFetchError(err)}`);
     });
@@ -321,16 +342,16 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
     return {
       detail: `file=${fmtBytes(hax.fileLength)} header=${fmtBytes(hax.headerLength)} codec=${hax.codec} duration=${(hax.durationMs / 1000).toFixed(1)}s segments=${hax.segmentCount}`,
     };
-  }))) { skipRemaining(6, plan); return finish(); }
+  }))) { skipRemaining(7, plan); return finish(); }
 
-  // 7. Sample key derivation (with paging, like the real downloader).
+  // 8. Sample key derivation (with paging, like the real downloader).
   const keysMap: Record<number, Uint8Array> = {};
   for (const [k, v] of Object.entries(firstKeys)) keysMap[parseInt(k, 10)] = hexToBytes(v);
   const nodeCache = new Map<number, Uint8Array>();
   const hax = parseHax0Header(headerBytes!);
   const sampleN = Math.min(opts.sampleSegments, hax.segmentCount);
   let paged = 0;
-  if (!(await stage(plan[6], async () => {
+  if (!(await stage(plan[7], async () => {
     const derived: string[] = [];
     for (let i = 0; i < sampleN; i++) {
       let key: Uint8Array;
@@ -356,10 +377,10 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       derived.push(`${i}=${bytesToHex(key)}`);
     }
     return { detail: `${sampleN}/${hax.segmentCount} segment keys derived${paged ? ` (${paged} paging round-trips)` : ' (first branch covered all)'}: ${derived.join(' ')}` };
-  }))) { skipRemaining(7, plan); return finish(); }
+  }))) { skipRemaining(8, plan); return finish(); }
 
-  // 8. Sample decrypt + ftyp check.
-  if (!(await stage(plan[7], async () => {
+  // 9. Sample decrypt + ftyp check.
+  if (!(await stage(plan[8], async () => {
     for (let i = 0; i < sampleN; i++) {
       const nextOff = i + 1 < hax.segmentCount ? hax.segments[i + 1].offset : hax.fileLength;
       const slice = await fetchRange(haxUrl, hax.segments[i].offset, nextOff - 1, opts);
@@ -370,11 +391,11 @@ export async function runProbe(opts: ProbeOptions): Promise<{ stages: StageResul
       }
     }
     return { detail: `${sampleN} segments decrypted, first segment starts with ftyp` };
-  }))) { skipRemaining(8, plan); return finish(); }
+  }))) { skipRemaining(9, plan); return finish(); }
 
-  // 9. Full download (opt-in).
+  // 10. Full download (opt-in).
   if (opts.full) {
-    await stage(plan[8], async () => {
+    await stage(plan[9], async () => {
       let lastPhase = '';
       const { value: res, ms } = await timed(() =>
         downloadHotaudioBuffer(opts.url, {
@@ -455,6 +476,9 @@ function hintOf(stage: string, message: string): string | undefined {
     if (/abort|timeout|Timeout|fetch failed|ENOTFOUND|EAI_AGAIN/i.test(message)) {
       return 'Network-level failure (DNS/timeout). Check connectivity and --timeout.';
     }
+  }
+  if (stage === 'upstream nozzle version') {
+    return 'Page template changed: the player script tag moved or was renamed. Find the new bundle URL in the page HTML.';
   }
   if (stage === 'page state decrypt') {
     if (/__ha_state not found/.test(message)) {

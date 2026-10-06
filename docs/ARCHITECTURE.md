@@ -85,8 +85,18 @@ object (frozen `now()`/`timeOrigin`) and `Date` subclass — `Date.now()` stays
 real, but `performance.now()` stops advancing in the host process after the
 signer initializes. The probe therefore times stages with `Date.now()`.
 
-## Streaming (`src/stream.ts`)
+## Reliability (`src/retry.ts`)
 
+All network reads — page fetch, listen requests, `.hax` fetch, streaming
+range requests — go through `fetchWithRetry`: up to 3 attempts with
+exponential backoff (500ms base, 10s cap) for network errors and
+transient statuses (408/425/429/5xx), honoring `Retry-After` on 429.
+Other statuses return immediately, and caller-aborted requests
+(streaming `AbortSignal`) are never retried. A single transient failure
+therefore no longer aborts a multi-minute, multi-hundred-request track
+download.
+
+## Streaming (`src/stream.ts`)
 The browser path fetches only the 16-byte prefix to learn `headerLength`,
 then the header to parse the segment table. It appends decrypted segments
 to a `SourceBuffer` (`audio/mp4; codecs="mp4a.40.2"` preferred) as they

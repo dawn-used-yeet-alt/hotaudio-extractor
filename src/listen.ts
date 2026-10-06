@@ -1,5 +1,6 @@
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { decryptHotaudioState, performKeyExchange, sha256 } from './crypto.ts';
+import { fetchWithRetry } from './retry.ts';
 import { signHotaudioPayload } from './signer.ts';
 import { HOTAUDIO_API_BASE, HOTAUDIO_UA } from './constants.ts';
 import type {
@@ -84,7 +85,7 @@ export async function loadHotaudioHandshake(
   const userAgent = opts.userAgent ?? HOTAUDIO_UA;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
   const apiBase = opts.apiBase ?? HOTAUDIO_API_BASE;
-  const pageRes = await fetchFn(pageUrl, { headers: { 'User-Agent': userAgent } });
+  const pageRes = await fetchWithRetry(fetchFn, pageUrl, { headers: { 'User-Agent': userAgent } });
   if (!pageRes.ok) return null;
   return loadHandshakeFromHtml(await pageRes.text(), apiBase);
 }
@@ -111,7 +112,7 @@ export async function listenRequest(
   const reqNonce = (await sha256(UTF8_ENC.encode(sig))).subarray(0, 12);
   const encBody = chacha20poly1305(Ee, reqNonce).encrypt(UTF8_ENC.encode(payloadStr));
 
-  const listenRes = await fetchFn(`${apiBase}/api/v1/audio/listen`, {
+  const listenRes = await fetchWithRetry(fetchFn, `${apiBase}/api/v1/audio/listen`, {
     method: 'POST',
     headers: {
       'X-Signature': sig,
