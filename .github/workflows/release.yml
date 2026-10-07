@@ -49,36 +49,65 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --- Linux, glibc ---
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             native: true
+          # Built on a native ARM runner rather than cross-compiled: the arm64
+          # apt suites 404 on the amd64 runners, and a native build is
+          # smoke-testable.
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            native: true
+          # --- Linux, musl: statically linked, for containers and minimal hosts ---
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             native: false
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            native: false
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            native: true
+          # --- macOS ---
           - target: aarch64-apple-darwin
             os: macos-latest
             native: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            native: false
+          # --- Windows ---
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             native: true
-          # aarch64-pc-windows-msvc is tier 2: prebuilt std is available, so it
-          # cross-compiles from the x64 runner.
           - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            native: false
+          - target: x86_64-pc-windows-gnu
             os: windows-latest
             native: false
 
     steps:
+      # Always build the tagged source, never the current default branch: a
+      # manual re-run of an existing tag must reproduce that tag's binaries.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
 
-      - name: Install the aarch64 Linux cross toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      # rustc ships a self-contained musl linker for x86_64; the aarch64 musl
+      # target needs a cross gcc on an amd64 host, which we avoid by building
+      # natively. musl-tools is still required on both for the target libc.
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+
+      # mingw-w64 is preinstalled on the Windows runners, but make it explicit
+      # so the gnu target cannot fail on a runner-image change.
+      - name: Verify mingw-w64
+        if: contains(matrix.target, 'windows-gnu')
+        shell: pwsh
         run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue)) {
+            Write-Error "x86_64-w64-mingw32-gcc not found on this runner"
+            exit 1
+          }
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,11 +119,9 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      # Only the runner-native targets can be executed; the others are verified
-      # by the linux/macos/windows native builds of the same codebase.
+      # Only runner-native targets can be executed; the cross-compiled ones are
+      # covered by the native builds of the same codebase.
       - name: Smoke test
         if: matrix.native
         shell: bash
@@ -103,7 +130,7 @@ jobs:
           exe="target/${{ matrix.target }}/release/hotaudio-download${{ runner.os == 'Windows' && '.exe' || '' }}"
           "$exe" --help | head -3
           "$exe" --help | grep -q -- "--stream-to"
-          # Bad flags must fail loudly rather than silently.
+          # An unknown flag must fail loudly rather than be silently ignored.
           if "$exe" --definitely-not-a-flag >/dev/null 2>&1; then
             echo "::error::unknown flag was accepted"
             exit 1
@@ -119,6 +146,8 @@ jobs:
           mkdir -p "$stage" dist
           cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
           cp README.md LICENSE CHANGELOG.md "$stage/"
+          # Note the libc in the filename: the musl build is not interchangeable
+          # with the gnu one, and both are published under this target triple.
           tar -czf "dist/${stage}.tar.gz" "$stage"
           rm -rf "$stage"
 
