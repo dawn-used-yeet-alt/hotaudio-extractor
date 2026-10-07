@@ -1,8 +1,19 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repo. Humans: see `README.md` and `CONTRIBUTING.md`.
+Guidance for coding agents working on this branch. Humans: see `README.md` and
+`CONTRIBUTING.md`.
 
 ## What this is
+
+**The `legacy` branch: the original TypeScript `hotaudio-extractor` npm
+package.** It is frozen and superseded. The Rust crate is on `main`
+(`git checkout main`) and is the maintained implementation — do not port new
+work in this direction, and see `docs/MIGRATION.md` on `main` for how the two
+map.
+
+The only thing here with no equivalent on `main` is the browser/MSE playback
+path in `src/stream.ts`. Fix bugs here if you are asked to, but do not add
+features.
 
 Standalone hotaudio.net audio extractor. Fast and lightweight, but
 unstable — it tracks site internals and can break when the site changes.

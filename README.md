@@ -1,6 +1,14 @@
-# hotaudio-extractor
+# hotaudio-extractor (legacy)
 
-> I made this when using bun and didn't really think of doing anything else. Either pr a fix or use bun thx.
+> **This is the `legacy` branch — a frozen, superseded version.** The maintained
+> implementation is the Rust crate on `main`: a single binary, roughly 1000×
+> faster at signing, and the only version still receiving fixes. Check it out with
+> `git checkout main`, or read [its README](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/README.md)
+> and [MIGRATION.md](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/MIGRATION.md)
+> for the mapping between the two APIs.
+>
+> Staying here is only worthwhile if you need in-browser Media Source Extensions
+> playback, which the Rust crate does not provide.
 
 Standalone [hotaudio.net](https://hotaudio.net) audio extractor with no application dependencies. It performs the track page handshake, request signing, X25519 listen key exchange, and HAX0 container decryption. Works in browsers, Node.js, Bun, and workers.
 

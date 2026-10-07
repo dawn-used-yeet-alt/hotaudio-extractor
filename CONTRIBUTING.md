@@ -1,5 +1,7 @@
 # Contributing
 
+This branch (`legacy`) is frozen. See `AGENTS.md`.
+
 ## Setup
 
 ```bash

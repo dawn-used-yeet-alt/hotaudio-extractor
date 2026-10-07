@@ -2,7 +2,12 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [Semantic Versioning](https://semver.org/).
 
+This file covers the `legacy` branch only. The maintained Rust implementation has
+its own changelog on `main`.
+
 ## [Unreleased]
+
+Nothing further is planned here. The branch is frozen.
 
 ### Added
 

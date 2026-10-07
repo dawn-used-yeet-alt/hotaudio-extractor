@@ -7,3 +7,6 @@ coverage/
 bench-result.json
 .env
 .env.local
+
+# Rust build output, present when the main branch is checked out in-place
+/target/
