@@ -1,6 +1,6 @@
 [package]
 name = "hotaudio-rs"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 # Also the floor for the dependency tree: several RustCrypto and ureq crates
 # declare the same MSRV. CI checks against this version.
@@ -8,10 +8,12 @@ rust-version = "1.85"
 description = "hotaudio.net audio extractor: page handshake, VM-based request signing, X25519 listen key exchange, HAX0 decrypt."
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/dawn-used-yeet-alt/hotaudio-extractor"
 keywords = ["hotaudio", "audio", "extractor", "download", "x25519", "chacha20poly1305"]
 categories = ["command-line-utilities", "cryptography"]
 # No application dependencies: the signer is a native port of the player's
-# signature VM, so nothing is evaluated at runtime.
+# signature VM, so nothing is evaluated at runtime. Distribution is via GitHub
+# release binaries (see .github/workflows/release.yml).
 publish = false
 
 [lib]

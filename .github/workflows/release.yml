@@ -1,0 +1,176 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build from (e.g. v1.0.0). Must already exist."
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A published release is immutable, so the tag must already exist and must
+  # agree exactly with the version in Cargo.toml.
+  check:
+    name: verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=$tag crate_version=$crate"
+          if [ "$tag" != "v${crate}" ]; then
+            echo "::error::tag '$tag' does not match Cargo.toml version 'v${crate}'"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            native: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            native: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            native: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            native: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            native: true
+          # aarch64-pc-windows-msvc is tier 2: prebuilt std is available, so it
+          # cross-compiles from the x64 runner.
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            native: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the aarch64 Linux cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      # Only the runner-native targets can be executed; the others are verified
+      # by the linux/macos/windows native builds of the same codebase.
+      - name: Smoke test
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="target/${{ matrix.target }}/release/hotaudio-download${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "$exe" --help | head -3
+          "$exe" --help | grep -q -- "--stream-to"
+          # Bad flags must fail loudly rather than silently.
+          if "$exe" --definitely-not-a-flag >/dev/null 2>&1; then
+            echo "::error::unknown flag was accepted"
+            exit 1
+          fi
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.check.outputs.tag }}"
+          stage="hotaudio-download-${tag}-${{ matrix.target }}"
+          mkdir -p "$stage" dist
+          cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          tar -czf "dist/${stage}.tar.gz" "$stage"
+          rm -rf "$stage"
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ needs.check.outputs.tag }}'
+          $stage = "hotaudio-download-$tag-${{ matrix.target }}"
+          $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item $exe $stage
+          Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
+          Remove-Item -Recurse -Force $stage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # One place for checksums, so the .sha256 files cover every archive and
+      # no per-platform shell differences can skew them.
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.tag }}
+          generate_release_notes: true
+          body_path: release-notes.md
+          prerelease: ${{ contains(needs.check.outputs.tag, '-') }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt

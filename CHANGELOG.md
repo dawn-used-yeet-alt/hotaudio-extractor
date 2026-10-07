@@ -6,45 +6,60 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-### Changed
+## [1.0.0] - 2026-10-07
 
-- **The Rust crate is now `main`**, at the repository root. The TypeScript npm
-  package is preserved on the `legacy` branch, frozen, for its browser/MSE
-  playback path. See [docs/MIGRATION.md](docs/MIGRATION.md).
-- **CLI flag parsing**: `--help` documents every flag, flags accept both
-  `--flag value` and `--flag=value`, and unknown or valueless flags are rejected
-  instead of being ignored.
-- CI checks the Rust crate: format, clippy, rustdoc and tests, against both
-  stable and the 1.85 MSRV.
+First release of the Rust implementation, which replaces the TypeScript package
+now preserved on the `legacy` branch. See [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ### Added
 
-- **Rust implementation** — a native replacement for the TypeScript one, roughly
-  1000× faster at signing (0.2 ms vs 200–500 ms) and ~4× faster at decryption.
-  The signer is a port of the player's 657-instruction register VM plus the same
-  recovered bytecode, so it is exact by construction and pinned to golden vectors
-  captured from the reference.
+- **Rust implementation** — page handshake, X25519 listen key exchange, HAX0
+  container decrypt, and a `hotaudio-download` CLI that writes playable `.m4a`.
+  Roughly 1000× faster at signing (0.2 ms vs 200–500 ms) and ~4× faster at
+  decryption than the TypeScript version.
+- **Signature VM** — the signer is a port of the player's 657-instruction
+  register machine plus the same recovered 1314-entry bytecode, so it is exact
+  by construction rather than a re-derivation of "the algorithm". Pinned to
+  golden vectors captured from the reference signer, plus a differential trace of
+  all 1570 VM instructions.
 - **Resumable container transfer** (`http::get_resumable`): a dropped `.hax`
   download continues from the last byte received via `Range` instead of
   restarting. Falls back to a full refetch if the server ignores `Range`.
 - **Streaming downloads** (`--stream-to`): peak memory of one segment instead of
   one container, and a first playable fragment after a single round trip.
+- **Library API** (`hotaudio`): `download`, `listen`, `hax`, `range`, `http` and
+  `signer` modules.
 - A self-contained recovery toolchain (`scripts/`) with the player bundle
-  vendored, so signer recovery no longer depends on the TypeScript implementation.
+  vendored, so signer recovery does not depend on the TypeScript implementation.
 - Docs: `ARCHITECTURE`, `PROTOCOL`, `MAINTENANCE`, `MIGRATION`.
+- Prebuilt binaries for Linux, macOS and Windows, x86-64 and ARM64, built in CI
+  and attached to the GitHub release.
 
-### Added — TypeScript package (now on `legacy`)
+### Changed
 
-Recorded for the frozen package only; none of it is under active development.
+- `--help` documents every flag. Flags accept both `--flag value` and
+  `--flag=value`, and unknown or valueless flags are rejected rather than
+  ignored.
 
+## [0.1.0] - 2026-10-06
+
+The TypeScript implementation, superseded by 1.0.0 and preserved on the `legacy`
+branch.
+
+### Added
+
+- Initial standalone extractor: page handshake, `nozzle.js` request signing,
+  X25519 listen key exchange, HAX0 decrypt.
+- Full-track download (`downloadHotaudioBuffer`, `downloadHotaudioToFile`), offline
+  decrypt (`decryptHaxBuffer`, `fetchHotaudioKeys`), browser MSE streaming
+  (`extractHotaudioStream`, `extractHotaudio`).
+- `hotaudio-download` CLI with online and offline (`--hax`/`--keys`) modes.
 - Offline unit test suite (`bun test`) for codec helpers, bencode, HAX0 parsing,
   key derivation, and handshake helpers.
 - `docs/` (API, CLI, architecture), `CONTRIBUTING.md`, MIT `LICENSE`, and the CI
   typecheck/test/build workflow.
 - `tsup` build emitting `dist/` with types; package `exports`/`files`/`engines`
   metadata.
-- `AGENTS.md` agent guidance; README notes the fast-but-unstable tradeoff and
-  points at coldvideo-downloader for slow-and-stable.
 - `scripts/live-probe.ts` staged live-site diagnostic (per-stage timing, failure
   hints, JSON report); manual use only.
 - Network resilience: `fetchWithRetry` retries transient failures (network
@@ -67,16 +82,6 @@ Recorded for the frozen package only; none of it is under active development.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-## [0.1.0] - 2026-10-06
-
-### Added
-
-- Initial standalone TypeScript extractor: page handshake, `nozzle.js` request
-  signing, X25519 listen key exchange, HAX0 decrypt.
-- Full-track download (`downloadHotaudioBuffer`, `downloadHotaudioToFile`), offline
-  decrypt (`decryptHaxBuffer`, `fetchHotaudioKeys`), browser MSE streaming
-  (`extractHotaudioStream`, `extractHotaudio`).
-- `hotaudio-download` CLI with online and offline (`--hax`/`--keys`) modes.
-
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v1.0.0
 [0.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v0.1.0

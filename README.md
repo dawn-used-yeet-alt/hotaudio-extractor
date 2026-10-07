@@ -46,6 +46,20 @@ AAC/MP4).
 
 ## Install
 
+Prebuilt binaries for Linux, macOS and Windows on x86-64 and ARM64 are attached
+to each [GitHub release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases):
+
+```bash
+tar xzf hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+cd hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu
+chmod +x hotaudio-download
+./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
+```
+
+Each release also ships a `SHA256SUMS.txt` to verify the downloads.
+
+Or build from source:
+
 ```bash
 git clone https://github.com/dawn-used-yeet-alt/hotaudio-extractor
 cd hotaudio-extractor
@@ -57,8 +71,8 @@ dependencies are the RustCrypto crates plus `ureq`; there is no bundled
 JavaScript engine, because the signer is native.
 
 The crate is `hotaudio-rs`, with its library importable as `hotaudio`. It is not
-published to crates.io (`publish = false`); build from source with the command
-above.
+published to crates.io (`publish = false`); the release binaries are the
+distribution channel.
 
 ## Usage
 
