@@ -99,6 +99,27 @@ Other statuses return immediately so the caller can surface the error body.
 `401` being retryable matters: the player refreshes once on 401 before giving
 up, so a transient signature rejection is recoverable.
 
+The container transfer uses `http::get_resumable` instead, because it is the
+one request large enough for a retry policy to matter. Measured on the live CDN,
+per-connection throughput varies roughly 0.7–2.3 MB/s by which Cloudflare edge
+answers, and connections do drop mid-body. Retrying a dropped body from byte
+zero re-spends everything already received, so a 25 MB track degrades into
+several full-length transfers. `get_resumable` keeps the bytes already read and
+asks only for the remainder via `Range`, which the CDN honours with `206`. A
+server that ignores `Range` and replies `200` causes the partial buffer to be
+discarded and the request to restart, so correctness never depends on range
+support. Covered by `tests/http_resume.rs`.
+
+### What does *not* help
+
+Measured against the live CDN, so as to avoid re-measuring:
+
+- **Parallel range requests.** At a fixed 8 MiB total, one connection managed
+  6.3 MB/s, four connections 3.65, eight 2.69, sixteen 2.38. Splitting a
+  transfer multiplies handshakes and slow-start, and loses. The single large
+  GET is the right shape.
+- **Connection reuse across the pipeline.** Minor next to the transfer.
+
 ## Testing strategy
 
 - **Parity, not similarity.** The signer is checked against vectors produced by

@@ -6,6 +6,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- **Resumable container transfer** (`http::get_resumable`): a dropped `.hax` download continues from the last byte received via `Range` instead of restarting from zero. The CDN path varies 0.7-2.3 MB/s by which Cloudflare edge answers and does drop connections, so restarting re-spent the whole transfer. Falls back to a full refetch if a server ignores `Range`; covered by `tests/http_resume.rs`.
 - **Rust port (`rust/`, branch `rust-rewrite`)** — a native replacement for the TypeScript implementation, ~1000x faster at signing (0.2 ms vs 200-500 ms) and ~4x faster at decryption. The signer is a port of the player's 657-instruction register VM plus the same recovered bytecode, so it is exact by construction and pinned to 98 golden vectors captured from the reference. Includes progressive HTTP `Range` reading (`range` module, `--stream-to`), a self-contained recovery toolchain (`scripts/recapture.ts`, `scripts/gen-golden.ts`, `scripts/verify-live.ts`, `scripts/shim.ts`, vendored `vendor/nozzle.js`), and detailed docs (`ARCHITECTURE`, `PROTOCOL`, `MAINTENANCE`, `MIGRATION`). See `rust/README.md`.
 
 

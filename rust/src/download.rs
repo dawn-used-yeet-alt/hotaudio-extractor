@@ -108,12 +108,21 @@ pub fn fetch_container(
     url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Vec<u8>> {
-    let resp = http::request(
+    // Resumable: a dropped transfer continues from the last byte rather than
+    // restarting, which matters on slow or lossy paths.
+    let resp = http::get_resumable(
         agent,
-        "GET",
         url,
         &[("User-Agent", crate::HOTAUDIO_UA)],
-        None
+        |loaded, total| {
+            if let Some(cb) = opts.on_progress.as_mut() {
+                cb(Progress {
+                    phase: Phase::Fetching,
+                    loaded,
+                    total,
+                });
+            }
+        },
     )?;
     if !(200..300).contains(&resp.status) {
         return Err(Error::Http(format!(

@@ -111,6 +111,131 @@ pub fn request(
     Err(last.unwrap_or_else(|| Error::Http("request failed".into())))
 }
 
+/// Fetch a large body, resuming with `Range` if the transfer drops mid-stream.
+///
+/// The container is the only large transfer in the protocol and it is routinely
+/// 15–25 MB over a path that can be slow or intermittently lossy. Retrying a
+/// dropped body from byte zero re-spends everything already received, so on a
+/// flaky link a single download degrades into several full-length transfers.
+///
+/// This keeps the bytes already read and asks only for the remainder. The CDN
+/// honours `Range` (it answers `206`); if a server ignores it and replies `200`
+/// with the whole body, the partial buffer is discarded and the request restarts,
+/// so correctness does not depend on range support.
+///
+/// `on_progress` is called with `(received, total)` as data arrives, where
+/// `total` is `0` until a `Content-Length` is seen.
+pub fn get_resumable(
+    agent: &Agent,
+    url: &str,
+    headers: &[(&str, &str)],
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<FullResponse> {
+    use std::io::Read;
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut status: u16 = 0;
+    let mut resp_headers: Vec<(String, String)> = Vec::new();
+    let mut last: Option<Error> = None;
+
+    for attempt in 1..=ATTEMPTS {
+        let started = Instant::now();
+        let resume_at = buf.len();
+
+        let mut req = agent.get(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        if resume_at > 0 {
+            req = req.header("Range", &format!("bytes={resume_at}-"));
+        }
+
+        let resp = match req.call() {
+            Ok(r) => r,
+            Err(UreqError::StatusCode(code)) => {
+                // A ranged request that runs past the end yields 416; the body is
+                // already complete, so accept it rather than discarding work.
+                if resume_at > 0 && code == 416 {
+                    break;
+                }
+                return Err(Error::Http(format!("HTTP {code}")));
+            }
+            Err(e) => {
+                last = Some(Error::Http(e.to_string()));
+                if attempt == ATTEMPTS {
+                    break;
+                }
+                std::thread::sleep(backoff(attempt, None).min(remaining(started)));
+                continue;
+            }
+        };
+
+        let code = resp.status().as_u16();
+
+        // A server that ignores `Range` resends from the start; drop the partial
+        // buffer so the body stays a single contiguous copy of the object.
+        if resume_at > 0 && code == 200 {
+            buf.clear();
+        }
+        if !(200..300).contains(&code) && !is_retryable(code) {
+            return Err(Error::Http(format!(".hax fetch returned {code}")));
+        }
+
+        status = code;
+        resp_headers = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or_default().to_string()))
+            .collect();
+        let total: u64 = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .map(|cl: u64| cl + resume_at as u64)
+            .unwrap_or(0);
+
+        let mut reader = resp.into_body().into_reader();
+        let mut chunk = vec![0u8; 256 * 1024];
+        let mut cut = None;
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    on_progress(buf.len() as u64, total);
+                }
+                Err(e) => {
+                    cut = Some(Error::Http(e.to_string()));
+                    break;
+                }
+            }
+        }
+
+        match cut {
+            // Clean end of body.
+            None => break,
+            Some(err) => {
+                last = Some(err);
+                if attempt == ATTEMPTS {
+                    break;
+                }
+                std::thread::sleep(backoff(attempt, None).min(remaining(started)));
+            }
+        }
+    }
+
+    if status == 0 {
+        return Err(last.unwrap_or_else(|| Error::Http("request failed".into())));
+    }
+    on_progress(buf.len() as u64, buf.len() as u64);
+    Ok(FullResponse {
+        status,
+        headers: resp_headers,
+        body: buf,
+    })
+}
+
 /// Cap the sleep so the agent's own timeout still bounds the whole call.
 fn remaining(started: Instant) -> Duration {
     Duration::from_millis(MAX_DELAY_MS).saturating_sub(started.elapsed())
