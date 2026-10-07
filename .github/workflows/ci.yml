@@ -4,15 +4,57 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The installed toolchain is newer than the MSRV, so a bare `cargo`
+      # invocation cannot catch accidental use of features gated after 1.85.
+      # Several dependencies also declare 1.85 as their own MSRV, so this is
+      # the floor for the tree, not just for this crate.
+      - name: Check MSRV
+        run: |
+          rustup toolchain install 1.85 --profile minimal
+          cargo +1.85 check --locked --all-targets
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Catches broken intra-doc links and undocumented public items, which
+      # otherwise only surface for someone reading the published docs.
+      - name: Docs
+        run: cargo doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Test
+        run: cargo test --locked
+
+  # `scripts/` are Bun scripts for the signer-recovery toolchain. They need no
+  # dependencies to parse; `verify-live.ts` needs @noble/ciphers only to run
+  # against the live site, which CI never does.
+  scripts:
+    name: scripts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bunx tsc --noEmit
-      - run: bun test
-      - run: bun run build
+      - name: Bundle-check the recovery scripts
+        run: |
+          for s in scripts/*.ts; do
+            bun build --no-bundle "$s" --target=bun --outfile=/dev/null
+          done

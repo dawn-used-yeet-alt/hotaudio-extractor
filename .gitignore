@@ -1,9 +1,16 @@
-node_modules/
-coverage/
+# Rust build output and downloaded media
+/target/
 *.m4a
 *.hax
-*.log
-.DS_Store
-bench-result.json
+
+# Optional, for scripts/verify-live.ts only (`bun add -d @noble/ciphers`)
+node_modules/
+
+# Local environment / scratch
 .env
 .env.local
+*.log
+.DS_Store
+
+# Rust-side recovery scratch
+.nozzle.recapture.js

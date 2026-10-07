@@ -1,154 +1,146 @@
 # Architecture
 
-## Pipeline
+How the extractor works, and why it is built the way it is.
 
 ```
 track page HTML
-  -> __ha_state (base64, ChaCha20-Poly1305, trailing 32-byte key, zero nonce)
-  -> HotaudioState { pid, tick, key (server X25519 pub), tracks, order }
-  -> X25519 ephemeral key exchange -> session secret Ee = SHA-256(shared)
-  -> listenRequest(first=-1) -> { url (.hax), keys (first branch) }
-  -> fetch .hax container
-  -> derive per-segment keys -> decrypt slices -> concat MP4 fragments
+  └─ __ha_state  (base64 → ChaCha20-Poly1305, trailing 32-byte key, zero nonce)
+       └─ HotaudioState { pid, tick, key (server X25519 pubkey), tracks, order }
+            ├─ X25519 ephemeral key exchange → Ee = SHA-256(shared secret)
+            └─ listenRequest(first = -1)
+                 payload = {"tid","pid","key","tick","first"}   (JSON, fixed order)
+                 X-Signature = VM(payload, now_seconds)          ← the signer
+                 nonce       = SHA-256(signature)[0..12]
+                 body        = ChaCha20-Poly1305(Ee, nonce, payload)
+                 ← { url: ".hax", keys: { node: hex } }
+                 ← response decrypted under SHA-256(signature)[0..12] with byte 0 + 1
+            └─ GET url → .hax container
+                 ├─ bencoded header: codec, durationMs, segmentCount, segments, baseKey
+                 └─ per segment: derive key from the branch tree, decrypt (zero nonce)
+            └─ concatenate fragments → playable .m4a
 ```
 
-Long tracks hold more segments than one branch covers. The downloader
-catches the `Key missing in keys map` error, pages `first:<segmentIndex>`
-for exactly the missing index, merges the new branch, clears the node-key
-cache, and resumes. `keys` returned to the caller are the union of all
-fetched branches.
+## Crate layout
 
-Measured against the live API, each `first:<n>` response unlocks a small
-window starting at segment `n` (typically `[n..n+7]`), and concurrent
-requests show no latency benefit over sequential ones — the server
-effectively serializes per track. Exact-miss sequential paging is therefore
-optimal: every request is provably needed, minimizing both wall time and
-server load. (An earlier 3-in-flight stride-8 lookahead was removed after
-measurement showed it only added redundant requests.)
+| Module | Responsibility |
+| --- | --- |
+| `signer` | The signature VM. `bytecode.rs` (generated), `env.rs` (fingerprint table), `vm.rs` (the machine). |
+| `crypto` | SHA-256, X25519, ChaCha20-Poly1305, hex/base64. Thin wrappers over RustCrypto. |
+| `hax` | Bencode reader, HAX0 header, and the segment key tree. |
+| `range` | HTTP `Range` reading: header probe, per-segment fetch, streaming decrypt. |
+| `listen` | Page handshake, `__ha_state` decrypt, the encrypted listen API. |
+| `http` | Agent construction (API vs bulk) and the retry policy. |
+| `download` | The pipeline, key paging, saved-keys envelope. |
+| `bin/download` | CLI. |
 
-## Listen encryption
+Design rules:
 
-- Request payload: `{ tid, pid, key, tick, first }` as JSON.
-- `X-Signature`: output of the pinned `nozzle.js` routine over the payload string.
-- Request nonce: first 12 bytes of `SHA-256(signature)`.
-- Request body: payload encrypted with ChaCha20-Poly1305 under `Ee`.
-- Response nonce: request nonce with the first byte incremented by one.
-- Headers include `X-Key` (client ephemeral pubkey), the vendor content type, `Origin`/`Referer`, and the default UA.
-- The page URL's `?key=` param (private/unlisted tracks) is forwarded as a listen-URL query string, mirroring the player.
-- Server validation, all measured: garbage `pid` → 400; garbage `tick` → 401 (`bad signature`, plaintext body); real ticks stay valid for hours across sessions. `pid`/`tick`/`track.key` must be server-issued — the page fetch cannot be skipped.
-- Status handling mirrors the player: 401 is retried (bounded), 403 is fatal ("refresh page" upstream). Success bodies are ChaCha-encrypted (`application/vnd.hotaudio.crypt+json`); anything else is surfaced as plaintext instead of decrypting garbage.
-- Concurrency changes nothing: cross-track concurrent requests take the same per-request time as sequential ones, and same-track fanout showed no benefit (server-side per-request floor ~1s dominates). The downloader stays sequential — simplest and politest.
+- **`signer` has no I/O and no dependencies** beyond `std`. It is a pure
+  function of `(payload, timestamp)`, which is what makes it trivially testable
+  and fuzzable against the reference.
+- **Two HTTP agents, deliberately.** `api_agent()` has a 30 s per-attempt
+  timeout because page and listen calls are latency-bound and one stalled
+  request should degrade into a bounded retry. `bulk_agent()` has no global
+  timeout because a 15 MB container over a slow link legitimately takes
+  minutes. Mixing these up produces either spurious failures or hangs.
+- **Miss-driven key paging.** On a key miss the downloader asks for exactly the
+  missing segment index. Measurements showed the server serialises per track,
+  so every request is provably needed and no lookahead can help.
 
-## HAX0 container
+## The signature VM
 
-```
-offset 0:  magic "HAX0" (4 bytes)
-offset 4:  fileLength   (u32 LE)
-offset 8:  headerLength (u32 LE)
-offset 12: extraLength  (u32 LE)
-offset 16: bencoded metadata dict, through headerLength
-```
+The single most unusual part. See [PROTOCOL.md](PROTOCOL.md#the-signature-vm)
+for the protocol-level description; architecturally the point is:
 
-Metadata keys: `codec`, `durationMs`, `segmentCount`, `segments`
-(byte string of `segmentCount` × `{ offset u32 LE, pts u32 LE }`), `baseKey`.
-Each segment slice (from its offset to the next, or `fileLength`) is an
-independent ChaCha20-Poly1305 ciphertext under a zero nonce.
+Upstream, the signer is a 106 KB obfuscated JavaScript bundle evaluated in a
+fake-browser sandbox. Deobfuscating it revealed the payload is **not a hash
+call** — it is a register machine running a 1314-entry program. This crate
+implements that machine and embeds that program.
 
-## Segment key tree
-Keys form a binary tree above the leaf segments. Given `segmentCount`:
+That choice matters:
 
-```
-bitLen   = bits(segmentCount - 1)
-treeBase = 1 + (1 << (bitLen + 1))
-e        = treeBase + segIdx
-t        = bits(e) - 1
-```
+- **Exact.** It is the same program, not a re-derivation of "the algorithm", so
+  there is no risk of matching the shape but not the behaviour.
+- **Fast.** A signature costs ~0.2 ms versus 200–500 ms for the bundle. The
+  upstream docs note the first signature in a process occasionally took 123 s;
+  that failure mode is now impossible.
+- **Auditable.** `vm.rs` is 700 lines of ordinary Rust with named opcodes, and
+  `tests/data/signer_golden.json` pins it against the reference.
 
-Derivation starts at the nearest known ancestor in `keysMap` and hashes
-down: `child = SHA-256(parent || branchByte)` where `branchByte` is the
-low byte of the node index at that level. Consecutive segments share most
-of their path, so a per-extraction `Map` cache makes this effectively free.
+The VM has no notion of "the environment" beyond a small static model
+(`global_member` / `member_lookup` in `vm.rs`): the pinned build reads
+`Date.stack` (absent, which routes through the bundle's `__FAB` error hook),
+`MediaSource`, `SourceBuffer`, `SourceBuffer.prototype` and `appendBuffer`, and
+probes the global for markers that must be *absent*. That surface is small
+because the fingerprint table pins everything else.
 
-## Branch semantics and key cache
+## Data flow and memory
 
-Measured against the live API (899-segment track):
+Three download strategies, in increasing order of streaming:
 
-- Any `first <= 0` is the initial call: returns the `.hax` URL plus one
-  branch (here node `16`, covering ~127 leaves).
-- `first:<n>` (n ≥ 1) returns a small window starting at segment `n`
-  (typically `[n..n+7]`), without a URL.
-- Out-of-range `first` clamps to the last leaf key.
-- Branch keys are deterministic per (track, `first`): byte-identical
-  across sessions with different ticks. The page `tick` is a per-load
-  nonce; keys do not depend on it.
-- `.hax` CDN URLs are stable per track.
+1. **Buffered** (default). Fetch the whole `.hax`, decrypt into one `Vec`.
+   Simplest; peak memory is roughly the container size.
+2. **Streamed** (`--stream-to`). Read the 16-byte prefix over `Range` to learn
+   `headerLength`, read the header, then fetch and decrypt one segment at a time
+   straight into a buffered writer. Peak memory is one segment; the first
+   playable fragment exists after a single round trip.
+3. **Offline** (`--hax`). Decrypt a local container with saved keys.
 
-Consequences: the downloader pages exactly the missing index (no
-lookahead — every request is provably needed), and saved keys stay valid
-for repeat downloads: fetch the `.hax` from the CDN and decrypt with zero
-page/listen requests (`downloadHaxBuffer`, CLI `--keys` mode). If the
-track's key material ever rotates server-side, decrypt fails closed on
-the ChaCha auth tag — re-run online mode for fresh keys.
+`range.rs` makes (2) possible behind a `RangeSource` trait, which is also how
+the tests exercise the "mirror ignores `Range`" fallback without a server.
 
-Two finer behaviors, both measured, neither worth gaming:
+## Reliability
 
-- Branch *width* rotates per request (same `first` returned 32, then 8,
-  then 8 leaves across repeats; jackpots up to 128 observed). Width is not
-  a deterministic function of `first`, so no seeding strategy beats
-  miss-driven paging — which harvests lucky wide branches automatically
-  by merging everything returned. Re-requesting one `first` until a wide
-  branch lands was measured and rejected: negative expected value versus
-  just moving on.
-- The `.hax` URL is derivable from the track key
-  (`https://cdn.hotaudio.net/a/<key>.hax`, confirmed across tracks and
-  sessions). The downloader still uses the server-issued URL; the probe
-  warns if derivation ever disagrees (CDN layout tripwire).
+`http::request` retries up to three attempts with exponential backoff (500 ms
+base, doubling, jitter, 10 s cap) for network errors and for statuses
+`{401, 408, 425, 429, 500, 502, 503, 504}`, honouring `Retry-After` on 429.
+Other statuses return immediately so the caller can surface the error body.
 
-## Signer (`src/signer.ts`)
+`401` being retryable matters: the player refreshes once on 401 before giving
+up, so a transient signature rejection is recoverable.
 
-`signHotaudioPayload` evaluates a pinned `nozzle.js` build
-(`PINNED_NOZZLE_VERSION`) inside a minimal browser shim: stubbed
-`MediaSource`/`SourceBuffer` with native-code `toString` behavior,
-`navigator.vendor`, frozen `performance` values, a hookable `Date`,
-V8-style error stacks rooted at the pinned player URL, and a static
-environment hash table (`src/env_hashes.ts`).
+The container transfer uses `http::get_resumable` instead, because it is the
+one request large enough for a retry policy to matter. Measured on the live CDN,
+per-connection throughput varies roughly 0.7–2.3 MB/s by which Cloudflare edge
+answers, and connections do drop mid-body. Retrying a dropped body from byte
+zero re-spends everything already received, so a 25 MB track degrades into
+several full-length transfers. `get_resumable` keeps the bytes already read and
+asks only for the remainder via `Range`, which the CDN honours with `206`. A
+server that ignores `Range` and replies `200` causes the partial buffer to be
+discarded and the request to restart, so correctness never depends on range
+support. Covered by `tests/http_resume.rs`.
 
-When the upstream player build changes, signatures break. The fix is to
-re-capture `nozzle.js` and `env_hashes.ts` for the new version and bump
-`PINNED_NOZZLE_VERSION` together — they must stay in sync.
+### What does *not* help
 
-Known quirk: in non-browser runtimes (Node/Bun) the *first* signature per
-process has been observed to take ~123s (later signatures are instant), but
-on other runs the first signature takes ~0.5s. The cause is not yet
-identified — CPU profiling a slow run is the next step. The live probe
-(`scripts/live-probe.ts`) flags any non-download stage over 30s, so a
-recurrence is visible immediately. Do not "fix" the shim blindly: the
-fingerprint it computes may be exactly what the server expects, and any
-shim change needs a live acceptance test.
+Measured against the live CDN, so as to avoid re-measuring:
 
-Side effect to know about: the sandbox replaces the *global* `performance`
-object (frozen `now()`/`timeOrigin`) and `Date` subclass — `Date.now()` stays
-real, but `performance.now()` stops advancing in the host process after the
-signer initializes. The probe therefore times stages with `Date.now()`.
+- **Parallel range requests.** At a fixed 8 MiB total, one connection managed
+  6.3 MB/s, four connections 3.65, eight 2.69, sixteen 2.38. Splitting a
+  transfer multiplies handshakes and slow-start, and loses. The single large
+  GET is the right shape.
+- **Connection reuse across the pipeline.** Minor next to the transfer.
 
-## Reliability (`src/retry.ts`)
+## Testing strategy
 
-All network reads — page fetch, listen requests, `.hax` fetch, streaming
-range requests — go through `fetchWithRetry`: up to 3 attempts with
-exponential backoff (500ms base, 10s cap) for network errors and
-transient statuses (408/425/429/5xx), honoring `Retry-After` on 429.
-Other statuses return immediately, and caller-aborted requests
-(streaming `AbortSignal`) are never retried. A single transient failure
-therefore no longer aborts a multi-minute, multi-hundred-request track
-download. Small API calls (page, listen, ranges) additionally carry a
-per-attempt timeout (`timeoutMs`, default 30s) so one stalled request —
-observed live at 66s — degrades into a bounded retry instead of an
-unbounded stall; the bulk `.hax` transfer is intentionally exempt.
+- **Parity, not similarity.** The signer is checked against vectors produced by
+  the real JavaScript, not against hand-written expectations. The corpus covers
+  what the VM is sensitive to: SHA-256 block-padding boundaries, astral-plane
+  characters where JS `.length` counts UTF-16 code units, and JSON escaping. If
+  parity ever breaks, diff the two implementations instruction by instruction
+  (see [MAINTENANCE.md](MAINTENANCE.md#if-the-vm-opcode-semantics-changed)).
+- **Fixtures from the real world, not invented.** `tests/key_tree.rs` uses 150
+  branch keys captured from a live 899-segment track, so tree-geometry drift
+  fails immediately.
+- **Offline.** `cargo test` needs no network. Live checks are explicit,
+  manual, and separate: `scripts/verify-live.ts`.
 
-## Streaming (`src/stream.ts`)
-The browser path fetches only the 16-byte prefix to learn `headerLength`,
-then the header to parse the segment table. It appends decrypted segments
-to a `SourceBuffer` (`audio/mp4; codecs="mp4a.40.2"` preferred) as they
-arrive, paging key branches on demand like the download path. `Range`
-requests are used per segment; mirrors that ignore `Range` (HTTP 200 with
-the full body) are sliced locally.
+## Deliberate non-goals
+
+- **Browser playback.** The TypeScript implementation on the `legacy` branch has
+  an MSE streaming path (`extractHotaudioStream`). That is DOM API territory and
+  has no place in a server-side crate, so this version does not attempt it. The
+  equivalent capability — incremental segment delivery — is available through
+  `range.rs` and `--stream-to`.
+- **Concurrency.** Deliberately sequential; see the paging note above.
+- **Stealth.** The user agent is the bare `Mozilla/5.0` the site requires. This
+  is an interoperability tool, not a scraper that hides itself.
