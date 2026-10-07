@@ -242,16 +242,15 @@ fn run(r: Run) -> Result<(), Error> {
     let (audio, title, hax_url, keys) = if is_url(&source) {
         let api = http::api_agent();
         let bulk = http::bulk_agent();
+        // Bound the callback before handing it over: `Some(&mut progress)`
+        // inline would extend the borrow only to the end of the statement.
+        let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
-            on_progress: Some(&mut progress),
+            on_progress: Some(on_progress),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        // The bulk agent is used for the .hax fetch; the api agent for
-        // page/listen. `download_from_page` takes one agent, so drive it with
-        // the api agent and let the container fetch fall back to it — the
-        // container is large, so hand it the bulk agent instead.
         let res = download_from_page_split(&api, &bulk, &source, &mut opts)?;
         (res.audio, res.title, res.hax_url, res.keys)
     } else {
@@ -263,9 +262,10 @@ fn run(r: Run) -> Result<(), Error> {
         hs.listen_key = listen::extract_listen_key(&source);
         let api = http::api_agent();
         let bulk = http::bulk_agent();
+        let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
-            on_progress: Some(&mut progress),
+            on_progress: Some(on_progress),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
