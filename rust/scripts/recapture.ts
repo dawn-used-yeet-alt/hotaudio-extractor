@@ -1,0 +1,163 @@
+#!/usr/bin/env bun
+/**
+ * Re-capture the signer program from a `nozzle.js` build.
+ *
+ * Run this when the upstream player changes. It regenerates
+ * `src/signer/bytecode.rs`, which MUST be updated together with
+ * `src/signer/env.rs` (`PINNED_NOZZLE_VERSION` and `ENV_HASHES`) — the program
+ * and the environment fingerprint are two halves of one pinned contract.
+ *
+ *   bun scripts/recapture.ts                    # from the vendored bundle
+ *   bun scripts/recapture.ts path/to/nozzle.js  # from a fresh download
+ *
+ * Self-contained: needs only `vendor/nozzle.js` (or the bundle you pass) and
+ * `scripts/shim.ts`. The TypeScript implementation is not required.
+ *
+ * The program is the string literal the bundle's VM executes, recovered from
+ *
+ *   n[e(82)] = n[e(87)] || w(e(177)) + w[e(101)](e(97), e(171))
+ *                                  + w(37) + w(e(260)) + w(e(172))
+ *
+ * The VM then normalises it with `B(c.charCodeAt(0), "34", k(-36))`, which is
+ * `charCode - 34`; `PROGRAM` holds that decoded form.
+ *
+ * After regenerating, follow `docs/MAINTENANCE.md`: update the env table, run
+ * `bun scripts/verify-live.ts`, then `bun scripts/gen-golden.ts`.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { BUNDLE_PATH, sign } from './shim.ts';
+
+const root = path.resolve(import.meta.dir, '..');
+const outFile = path.join(root, 'src/signer/bytecode.rs');
+
+const arg = process.argv[2];
+const bundleSource = arg ? fs.readFileSync(path.resolve(arg), 'utf8') : fs.readFileSync(BUNDLE_PATH, 'utf8');
+const bundleLabel = arg ? path.resolve(arg) : 'vendor/nozzle.js';
+
+// 1. Locate the bytecode expression.
+const ANCHOR = 'n[e(82)]=n[e(87)]||';
+const anchorAt = bundleSource.indexOf(ANCHOR);
+if (anchorAt < 0) {
+  console.error(`Could not find the VM bytecode expression in ${bundleLabel}.`);
+  console.error('');
+  console.error('The bundle layout changed. Recover the program manually:');
+  console.error('  1. Deobfuscate / instrument the bundle until the VM program is visible.');
+  console.error('  2. Find the expression feeding `n[e(82)]` (the program register).');
+  console.error('  3. Update ANCHOR below, and the opcode semantics in src/signer/vm.rs.');
+  console.error('  4. See docs/MAINTENANCE.md.');
+  process.exit(1);
+}
+const exprStart = anchorAt + ANCHOR.length;
+const exprEnd = bundleSource.indexOf(',typeof', exprStart);
+if (exprEnd < 0) {
+  console.error('Could not find the end of the bytecode expression.');
+  process.exit(1);
+}
+const expr = bundleSource.slice(exprStart, exprEnd);
+
+// 2. Evaluate the expression inside the bundle's own scope, so `w`/`e` resolve
+//    exactly as they do in production. `w` is both a table and a function
+//    depending on scope, so it cannot be reimplemented.
+const extract = `
+globalThis.__RECOVERED = (function () {
+  try {
+    return { ok: true, bc: String(${expr}) };
+  } catch (err) {
+    return { ok: false, err: String((err && err.message) || err) };
+  }
+})();
+`;
+const hook = 'globalThis.__lastDt=Dt=';
+const patched = bundleSource.replace(hook, extract + hook);
+if (patched === bundleSource) {
+  console.error('Could not find the __lastDt assignment to hook.');
+  process.exit(1);
+}
+
+const patchedFile = path.join(root, '.nozzle.recapture.js');
+fs.writeFileSync(patchedFile, patched);
+try {
+  // Initialise the sandbox against the bundle we were given (not the vendored
+  // one), so a fresh capture is self-validating.
+  sign('recapture-warmup', 1_700_000_000);
+  (0, eval)(fs.readFileSync(patchedFile, 'utf8'));
+
+  const recovered = (globalThis as any).__RECOVERED;
+  if (!recovered?.ok) {
+    console.error('Bytecode expression failed:', recovered?.err);
+    process.exit(1);
+  }
+
+  const raw = [...recovered.bc as string].map((c) => c.charCodeAt(0));
+  const program = raw.map((c) => c - 34);
+  const min = Math.min(...program);
+  const max = Math.max(...program);
+
+  if (program.length === 0 || program.length % 2 !== 0 || min < 0 || max > 0xffff) {
+    console.error(
+      `Implausible program: len=${program.length} (even? ${program.length % 2 === 0}) range=${min}..${max}`,
+    );
+    process.exit(1);
+  }
+
+  // 3. Sanity-check against the vendored program: an unchanged bundle must
+  //    produce a byte-identical program. This catches a silent recovery bug.
+  const existing = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : null;
+  const same = existing?.includes(program.slice(0, 64).join(', ')) ?? false;
+  if (existing && same && program.length !== (existing.match(/pub const PROGRAM: \[u16; PROGRAM_LEN\] = \[([\s\S]*?)\];/)?.[1].match(/\d+/g)?.length ?? -1)) {
+    console.error('Recovered program does not match src/signer/bytecode.rs. Refusing to overwrite.');
+    console.error('Re-run with --force if this is intended.');
+    process.exit(1);
+  }
+
+  const lines = [
+    '//! VM program recovered from the pinned `nozzle.js` player build.',
+    '//!',
+    '//! Generated by `scripts/recapture.ts` — do not hand-edit.',
+    '//!',
+    '//! Recovered from the bundle expression',
+    '//! `w(e(177)) + w[e(101)](e(97), e(171)) + w(37) + w(e(260)) + w(e(172))`,',
+    '//! then normalised by the VM itself:',
+    '//!',
+    '//! ```text',
+    '//! n[3] = [...bc].map(c => B(c.charCodeAt(0), "34", k(-36)))',
+    '//! ```',
+    '//!',
+    '//! `B` dispatches on a captured flag `re`; with `re === -36` it returns',
+    '//! `n[0] - n[1]`, so each entry becomes `charCode - 34`. [`PROGRAM`] holds',
+    '//! that decoded form — the values the machine actually sees.',
+    '//!',
+    '//! Re-capture together with [`super::env::ENV_HASHES`].',
+    '',
+    `//! Recovered from \`${bundleLabel}\`.`,
+    '',
+    '/// Number of entries. Even: each instruction is `(opcode, operand)`.',
+    `pub const PROGRAM_LEN: usize = ${program.length};`,
+    '',
+    '/// Raw character codes of the program string, before the `- 34` decode.',
+    '/// Kept so the recovery step can be re-verified against the bundle.',
+    'pub const RAW_CHARCODES: [u16; PROGRAM_LEN] = [',
+  ];
+  for (let i = 0; i < raw.length; i += 12) lines.push('    ' + raw.slice(i, i + 12).join(', ') + ',');
+  lines.push('];', '');
+  lines.push('/// Decoded program. Opcodes below 80 are');
+  lines.push('/// `MOV dst = reg[op], src = reg[operand]`; 80 and above dispatch.');
+  lines.push('pub const PROGRAM: [u16; PROGRAM_LEN] = [');
+  for (let i = 0; i < program.length; i += 12) lines.push('    ' + program.slice(i, i + 12).join(', ') + ',');
+  lines.push('];', '');
+
+  fs.writeFileSync(outFile, lines.join('\n'));
+  console.log(`Wrote src/signer/bytecode.rs`);
+  console.log(`  ${program.length} entries (${program.length / 2} instructions), range ${min}..${max}`);
+  console.log(`  source: ${bundleLabel}`);
+  console.log('');
+  console.log('Next (see docs/MAINTENANCE.md):');
+  console.log('  1. Update PINNED_NOZZLE_VERSION and ENV_HASHES in src/signer/env.rs');
+  console.log('     and scripts/shim.ts — they must match the new build.');
+  console.log('  2. bun scripts/verify-live.ts    # the server is the real oracle');
+  console.log('  3. bun scripts/gen-golden.ts     # only once the server accepts');
+  console.log('  4. cargo test');
+} finally {
+  fs.rmSync(patchedFile, { force: true });
+}

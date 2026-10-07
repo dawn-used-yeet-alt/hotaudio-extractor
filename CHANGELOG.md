@@ -6,6 +6,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- **Rust port (`rust/`, branch `rust-rewrite`)** — a native replacement for the TypeScript implementation, ~1000x faster at signing (0.2 ms vs 200-500 ms) and ~4x faster at decryption. The signer is a port of the player's 657-instruction register VM plus the same recovered bytecode, so it is exact by construction and pinned to 98 golden vectors captured from the reference. Includes progressive HTTP `Range` reading (`range` module, `--stream-to`), a self-contained recovery toolchain (`scripts/recapture.ts`, `scripts/gen-golden.ts`, `scripts/verify-live.ts`, `scripts/shim.ts`, vendored `vendor/nozzle.js`), and detailed docs (`ARCHITECTURE`, `PROTOCOL`, `MAINTENANCE`, `MIGRATION`). See `rust/README.md`.
+
+
 - Offline unit test suite (`bun test`) for codec helpers, bencode, HAX0 parsing, key derivation, and handshake helpers.
 - `docs/` (API, CLI, architecture), `CONTRIBUTING.md`, MIT `LICENSE`, and CI typecheck/test/build workflow.
 - `tsup` build emitting `dist/` with types; package `exports`/`files`/`engines` metadata.
