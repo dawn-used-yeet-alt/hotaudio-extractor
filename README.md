@@ -46,8 +46,15 @@ AAC/MP4).
 
 ## Install
 
-Prebuilt binaries for Linux, macOS and Windows on x86-64 and ARM64 are attached
-to each [GitHub release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases):
+Prebuilt binaries are attached to each
+[GitHub release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases):
+
+| Platform | Architecture |
+| --- | --- |
+| Linux | x86-64, ARM64 — glibc, and static musl builds |
+| macOS | Intel, Apple Silicon |
+| Windows | x86-64 (MSVC and MinGW), ARM64 |
+| Android / Termux | ARM64, x86-64 |
 
 ```bash
 tar xzf hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
@@ -55,6 +62,10 @@ cd hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu
 chmod +x hotaudio-download
 ./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
 ```
+
+The musl builds are statically linked and run on minimal hosts and in scratch
+containers. The Android builds run directly in [Termux](https://termux.dev) on
+API 24 or newer — take `aarch64-linux-android` on essentially any phone.
 
 Each release also ships a `SHA256SUMS.txt` to verify the downloads.
 

@@ -32,8 +32,9 @@ now preserved on the `legacy` branch. See [docs/MIGRATION.md](docs/MIGRATION.md)
 - A self-contained recovery toolchain (`scripts/`) with the player bundle
   vendored, so signer recovery does not depend on the TypeScript implementation.
 - Docs: `ARCHITECTURE`, `PROTOCOL`, `MAINTENANCE`, `MIGRATION`.
-- Prebuilt binaries for Linux, macOS and Windows, x86-64 and ARM64, built in CI
-  and attached to the GitHub release.
+- Prebuilt binaries for Linux (glibc and static musl), macOS, Windows (MSVC and
+  MinGW), and Android/Termux, on x86-64 and ARM64, built in CI and attached to
+  the GitHub release with checksums.
 
 ### Changed
 

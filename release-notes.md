@@ -8,14 +8,40 @@ Download the archive for your platform, extract it, and run `hotaudio-download`:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
-| Linux | x86-64 | `hotaudio-download-<tag>-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux | ARM64 | `hotaudio-download-<tag>-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux (glibc) | x86-64 | `hotaudio-download-<tag>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (glibc) | ARM64 | `hotaudio-download-<tag>-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux (static) | x86-64 | `hotaudio-download-<tag>-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (static) | ARM64 | `hotaudio-download-<tag>-aarch64-unknown-linux-musl.tar.gz` |
 | macOS | Intel | `hotaudio-download-<tag>-x86_64-apple-darwin.tar.gz` |
 | macOS | Apple Silicon | `hotaudio-download-<tag>-aarch64-apple-darwin.tar.gz` |
-| Windows | x86-64 | `hotaudio-download-<tag>-x86_64-pc-windows-msvc.zip` |
+| Windows | x86-64 (MSVC) | `hotaudio-download-<tag>-x86_64-pc-windows-msvc.zip` |
+| Windows | x86-64 (MinGW) | `hotaudio-download-<tag>-x86_64-pc-windows-gnu.zip` |
 | Windows | ARM64 | `hotaudio-download-<tag>-aarch64-pc-windows-msvc.zip` |
+| Android / Termux | ARM64 | `hotaudio-download-<tag>-aarch64-linux-android.tar.gz` |
+| Android / Termux | x86-64 | `hotaudio-download-<tag>-x86_64-linux-android.tar.gz` |
 
 On Unix, `chmod +x hotaudio-download` after extraction.
+
+The musl builds are statically linked, so they run on minimal hosts and inside
+scratch containers with no glibc. The glibc builds need glibc 2.17 or newer.
+
+## Termux (Android)
+
+The `*-linux-android` builds run directly in Termux, on API 24 (Android 7) or
+newer. No extra libraries are needed — the binary links only against bionic.
+
+```bash
+pkg install wget
+wget https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/download/<tag>/hotaudio-download-<tag>-aarch64-linux-android.tar.gz
+tar xzf hotaudio-download-<tag>-aarch64-linux-android.tar.gz
+cd hotaudio-download-<tag>-aarch64-linux-android
+chmod +x hotaudio-download
+./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
+```
+
+Pick `aarch64-linux-android` on almost all devices; use `x86_64-linux-android`
+only on emulators and Chromebooks. If you get `cannot execute binary file`, your
+device architecture is different from the one you downloaded.
 
 Verify a download against the attached `SHA256SUMS.txt`:
 
