@@ -119,9 +119,11 @@ jobs:
           }
 
       # Android needs the NDK for its linker and sysroot; nothing else does.
-      - uses: nttld/setup-ndk-action@v1
+      - uses: nttld/setup-ndk@v1
         if: endsWith(matrix.target, '-android')
         id: ndk
+        with:
+          ndk-version: r27d
 
       - uses: dtolnay/rust-toolchain@stable
         with:
