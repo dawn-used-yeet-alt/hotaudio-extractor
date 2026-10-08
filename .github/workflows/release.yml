@@ -118,12 +118,14 @@ jobs:
             exit 1
           }
 
-      # Android needs the NDK for its linker and sysroot; nothing else does.
+      # Android needs the NDK for its linker, sysroot and C compiler; nothing
+      # else does. `ring` (via rustls) builds C, so a working cc is required.
       - uses: nttld/setup-ndk@v1
         if: endsWith(matrix.target, '-android')
         id: ndk
         with:
           ndk-version: r27d
+          add-to-path: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -143,22 +145,32 @@ jobs:
             *-linux-android)
               bin="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
               case "$target" in
-                aarch64-linux-android)    abi=aarch64-linux-android ;;
-                x86_64-linux-android)     abi=x86_64-linux-android ;;
-                armv7-linux-androideabi)  abi=armv7a-linux-androideabi ;;
+                aarch64-linux-android)   abi=aarch64-linux-android ;;
+                x86_64-linux-android)    abi=x86_64-linux-android ;;
+                armv7-linux-androideabi) abi=armv7a-linux-androideabi ;;
                 *) echo "::error::unhandled android target $target"; exit 1 ;;
               esac
+
               # API 24 is Termux's own minimum, so these run everywhere Termux does.
               clang="$bin/${abi}24-clang"
               if [ ! -x "$clang" ]; then
                 echo "::error::NDK clang wrapper missing: $clang"
-                ls "$bin" || true
+                ls "$bin" | head -20 || true
                 exit 1
               fi
-              # Cargo spells target env vars as the triple, uppercased, underscores.
+
+              # The NDK names its wrappers per API level, but both cargo and
+              # cc-rs look up the bare ABI name (aarch64-linux-android-clang).
+              ln -sf "$clang" "$bin/${abi}-clang"
+              ln -sf "$bin/${abi}24-clang++" "$bin/${abi}-clang++"
+              export PATH="$bin:$PATH"
+
+              # Cargo and cc spell target variables as the triple, uppercased.
               var=$(printf '%s' "$target" | tr 'a-z-' 'A-Z_')
               export "CARGO_TARGET_${var}_LINKER=$clang"
               export "CARGO_TARGET_${var}_AR=$bin/llvm-ar"
+              export "CC_${var}=$clang"
+              export "AR_${var}=$bin/llvm-ar"
               ;;
           esac
 
