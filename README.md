@@ -1,116 +1,147 @@
 # hotaudio-extractor
 
-A standalone [hotaudio.net](https://hotaudio.net) audio extractor. It performs
-the track-page handshake, request signing, X25519 listen key exchange, and HAX0
-container decryption, and writes a playable `.m4a`.
+<p>
+A command-line audio extractor for <a href="https://hotaudio.net">hotaudio.net</a>, written in Rust. Give it a track URL and it writes a playable <code>.m4a</code>.
+</p>
 
-This is the **Rust** implementation, and the current `main` branch.
+> [!NOTE]
+> This tool is intended for interoperability and personal archiving. It hosts no content and is not
+> affiliated with hotaudio.net.
+>
+> Download only content you have the right to access, and comply with hotaudio.net's terms of
+> service and applicable law. You are responsible for how you use it.
 
-The original TypeScript npm package is preserved on the **`legacy`** branch. It is
-frozen, and exists only for its browser/MSE playback path, which has no Rust
-equivalent. See [docs/MIGRATION.md](docs/MIGRATION.md) for the mapping between the
-two, and `git checkout legacy` to work on it.
+## Status
 
-> **Please respect creators.** This is an interoperability and personal-archiving
-> tool. Download only content you have the right to access, and comply with
-> hotaudio.net's terms of service and applicable law.
-
-## Why the Rust implementation is interesting
-
-Upstream, the `X-Signature` header comes from evaluating a ~106 KB obfuscated
-JavaScript bundle inside a fake-browser sandbox. That bundle is obfuscated to
-hide its payload, but the payload is **not a hash call** — it is a **register
-machine**:
-
-- a **1314-entry program** (657 two-byte instructions), recovered from the bundle
-- an **80-slot register file**; opcodes below 80 are `MOV`, 80 and above dispatch
-- an instruction set of SHA-256 compression, string building and branches — plus
-  a probe that walks stubbed globals to prove the environment looks like a
-  browser
-- output: `"9:" + big-endian u32 seconds + 12 bytes`
-
-This crate re-implements **the machine and the same program** rather than
-guessing at "the algorithm". That makes it exact by construction, and much
-faster:
-
-| | TypeScript (bun) | Rust |
-| --- | --- | --- |
-| one signature | 200–500 ms (occasionally 123 s) | **~0.2 ms** |
-| decrypt a 14.8 MB `.hax` | 0.80 s | **0.19 s** |
-
-Correctness is pinned against the real thing: golden vectors captured from the
-reference signer over a corpus covering SHA-256 padding boundaries, non-ASCII
-input and JSON escaping, plus a differential trace of all 1570 VM instructions.
-Validated end-to-end against the live API (899-segment track → valid 14.8 MB
-AAC/MP4).
+This is the Rust implementation and the current `main` branch. The original TypeScript npm package is
+frozen on the `legacy` branch, kept only for its browser/MSE playback path, which has no Rust
+equivalent. See [docs/MIGRATION.md](docs/MIGRATION.md) for how the two map to each other.
 
 ## Install
 
-Prebuilt binaries are attached to each
-[GitHub release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases):
+### 1. Download
 
-| Platform | Architecture |
+Open the [latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest) and
+download the archive that matches your system. The target name is part of the file name.
+
+| Your system | Look for |
 | --- | --- |
-| Linux | x86-64, ARM64 — glibc, and static musl builds |
-| macOS | Intel, Apple Silicon |
-| Windows | x86-64 (MSVC and MinGW), ARM64 |
-| Android / Termux | ARM64, x86-64 |
+| Linux, 64-bit Intel/AMD | `x86_64-unknown-linux-gnu` |
+| Linux, ARM64 (Raspberry Pi, ARM servers) | `aarch64-unknown-linux-gnu` |
+| Linux, minimal or container (static) | `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` |
+| macOS, Apple Silicon (M1 and later) | `aarch64-apple-darwin` |
+| macOS, Intel | `x86_64-apple-darwin` |
+| Windows, 64-bit Intel/AMD | `x86_64-pc-windows-msvc` (or `-gnu` for MinGW) |
+| Windows, ARM64 | `aarch64-pc-windows-msvc` |
+| Android (Termux), most phones | `aarch64-linux-android` |
+| Android (Termux), x86-64 | `x86_64-linux-android` |
+
+Linux, macOS and Android archives are `.tar.gz`. Windows archives are `.zip`. Files are named
+`hotaudio-download-v1.0.0-<target>`, followed by the extension.
+
+Not sure which one you need? On Linux and macOS run `uname -m`: `x86_64` means Intel/AMD, `aarch64` or
+`arm64` means ARM.
+
+Each release also includes `SHA256SUMS.txt` if you want to verify the download.
+
+### 2. Extract and run
+
+**Linux and macOS**
 
 ```bash
-tar xzf hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
-cd hotaudio-download-v1.0.0-x86_64-unknown-linux-gnu
+tar xzf hotaudio-download-v1.0.0-<target>.tar.gz
+cd hotaudio-download-v1.0.0-<target>
 chmod +x hotaudio-download
-./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
+./hotaudio-download "https://hotaudio.net/u/user/track-slug"
 ```
 
-The musl builds are statically linked and run on minimal hosts and in scratch
-containers. The Android builds run directly in [Termux](https://termux.dev) on
-API 24 or newer — take `aarch64-linux-android` on essentially any phone.
+**Termux (Android)** uses the same commands. Install `tar` first if it is missing (`pkg install tar`).
+Android builds need API 24 or newer.
 
-Each release also ships a `SHA256SUMS.txt` to verify the downloads.
+**Windows**
 
-Or build from source:
+The `.zip` contains only `hotaudio-download.exe`. Extract it (right-click → Extract All), open a terminal in that folder, then run:
+
+```powershell
+.\hotaudio-download.exe "https://hotaudio.net/u/user/track-slug"
+```
+
+### 3. (Optional) Run it from anywhere
+
+Put the binary somewhere on your `PATH`.
+
+```bash
+# Linux and macOS
+mkdir -p ~/.local/bin
+cp hotaudio-download ~/.local/bin/
+
+# Termux
+cp hotaudio-download $PREFIX/bin/
+```
+
+On Windows, move `hotaudio-download.exe` to a folder of your choice and add that folder to your `PATH`
+in System Settings → Environment Variables.
+
+After that, `hotaudio-download` works from any directory.
+
+> [!TIP]
+> - Add `--out <name>.m4a` if you want to choose the output file name or location.
+> - On macOS, if Gatekeeper blocks the binary, clear the quarantine flag with
+>   `xattr -d com.apple.quarantine hotaudio-download`.
+
+### Build from source
+
+Requires stable Rust (edition 2024, MSRV 1.85).
 
 ```bash
 git clone https://github.com/dawn-used-yeet-alt/hotaudio-extractor
 cd hotaudio-extractor
-cargo build --release        # -> target/release/hotaudio-download
+cargo build --release   # -> target/release/hotaudio-download
 ```
-
-Requires stable Rust (edition 2024, MSRV 1.85 — CI checks against it). Runtime
-dependencies are the RustCrypto crates plus `ureq`; there is no bundled
-JavaScript engine, because the signer is native.
-
-The crate is `hotaudio-rs`, with its library importable as `hotaudio`. It is not
-published to crates.io (`publish = false`); the release binaries are the
-distribution channel.
 
 ## Usage
 
 ```bash
-# Download + decrypt a track
-hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
+# Download and decrypt a track
+hotaudio-download "https://hotaudio.net/u/user/track-slug"
 
-# Stream: low memory, first playable fragment after one round trip
-hotaudio-download https://hotaudio.net/u/user/track-slug --stream-to track.m4a
+# Choose the output file name
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --out track.m4a
 
-# Save branch keys for later offline use
-hotaudio-download https://hotaudio.net/u/user/track-slug --save-keys keys.json
+# Stream to disk: low memory, first playable fragment after one round trip
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --stream-to track.m4a
 
-# Cached re-download: no page fetch, no listen calls
+# Save branch keys for later
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --save-keys keys.json
+
+# Re-download from saved keys: no page fetch, no listen calls
 hotaudio-download --keys keys.json --out track.m4a
 
-# Fully offline decrypt of a local .hax
+# Decrypt a local .hax file offline
 hotaudio-download --hax audio.hax --keys keys.json --out track.m4a
 
 # List tracks on a page
-hotaudio-download https://hotaudio.net/u/user/track-slug --list-tracks
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --list-tracks
 ```
 
-Branch keys are deterministic per track and `.hax` URLs are stable, so a saved
-envelope re-downloads a track with zero page/listen requests.
+> [!TIP]
+> Branch keys are deterministic per track and `.hax` URLs are stable, so a saved keys file is enough to
+> re-download a track without contacting the page or listen endpoints.
+
+## Notes
+
+> [!WARNING]
+> - **The signer is pinned to one build of the upstream player.** If hotaudio.net changes its player,
+>   downloads can fail until this project is updated. Check the releases page for a newer version, or
+>   open an issue.
+>
+> - This tool depends on site internals, so it can break when they change.
+>   [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is slower but more stable.
 
 ## Library
+
+The crate is `hotaudio-rs` with the library name `hotaudio`. It is not published to crates.io; release
+binaries are the distribution channel.
 
 ```rust
 use hotaudio::{download, http};
@@ -123,92 +154,38 @@ std::fs::write("track.m4a", result.audio)?;
 
 | Module | Responsibility |
 | --- | --- |
-| [`signer`](src/signer) | the signature VM — [`bytecode.rs`](src/signer/bytecode.rs) is generated, [`env.rs`](src/signer/env.rs) is the environment fingerprint, [`vm.rs`](src/signer/vm.rs) is the machine |
+| [`signer`](src/signer) | Signature VM (`bytecode.rs` is generated, `env.rs` is the environment fingerprint, `vm.rs` is the machine) |
 | [`crypto`](src/crypto.rs) | SHA-256, X25519, ChaCha20-Poly1305, hex/base64 |
-| [`hax`](src/hax.rs) | bencode, HAX0 header, segment key tree |
+| [`hax`](src/hax.rs) | Bencode, HAX0 header, segment key tree |
 | [`range`](src/range.rs) | HTTP `Range` reads, header probe, streaming decrypt |
-| [`listen`](src/listen.rs) | page handshake and the encrypted listen API |
-| [`http`](src/http.rs) | agents and retry policy |
-| [`download`](src/download.rs) | pipeline, key paging, saved-keys envelope |
+| [`listen`](src/listen.rs) | Page handshake and the encrypted listen API |
+| [`http`](src/http.rs) | Agents and retry policy |
+| [`download`](src/download.rs) | Pipeline, key paging, saved-keys envelope |
 
-## Tests
-
-```bash
-cargo test
-```
-
-Offline; no network required.
-
-| Suite | Covers |
-| --- | --- |
-| [`tests/signer_parity.rs`](tests/signer_parity.rs) | golden vectors from the reference signer, plus signature shape and clock semantics |
-| [`tests/hax_roundtrip.rs`](tests/hax_roundtrip.rs) | container round-trip, corruption, wrong keys |
-| [`tests/key_tree.rs`](tests/key_tree.rs) | derivation against 150 branch keys from a real 899-segment track |
-| [`tests/http_resume.rs`](tests/http_resume.rs) | resumable transfer, and the "mirror ignores `Range`" fallback |
-| unit tests in [`src/`](src) | bencode, URL parsing, tree geometry, escaping |
-
-Live checks are explicit, manual, and never run in CI:
+## Development
 
 ```bash
-bun scripts/verify-live.ts          # names the failing stage
+cargo test                    # offline, no network required
+bun scripts/verify-live.ts    # manual live check; names the failing stage
 ```
 
-## When the site changes
-
-The signer is pinned to one upstream player build. `bytecode.rs`, `env.rs` and
-the mirrored values in `scripts/shim.ts` move together:
-
-```bash
-bun scripts/verify-live.ts      # names the failing stage
-bun scripts/recapture.ts        # regenerate src/signer/bytecode.rs
-$EDITOR src/signer/env.rs       # PINNED_NOZZLE_VERSION + ENV_HASHES
-$EDITOR scripts/shim.ts         # the same two values, for the reference sandbox
-bun scripts/verify-live.ts      # the server is the authority
-bun scripts/gen-golden.ts       # then regenerate parity vectors
-cargo test
-```
-
-[docs/MAINTENANCE.md](docs/MAINTENANCE.md) is the full runbook, including a
-symptom-to-cause table and the opcode-semantics gotchas that cost the most
-debugging time during the original port.
-
-The tooling is self-contained: it needs only [`vendor/nozzle.js`](vendor) and
-[`scripts/shim.ts`](scripts/shim.ts), both vendored here. It does not require the
-TypeScript implementation.
+> [!NOTE]
+> After a site change, `bytecode.rs`, `env.rs` and the mirrored values in `scripts/shim.ts` must be
+> updated together. The full procedure, a symptom-to-cause table and the opcode-semantics pitfalls are in
+> [docs/MAINTENANCE.md](docs/MAINTENANCE.md).
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how it fits together
-- [docs/PROTOCOL.md](docs/PROTOCOL.md) — the wire protocol and the signature VM
-- [docs/MAINTENANCE.md](docs/MAINTENANCE.md) — diagnosing and re-capturing
-- [docs/MIGRATION.md](docs/MIGRATION.md) — moving from the TypeScript version
-- `legacy` branch — the TypeScript npm package and its `docs/`
-
-## Operational notes
-
-These are deliberate decisions, not oversights. The measurements behind them are
-recorded in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#reliability) so they do
-not get re-litigated.
-
-- **User agent** stays the bare `Mozilla/5.0`; Cloudflare returns 403 for Chrome
-  user agents on the track page and listen endpoint. It is deliberately not
-  configurable — a configurable one would break the extractor, so the option was
-  misleading.
-- **Concurrency** is intentionally sequential: the server serialises per track,
-  so concurrency adds load without reducing wall time. Parallel `Range` requests
-  were measured and lost (6.3 MB/s on one connection vs 2.38 MB/s on sixteen).
-- **Retries**: page, listen and range reads retry 3× with backoff. The bulk
-  `.hax` transfer resumes via `Range` instead of restarting, and has no global
-  timeout because large containers legitimately take minutes.
-- **Stability**: fast and dependency-light, but it tracks site internals. For a
-  slower, more stable alternative see
-  [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader).
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it fits together
+- [docs/PROTOCOL.md](docs/PROTOCOL.md): the wire protocol and the signature VM
+- [docs/MAINTENANCE.md](docs/MAINTENANCE.md): diagnosing and re-capturing
+- [docs/MIGRATION.md](docs/MIGRATION.md): moving from the TypeScript version
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Agent guidance is in [AGENTS.md](AGENTS.md);
-user-visible changes go under `CHANGELOG.md` → `Unreleased`.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Agent guidance is in [AGENTS.md](AGENTS.md). User-visible
+changes go under `CHANGELOG.md` → `Unreleased`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
