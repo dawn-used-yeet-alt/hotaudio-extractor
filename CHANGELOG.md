@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-12
+
+The browser build. One implementation, two transports: the pipeline is `async`
+at the I/O boundary, so the same code drives blocking `ureq` natively and
+`fetch` on `wasm32-unknown-unknown`. `crypto`/`hax`/`signer` stay synchronous and
+cfg-free, which keeps the browser a second *transport* rather than a second
+implementation of the protocol, and keeps the CPU-bound half identical on both.
+
+Native behaviour and performance are unchanged, and verified so: an 899-segment
+download produces the same valid 14.7 MB MP4, and a cached re-download is
+byte-identical to it.
+
 ### Added
 
 - **Browser/wasm build** (`wasm32-unknown-unknown`). The same pipeline now runs
@@ -20,17 +32,27 @@ All notable changes to this project are documented here. Format follows
 - `docs/BROWSER.md`: the browser build end to end — MediaSource playback, the
   proxy contract with the CORS and `User-Agent` measurements behind it, Capacitor
   integration, and troubleshooting.
+- A CI job that builds, clippy-checks and *runs* the browser test suite, and a
+  throughput guard for the decrypt path.
 
 ### Changed
 
 - **The pipeline is `async` at the I/O boundary.** `listen`, `range`, `download`
-  and `http` entry points return futures. Native behaviour and performance are
-  unchanged — the transport blocks, so a native future never suspends and
-  `hotaudio::block_on` is a single poll. `download_streaming` takes an
+  and `http` entry points return futures. On native nothing ever suspends, so
+  `hotaudio::block_on` is a single poll and costs nothing; it panics rather than
+  hangs if a future ever does suspend. `download_streaming` takes an
   `on_fragment` callback instead of a `&mut Write`, which is what enables MSE.
 - `http::api_agent()`/`bulk_agent()` become `http::Client::api()`/`.bulk()`.
 - Tests carry both `#[test]` and `#[wasm_bindgen_test]` attributes and run on both
-  targets from one body; CI gained a wasm job.
+  targets from one body, so a browser/CLI divergence fails CI rather than
+  surfacing later. 52 tests run on wasm, 59 native.
+
+### Notes
+
+- A browser needs a same-origin proxy in front: hotaudio.net sends no
+  `Access-Control-Allow-Origin`, refuses the cross-origin preflight, and returns
+  403 for the user agent a browser is forced to send. This project does not ship
+  a proxy — see `docs/BROWSER.md`.
 
 ## [1.0.0] - 2026-10-07
 
@@ -109,6 +131,7 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v1.0.0
 [0.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v0.1.0

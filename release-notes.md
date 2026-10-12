@@ -83,6 +83,22 @@ hotaudio-download https://hotaudio.net/u/user/track-slug --list-tracks
 
 Run `hotaudio-download --help` for every flag.
 
+## Library and browser build
+
+The crate is also usable as a library, and as of 1.1.0 it builds for
+`wasm32-unknown-unknown` with a `wasm-bindgen` API. Segments are handed to a
+callback as they decrypt, so a page can append them to a `MediaSource` and start
+playing after one round trip.
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/hotaudio.wasm
+```
+
+A browser needs a same-origin proxy in front, and this project does not ship one;
+see [docs/BROWSER.md](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/BROWSER.md)
+for the checklist and worked examples.
+
 > **Please respect creators.** This is an interoperability and personal-archiving
 > tool. Download only content you have the right to access, and comply with
 > hotaudio.net's terms of service and applicable law.
