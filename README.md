@@ -7,8 +7,7 @@
 > and [MIGRATION.md](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/MIGRATION.md)
 > for the mapping between the two APIs.
 >
-> Staying here is only worthwhile if you need in-browser Media Source Extensions
-> playback, which the Rust crate does not provide.
+> Staying here is only useless. Don't be here. Be on the main branch.
 
 Standalone [hotaudio.net](https://hotaudio.net) audio extractor with no application dependencies. It performs the track page handshake, request signing, X25519 listen key exchange, and HAX0 container decryption. Works in browsers, Node.js, Bun, and workers.
 
