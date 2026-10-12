@@ -11,13 +11,6 @@ A command-line audio extractor for <a href="https://hotaudio.net">hotaudio.net</
 > Download only content you have the right to access, and comply with hotaudio.net's terms of
 > service and applicable law. You are responsible for how you use it.
 
-## Status
-
-This is the Rust implementation and the current `main` branch. The original TypeScript npm package is
-frozen on the `legacy` branch, kept only for its browser/MSE playback path, which now has a Rust
-equivalent in [`src/wasm.rs`](src/wasm.rs) — see [Browser / wasm](#browser--wasm) below. See
-[docs/MIGRATION.md](docs/MIGRATION.md) for how the two map to each other.
-
 ## Install
 
 ### 1. Download
