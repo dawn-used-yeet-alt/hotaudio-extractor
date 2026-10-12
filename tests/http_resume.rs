@@ -6,15 +6,19 @@
 //! buffer must be byte-identical to an uninterrupted transfer.
 //!
 //! A minimal TCP server stands in for the CDN so the failure modes (mid-body
-//! close, server ignoring `Range`) are reproducible offline.
+//! close, server ignoring `Range`) are reproducible offline. That makes this
+//! suite native-only: the browser transport has no sockets to stand up here,
+//! and `wasm32` cannot open a listener at all.
+
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
-use hotaudio::http;
+use hotaudio::block_on;
+use hotaudio::http::{self, Client};
 
 /// Position-dependent body content, so a dropped, reordered or duplicated byte
 /// is detectable rather than silently absorbed.
@@ -54,11 +58,9 @@ fn bind() -> TcpListener {
     TcpListener::bind("127.0.0.1:0").expect("bind loopback")
 }
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .build()
-        .into()
+/// A client with a per-attempt timeout, standing in for the bulk client.
+fn client() -> Client {
+    Client::with_timeout_ms(Some(20_000))
 }
 
 #[test]
@@ -108,8 +110,13 @@ fn resumes_after_a_mid_body_disconnect() {
         })
     };
 
-    let resp = http::get_resumable(&agent(), &format!("http://{addr}/x"), &[], |_, _| {})
-        .expect("resumable fetch should recover");
+    let resp = block_on(http::Client::get_resumable(
+        &client(),
+        &format!("http://{addr}/x"),
+        &[],
+        |_, _| {},
+    ))
+    .expect("resumable fetch should recover");
     server.join().expect("server thread");
 
     assert_eq!(
@@ -160,8 +167,13 @@ fn discards_the_partial_buffer_when_the_server_ignores_range() {
         })
     };
 
-    let resp = http::get_resumable(&agent(), &format!("http://{addr}/y"), &[], |_, _| {})
-        .expect("fetch should recover");
+    let resp = block_on(http::Client::get_resumable(
+        &client(),
+        &format!("http://{addr}/y"),
+        &[],
+        |_, _| {},
+    ))
+    .expect("fetch should recover");
     server.join().expect("server thread");
 
     assert_eq!(
@@ -194,15 +206,13 @@ fn reports_progress_monotonically() {
 
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = seen.clone();
-    let resp = http::get_resumable(
-        &agent(),
-        &format!("http://{addr}/z"),
-        &[],
-        move |loaded, total| {
-            sink.lock().expect("lock").push((loaded, total));
-        },
-    )
-    .expect("fetch");
+    let resp =
+        block_on(
+            client().get_resumable(&format!("http://{addr}/z"), &[], move |loaded, total| {
+                sink.lock().expect("lock").push((loaded, total));
+            }),
+        )
+        .expect("fetch");
     server.join().expect("server thread");
 
     assert_eq!(resp.body, body);

@@ -19,27 +19,36 @@ use std::io::Write;
 
 use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyTree};
-use crate::http;
+use crate::http::Client;
 
 /// How to fetch byte ranges.
+///
+/// `async` because a `RangeSource` may be backed by the browser's `fetch`,
+/// which cannot be blocked on. The trait is deliberately not object-safe, so
+/// take it by `impl` rather than `&dyn`.
+///
+/// `Send` is not required and is not offered: the browser transport holds JS
+/// values, which are not `Send`, and requiring it would rule out both a future
+/// that must not outlive its thread and the browser build itself.
+#[allow(async_fn_in_trait)]
 pub trait RangeSource {
     /// Fetch `start..=end`. Implementations must honour the range, or return
     /// the whole body with `from_slice` applied by the caller.
-    fn range(&self, start: u64, end: u64) -> Result<Vec<u8>>;
+    async fn range(&self, start: u64, end: u64) -> Result<Vec<u8>>;
 }
 
 /// [`RangeSource`] over HTTP.
 pub struct HttpRangeSource<'a> {
-    agent: &'a ureq::Agent,
+    client: &'a Client,
     url: String,
     /// Body length, filled in by the first range read.
     pub file_length: u64,
 }
 
 impl<'a> HttpRangeSource<'a> {
-    pub fn new(agent: &'a ureq::Agent, url: &str) -> Self {
+    pub fn new(client: &'a Client, url: &str) -> Self {
         Self {
-            agent,
+            client,
             url: url.to_string(),
             file_length: 0,
         }
@@ -53,17 +62,19 @@ impl<'a> HttpRangeSource<'a> {
 }
 
 impl RangeSource for HttpRangeSource<'_> {
-    fn range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
-        let res = http::request(
-            self.agent,
-            "GET",
-            &self.url,
-            &[
-                ("User-Agent", crate::HOTAUDIO_UA),
-                ("Range", &format!("bytes={start}-{end}")),
-            ],
-            None,
-        )?;
+    async fn range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
+        let res = self
+            .client
+            .request(
+                "GET",
+                &self.url,
+                &[
+                    ("User-Agent", crate::HOTAUDIO_UA),
+                    ("Range", &format!("bytes={start}-{end}")),
+                ],
+                None,
+            )
+            .await?;
         match res.status {
             // Honour the range.
             206 => Ok(res.body),
@@ -86,8 +97,8 @@ impl RangeSource for HttpRangeSource<'_> {
 /// Validates the magic and that `header_length` is a plausible fraction of
 /// `file_length`, so a truncated or wrong-object response fails loudly instead
 /// of producing a bogus segment table.
-pub fn probe_header(source: &dyn RangeSource) -> Result<(u64, u32)> {
-    let head = source.range(0, 15)?;
+pub async fn probe_header(source: &impl RangeSource) -> Result<(u64, u32)> {
+    let head = source.range(0, 15).await?;
     if head.len() < 16 {
         return Err(Error::Protocol("short .hax prefix".into()));
     }
@@ -105,9 +116,9 @@ pub fn probe_header(source: &dyn RangeSource) -> Result<(u64, u32)> {
 }
 
 /// Fetch and parse just the container header.
-pub fn read_header(source: &dyn RangeSource) -> Result<Hax0> {
-    let (_, header_length) = probe_header(source)?;
-    let header = source.range(0, (header_length - 1) as u64)?;
+pub async fn read_header(source: &impl RangeSource) -> Result<Hax0> {
+    let (_, header_length) = probe_header(source).await?;
+    let header = source.range(0, (header_length - 1) as u64).await?;
     Hax0::parse(&header)
 }
 
@@ -117,8 +128,8 @@ pub fn read_header(source: &dyn RangeSource) -> Result<Hax0> {
 /// error aborts. Key paging is the caller's job: pass a `keys` map that already
 /// covers every segment (see [`crate::download::decrypt_container`] for the
 /// miss-driven paging policy).
-pub fn decrypt_streaming(
-    source: &dyn RangeSource,
+pub async fn decrypt_streaming(
+    source: &impl RangeSource,
     hax: &Hax0,
     keys: &crate::crypto::KeyMap,
     mut on_segment: impl FnMut(usize, &[u8]) -> Result<()>,
@@ -132,7 +143,7 @@ pub fn decrypt_streaming(
             .map_err(|_| Error::Protocol(format!("saved keys do not cover segment {i}")))?;
 
         let (start, end) = hax.slice_range(i);
-        let slice = source.range(start as u64, (end - 1) as u64)?;
+        let slice = source.range(start as u64, (end - 1) as u64).await?;
         if slice.len() != end - start {
             return Err(Error::Protocol(format!(
                 "segment {i}: expected {} bytes, got {}",
@@ -148,8 +159,8 @@ pub fn decrypt_streaming(
 
 /// Write decrypted audio straight to a file as segments arrive, avoiding the
 /// full-container buffer.
-pub fn write_to_file(
-    source: &dyn RangeSource,
+pub async fn write_to_file(
+    source: &impl RangeSource,
     hax: &Hax0,
     keys: &crate::crypto::KeyMap,
     out: &mut impl Write,
@@ -164,7 +175,7 @@ pub fn write_to_file(
             .derive(keys, i as u32, &mut cache)
             .map_err(|_| Error::Protocol(format!("saved keys do not cover segment {i}")))?;
         let (start, end) = hax.slice_range(i);
-        let slice = source.range(start as u64, (end - 1) as u64)?;
+        let slice = source.range(start as u64, (end - 1) as u64).await?;
         let plain = crypto::open_zero(&key, &slice)?;
         out.write_all(&plain)
             .map_err(|e| Error::Http(e.to_string()))?;
@@ -233,7 +244,7 @@ mod tests {
     }
 
     impl RangeSource for MemoryRange {
-        fn range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
+        async fn range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
             let s = start as usize;
             let e = ((end + 1) as usize).min(self.data.len());
             Ok(self.data[s..e].to_vec())
@@ -247,56 +258,53 @@ mod tests {
     }
 
     impl RangeSource for IgnoresRange {
-        fn range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
+        async fn range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
             Ok(self.data.clone())
         }
     }
 
-    #[test]
-    fn reads_header_from_a_range_source() {
+    async_test!(reads_header_from_a_range_source {
         let data = container(3);
         let src = MemoryRange { data: data.clone() };
-        let (file_length, header_length) = probe_header(&src).unwrap();
+        let (file_length, header_length) = probe_header(&src).await.unwrap();
         assert_eq!(file_length as usize, data.len());
         assert!(header_length >= 16 && (header_length as u64) <= file_length);
 
-        let hax = read_header(&src).unwrap();
+        let hax = read_header(&src).await.unwrap();
         assert_eq!(hax.segment_count, 3);
         assert_eq!(hax.codec, "mp4a.40.2");
         assert_eq!(hax.duration_ms, 1000);
         assert_eq!(hax.segments.len(), 3);
         assert_eq!(hax.segments[1].pts, 1000);
-    }
+    });
 
-    #[test]
-    fn tolerates_a_mirror_that_ignores_range() {
+    async_test!(tolerates_a_mirror_that_ignores_range {
         let src = IgnoresRange { data: container(3) };
-        let hax = read_header(&src).unwrap();
+        let hax = read_header(&src).await.unwrap();
         assert_eq!(hax.segment_count, 3);
-    }
+    });
 
-    #[test]
-    fn probe_rejects_a_non_container() {
+    async_test!(probe_rejects_a_non_container {
         let src = MemoryRange {
             data: b"NOTAHAX0___________".to_vec(),
         };
-        assert!(probe_header(&src).is_err());
-    }
+        assert!(probe_header(&src).await.is_err());
+    });
 
-    #[test]
-    fn probe_rejects_an_implausible_header_length() {
+    async_test!(probe_rejects_an_implausible_header_length {
         let mut data = container(2);
         data[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         let src = MemoryRange { data };
-        assert!(probe_header(&src).is_err());
-    }
+        assert!(probe_header(&src).await.is_err());
+    });
 
-    #[test]
-    fn streaming_reports_missing_keys_rather_than_guessing() {
+    async_test!(streaming_reports_missing_keys_rather_than_guessing {
         let data = container(2);
         let src = MemoryRange { data };
-        let hax = read_header(&src).unwrap();
-        let err = decrypt_streaming(&src, &hax, &crypto::KeyMap::new(), |_, _| Ok(())).unwrap_err();
+        let hax = read_header(&src).await.unwrap();
+        let err = decrypt_streaming(&src, &hax, &crypto::KeyMap::new(), |_, _| Ok(()))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("segment 0"), "got {err}");
-    }
+    });
 }

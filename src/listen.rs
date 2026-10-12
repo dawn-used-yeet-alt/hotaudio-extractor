@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::crypto::{self, Error, Result};
-use crate::http::{self, FullResponse};
+use crate::http::{Client, FullResponse};
 use crate::signer;
 
 /// Vendor content type for encrypted listen request and response bodies.
@@ -180,14 +180,10 @@ fn percent_encode(s: &str) -> String {
 }
 
 /// Fetch the track page and build a handshake.
-pub fn load_handshake(agent: &ureq::Agent, page_url: &str, api_base: &str) -> Result<Handshake> {
-    let resp = http::request(
-        agent,
-        "GET",
-        page_url,
-        &[("User-Agent", crate::HOTAUDIO_UA)],
-        None,
-    )?;
+pub async fn load_handshake(client: &Client, page_url: &str, api_base: &str) -> Result<Handshake> {
+    let resp = client
+        .request("GET", page_url, &[("User-Agent", crate::HOTAUDIO_UA)], None)
+        .await?;
     if !(200..300).contains(&resp.status) {
         return Err(Error::Http(format!("track page returned {}", resp.status)));
     }
@@ -236,7 +232,7 @@ pub fn hax_url_for_key(track_key: &str) -> String {
 ///
 /// `first` is `-1` for the initial call (returns the `.hax` URL), or a segment
 /// index to page additional key branches for long tracks.
-pub fn listen(agent: &ureq::Agent, hs: &Handshake, first: i64) -> Result<ListenResponse> {
+pub async fn listen(client: &Client, hs: &Handshake, first: i64) -> Result<ListenResponse> {
     // Field order matters: the server validates the signature over exactly
     // this string, so it must match the player's `JSON.stringify` order.
     let payload = format!(
@@ -268,7 +264,7 @@ pub fn listen(agent: &ureq::Agent, hs: &Handshake, first: i64) -> Result<ListenR
         ("Origin", "https://hotaudio.net"),
         ("Referer", "https://hotaudio.net/"),
     ];
-    let resp: FullResponse = http::request(agent, "POST", &url, &headers, Some(&body))?;
+    let resp: FullResponse = client.request("POST", &url, &headers, Some(&body)).await?;
 
     if !(200..300).contains(&resp.status) {
         let snippet = String::from_utf8_lossy(&resp.body);
@@ -351,14 +347,16 @@ pub fn keys_to_map(keys: &HashMap<String, String>) -> crypto::KeyMap {
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn extracts_ha_state() {
         let html = r#"<script>var __ha_state = "abc123";</script>"#;
         assert_eq!(extract_ha_state(html).as_deref(), Some("abc123"));
         assert_eq!(extract_ha_state("<html></html>"), None);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn extracts_listen_key() {
         assert_eq!(
             extract_listen_key("https://hotaudio.net/u/a/b?key=secret123").as_deref(),
@@ -371,7 +369,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn json_string_escapes_like_json_stringify() {
         assert_eq!(json_string("abc"), "\"abc\"");
         assert_eq!(json_string("a\"b"), "\"a\\\"b\"");
@@ -379,7 +378,8 @@ mod tests {
         assert_eq!(json_string("a\nb"), "\"a\\nb\"");
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn hax_url_is_cdn_derived() {
         assert_eq!(
             hax_url_for_key("abc123"),

@@ -42,6 +42,38 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Test
         run: cargo test --locked
+      # The decrypt path is the crate's performance claim, and the wasm
+      # transport work could have pushed a copy or an await into it without any
+      # test failing. The timing assertion only exists in optimised builds.
+      - name: Perf guard
+        run: cargo test --release --locked --test perf_guard
+
+  # The browser build is the same pipeline over the `fetch` transport, so it is
+  # held to the same bar: clippy-clean, and the same tests actually executed in
+  # a browser rather than merely compiled.
+  wasm:
+    name: wasm (browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # Same reasoning as the MSRV check above: the installed toolchain is newer
+      # than the floor, so a bare `cargo` cannot catch a feature gated after 1.85.
+      - name: Check MSRV
+        run: |
+          rustup toolchain install 1.85 --profile minimal
+          cargo +1.85 check --locked --target wasm32-unknown-unknown --lib
+      - name: Clippy
+        run: cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
+      # `wasm32-unknown-unknown` binaries cannot be exec'd; this runner executes
+      # them through `wasm-bindgen`, which is what a page does.
+      - name: Test
+        run: cargo test --locked --target wasm32-unknown-unknown
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
 
   # `scripts/` are Bun scripts for the signer-recovery toolchain. They need no
   # dependencies to parse; `verify-live.ts` needs @noble/ciphers only to run

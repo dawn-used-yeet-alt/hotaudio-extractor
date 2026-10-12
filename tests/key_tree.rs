@@ -33,14 +33,16 @@ fn load() -> (HashMap<u32, [u8; 32]>, u32) {
     (keys, env.segment_count.unwrap_or(899))
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn envelope_loads() {
     let (keys, count) = load();
     assert!(!keys.is_empty(), "saved keys are empty");
     assert_eq!(count, 899);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn every_segment_is_covered_by_the_saved_branches() {
     let (keys, count) = load();
     let tree = KeyTree::new(count);
@@ -53,7 +55,8 @@ fn every_segment_is_covered_by_the_saved_branches() {
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn derivation_is_deterministic_and_cache_consistent() {
     let (keys, count) = load();
     let tree = KeyTree::new(count);
@@ -68,7 +71,8 @@ fn derivation_is_deterministic_and_cache_consistent() {
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn out_of_order_derivation_agrees() {
     let (keys, count) = load();
     let tree = KeyTree::new(count);
@@ -86,7 +90,8 @@ fn out_of_order_derivation_agrees() {
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn missing_branch_reports_the_leaf_index() {
     // Drop every branch: nothing above the leaves remains.
     let (_, count) = load();
@@ -97,7 +102,8 @@ fn missing_branch_reports_the_leaf_index() {
     assert_eq!(err, KeyError::Missing { seg_idx: 42 });
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn single_segment_tree_still_derives() {
     let tree = KeyTree::new(1);
     // bit_len(0) = 0 -> tree_base = 1 + (1 << 1) = 3; leaf node 3.
@@ -110,7 +116,8 @@ fn single_segment_tree_still_derives() {
     assert_ne!(key, root, "the leaf key must be derived, not the root");
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn a_branch_ancestor_suffices() {
     // With the full branch set, pruning the root should still let deeper
     // branches cover their subtrees.

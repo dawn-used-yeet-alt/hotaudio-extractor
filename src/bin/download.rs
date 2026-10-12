@@ -5,14 +5,23 @@
 //! decrypts a local `.hax` with saved keys (no network at all).
 //!
 //! Run with `--help` for the full flag list.
+//!
+//! The binary compiles for every target so that a plain `cargo build` never
+//! breaks on one, but only `main` survives on `wasm32`: argv, the filesystem and
+//! a blocking transport do not exist there.
+
+// Everything below `main` is native-only, and `wasm32` builds keep only the
+// stub, so the flags, parsers and helpers are unreachable there.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::ExitCode;
 
+use hotaudio::crypto::Error;
 use hotaudio::download::{self, DownloadOptions, Phase, Progress};
+use hotaudio::http::Client;
 use hotaudio::listen;
-use hotaudio::{crypto::Error, http};
 
 const USAGE: &str = "\
 hotaudio-download — download and decrypt a hotaudio.net track to playable .m4a
@@ -58,6 +67,25 @@ const VALUE_FLAGS: &[&str] = &[
 const BOOL_FLAGS: &[&str] = &["--list-tracks", "--help", "-h"];
 
 fn main() -> ExitCode {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The binary itself builds everywhere so that a bare
+        // `cargo build --target wasm32-unknown-unknown` succeeds; it has no
+        // filesystem, no argv and no blocking transport, so it can only say so.
+        eprintln!(
+            "hotaudio-download is a native binary. On wasm, use the library:\n\
+             see the `wasm` module and the README section on running in a browser."
+        );
+        ExitCode::FAILURE
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    run()
+}
+
+/// Parse arguments and run. The pipeline is `async` so one implementation serves
+/// both transports; natively it never suspends, so driving it is a single poll.
+#[cfg(not(target_arch = "wasm32"))]
+fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -85,7 +113,7 @@ fn main() -> ExitCode {
     let api_base = flag(&args, "--api-base");
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
 
-    match run(Run {
+    match hotaudio::block_on(execute(Run {
         source,
         out,
         stream_to,
@@ -96,7 +124,7 @@ fn main() -> ExitCode {
         track_id,
         api_base,
         list_tracks,
-    }) {
+    })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -118,7 +146,7 @@ struct Run {
     list_tracks: bool,
 }
 
-fn run(r: Run) -> Result<(), Error> {
+async fn execute(r: Run) -> Result<(), Error> {
     // ---- Offline: local .hax + saved keys, no network ----
     if let Some(hax_path) = &r.hax_path {
         let saved = load_keys(&r.keys_path)?;
@@ -144,8 +172,8 @@ fn run(r: Run) -> Result<(), Error> {
             ));
         };
         let tracks = if is_url(source) {
-            let agent = http::api_agent();
-            let resp = http::request(&agent, "GET", source, &[], None)?;
+            let client = Client::api();
+            let resp = client.request("GET", source, &[], None).await?;
             if !resp.ok() {
                 return Err(Error::Http(format!("page returned {}", resp.status)));
             }
@@ -175,8 +203,9 @@ fn run(r: Run) -> Result<(), Error> {
                 "keys file has no .hax URL — pass --hax-url or use online mode".into(),
             ));
         };
-        let agent = http::bulk_agent();
-        let (audio, _, _) = download::download_cached(&agent, &url, &keys, Some(&mut progress))?;
+        let client = Client::bulk();
+        let (audio, _, _) =
+            download::download_cached(&client, &url, &keys, Some(&mut progress)).await?;
         write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
@@ -198,10 +227,10 @@ fn run(r: Run) -> Result<(), Error> {
 
     // ---- Streamed mode: ranged reads, one segment in memory at a time ----
     if let Some(dest) = &r.stream_to {
-        let api = http::api_agent();
+        let api = Client::api();
         let hs = if is_url(&source) {
             let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-            listen::load_handshake(&api, &source, api_base)?
+            listen::load_handshake(&api, &source, api_base).await?
         } else {
             let html = std::fs::read_to_string(&source)
                 .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
@@ -221,14 +250,16 @@ fn run(r: Run) -> Result<(), Error> {
         let res = download::download_streaming(
             &api,
             &hs,
-            &mut writer,
             seed.as_ref(),
+            |fragment| {
+                writer
+                    .write_all(fragment)
+                    .map_err(|e| Error::Http(e.to_string()))
+            },
             Some(&mut progress),
-            Some(&mut || {
-                eprintln!("\rfirst fragment written — file is playable from here");
-            }),
-        )?;
-        std::io::Write::flush(&mut writer).map_err(|e| Error::Http(e.to_string()))?;
+        )
+        .await?;
+        writer.flush().map_err(|e| Error::Http(e.to_string()))?;
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
         write_saved_keys(&r.save_keys, &res.hax_url, title.as_deref(), &res.keys)?;
@@ -240,8 +271,8 @@ fn run(r: Run) -> Result<(), Error> {
     }
 
     let (audio, title, hax_url, keys) = if is_url(&source) {
-        let api = http::api_agent();
-        let bulk = http::bulk_agent();
+        let api = Client::api();
+        let bulk = Client::bulk();
         // Bound the callback before handing it over: `Some(&mut progress)`
         // inline would extend the borrow only to the end of the statement.
         let on_progress = &mut progress;
@@ -251,7 +282,7 @@ fn run(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = download_from_page_split(&api, &bulk, &source, &mut opts)?;
+        let res = download_from_page_split(&api, &bulk, &source, &mut opts).await?;
         (res.audio, res.title, res.hax_url, res.keys)
     } else {
         let html = std::fs::read_to_string(&source)
@@ -260,8 +291,8 @@ fn run(r: Run) -> Result<(), Error> {
         let mut hs = listen::handshake_from_html(&html, api_base, r.track_id.as_deref())?
             .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
         hs.listen_key = listen::extract_listen_key(&source);
-        let api = http::api_agent();
-        let bulk = http::bulk_agent();
+        let api = Client::api();
+        let bulk = Client::bulk();
         let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
@@ -269,7 +300,7 @@ fn run(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = download_with_agents(&api, &bulk, &hs, &mut opts)?;
+        let res = download_with_agents(&api, &bulk, &hs, &mut opts).await?;
         (res.audio, res.title, res.hax_url, res.keys)
     };
 
@@ -281,11 +312,11 @@ fn run(r: Run) -> Result<(), Error> {
     Ok(())
 }
 
-/// Online download that keeps the small API calls on the timeout-bound agent and
+/// Online download that keeps the small API calls on the timeout-bound client and
 /// the bulk `.hax` fetch on the untimed one.
-fn download_from_page_split(
-    api: &ureq::Agent,
-    bulk: &ureq::Agent,
+async fn download_from_page_split(
+    api: &Client,
+    bulk: &Client,
     page_url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<download::Downloaded, Error> {
@@ -297,22 +328,22 @@ fn download_from_page_split(
         });
     }
     let api_base = opts.api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(api, page_url, api_base)?;
-    download_with_agents(api, bulk, &hs, opts)
+    let hs = listen::load_handshake(api, page_url, api_base).await?;
+    download_with_agents(api, bulk, &hs, opts).await
 }
 
-/// Full pipeline with separate API and bulk agents.
-fn download_with_agents(
-    api: &ureq::Agent,
-    bulk: &ureq::Agent,
+/// Full pipeline with separate API and bulk clients.
+async fn download_with_agents(
+    api: &Client,
+    bulk: &Client,
     hs: &listen::Handshake,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<download::Downloaded, Error> {
-    let initial = listen::listen(api, hs, -1)?;
+    let initial = listen::listen(api, hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
-    let resp = http::request(bulk, "GET", &initial.url, &[], None)?;
+    let resp = bulk.request("GET", &initial.url, &[], None).await?;
     if !resp.ok() {
         return Err(Error::Http(format!(".hax fetch returned {}", resp.status)));
     }
@@ -324,7 +355,7 @@ fn download_with_agents(
             total: n,
         });
     }
-    download::decrypt_container(api, hs, &resp.body, &initial, opts)
+    download::decrypt_container(api, hs, &resp.body, &initial, opts).await
 }
 
 /// Progress reporting on stderr.

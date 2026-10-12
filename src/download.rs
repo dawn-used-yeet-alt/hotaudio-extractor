@@ -7,11 +7,10 @@
 //! both wall time and server load.
 
 use std::collections::HashMap;
-use std::io::Write;
 
 use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyError, KeyTree};
-use crate::http;
+use crate::http::Client;
 use crate::listen::{self, Handshake, ListenResponse};
 use crate::range::{self, HttpRangeSource, RangeSource};
 
@@ -63,8 +62,8 @@ pub struct Downloaded {
 }
 
 /// Download a track from its page URL.
-pub fn download_from_page(
-    agent: &ureq::Agent,
+pub async fn download_from_page(
+    client: &Client,
     page_url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Downloaded> {
@@ -76,54 +75,55 @@ pub fn download_from_page(
         });
     }
     let api_base = opts.api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(agent, page_url, api_base)?;
+    let hs = listen::load_handshake(client, page_url, api_base).await?;
     if let Some(id) = opts.track_id {
         // Re-derive the handshake for the requested track.
         if hs.tid != id {
             return Err(Error::Protocol(format!("track {id} not on page")));
         }
     }
-    download_with_handshake(agent, &hs, opts)
+    download_with_handshake(client, &hs, opts).await
 }
 
 /// Download using an existing handshake.
-pub fn download_with_handshake(
-    agent: &ureq::Agent,
+pub async fn download_with_handshake(
+    client: &Client,
     hs: &Handshake,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Downloaded> {
-    let initial = listen::listen(agent, hs, -1)?;
+    let initial = listen::listen(client, hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
 
-    let hax_bytes = fetch_container(agent, &initial.url, opts)?;
-    decrypt_container(agent, hs, &hax_bytes, &initial, opts)
+    let hax_bytes = fetch_container(client, &initial.url, opts).await?;
+    decrypt_container(client, hs, &hax_bytes, &initial, opts).await
 }
 
-/// Fetch the `.hax` container. `agent` should be the untimed bulk agent,
+/// Fetch the `.hax` container. `client` should be the untimed bulk client,
 /// since this is the transfer that legitimately takes minutes.
-pub fn fetch_container(
-    agent: &ureq::Agent,
+pub async fn fetch_container(
+    client: &Client,
     url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Vec<u8>> {
     // Resumable: a dropped transfer continues from the last byte rather than
     // restarting, which matters on slow or lossy paths.
-    let resp = http::get_resumable(
-        agent,
-        url,
-        &[("User-Agent", crate::HOTAUDIO_UA)],
-        |loaded, total| {
-            if let Some(cb) = opts.on_progress.as_mut() {
-                cb(Progress {
-                    phase: Phase::Fetching,
-                    loaded,
-                    total,
-                });
-            }
-        },
-    )?;
+    let resp = client
+        .get_resumable(
+            url,
+            &[("User-Agent", crate::HOTAUDIO_UA)],
+            |loaded, total| {
+                if let Some(cb) = opts.on_progress.as_mut() {
+                    cb(Progress {
+                        phase: Phase::Fetching,
+                        loaded,
+                        total,
+                    });
+                }
+            },
+        )
+        .await?;
     if !(200..300).contains(&resp.status) {
         return Err(Error::Http(format!(".hax fetch returned {}", resp.status)));
     }
@@ -140,10 +140,10 @@ pub fn fetch_container(
 
 /// Decrypt a container, paging key branches as needed.
 ///
-/// `api` is used for key paging (small, latency-bound calls); the container
+/// `client` is used for key paging (small, latency-bound calls); the container
 /// itself is supplied as bytes by the caller.
-pub fn decrypt_container(
-    agent: &ureq::Agent,
+pub async fn decrypt_container(
+    client: &Client,
     hs: &Handshake,
     hax_bytes: &[u8],
     initial: &ListenResponse,
@@ -170,7 +170,7 @@ pub fn decrypt_container(
             Ok(k) => k,
             Err(KeyError::Missing { seg_idx }) => {
                 // Page exactly the missing index.
-                let extra = listen::listen(agent, hs, seg_idx as i64)?;
+                let extra = listen::listen(client, hs, seg_idx as i64).await?;
                 if listen::merge_keys(&mut keys, &extra.keys) == 0 {
                     return Err(Error::Protocol(format!(
                         "no key branch covered segment {seg_idx}"
@@ -213,32 +213,34 @@ pub fn decrypt_container(
 }
 
 /// Streamed download: read the container header over `Range`, then fetch and
-/// decrypt one segment at a time straight into `out`.
+/// decrypt one segment at a time, handing each decrypted fragment to
+/// `on_fragment` as it arrives.
 ///
 /// Peak memory is one segment rather than the whole container, and the first
 /// playable fragment exists after a single round trip instead of after the full
 /// transfer. Key branches are paged on demand exactly as in
 /// [`decrypt_container`].
 ///
-/// `on_first_fragment` is invoked once the first decrypted segment is written,
-/// which is the earliest point at which the output is a valid (if short) MP4.
-pub fn download_streaming(
-    api_agent: &ureq::Agent,
+/// `on_fragment` is called once per segment, in order, which is what makes the
+/// browser build able to append straight to a `MediaSource`: the first call is
+/// the earliest point at which the output is a valid (if short) MP4. Returning
+/// an error aborts the download.
+pub async fn download_streaming(
+    api_client: &Client,
     hs: &Handshake,
-    out: &mut dyn Write,
     initial_keys: Option<&crypto::KeyMap>,
+    mut on_fragment: impl FnMut(&[u8]) -> Result<()>,
     mut on_progress: Option<ProgressFn<'_>>,
-    mut on_first_fragment: Option<&mut dyn FnMut()>,
 ) -> Result<Streamed> {
-    let initial = listen::listen(api_agent, hs, -1)?;
+    let initial = listen::listen(api_client, hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
 
-    // Small ranged reads belong on the timeout-bound agent.
-    let mut source = HttpRangeSource::new(api_agent, &initial.url);
-    let (file_length, _) = range::probe_header(&source)?;
-    let hax = range::read_header(&source)?;
+    // Small ranged reads belong on the timeout-bound client.
+    let mut source = HttpRangeSource::new(api_client, &initial.url);
+    let (file_length, _) = range::probe_header(&source).await?;
+    let hax = range::read_header(&source).await?;
     source.set_file_length(file_length);
 
     let tree = KeyTree::new(hax.segment_count.max(1));
@@ -257,7 +259,7 @@ pub fn download_streaming(
         let key = match tree.derive(&keys, i as u32, &mut cache) {
             Ok(k) => k,
             Err(KeyError::Missing { seg_idx }) => {
-                let extra = listen::listen(api_agent, hs, seg_idx as i64)?;
+                let extra = listen::listen(api_client, hs, seg_idx as i64).await?;
                 if listen::merge_keys(&mut keys, &extra.keys) == 0 {
                     return Err(Error::Protocol(format!(
                         "no key branch covered segment {seg_idx}"
@@ -272,7 +274,7 @@ pub fn download_streaming(
         };
 
         let (start, end) = hax.slice_range(i);
-        let slice = source.range(start as u64, (end - 1) as u64)?;
+        let slice = source.range(start as u64, (end - 1) as u64).await?;
         if slice.len() != end - start {
             return Err(Error::Protocol(format!(
                 "segment {i}: expected {} bytes, got {}",
@@ -281,14 +283,8 @@ pub fn download_streaming(
             )));
         }
         let plain = crypto::open_zero(&key, &slice)?;
-        out.write_all(&plain)
-            .map_err(|e| Error::Http(e.to_string()))?;
+        on_fragment(&plain)?;
         written += plain.len() as u64;
-        if i == 0 {
-            if let Some(cb) = on_first_fragment.as_mut() {
-                cb();
-            }
-        }
 
         if let Some(cb) = on_progress.as_mut() {
             if (i & 15) == 15 || i + 1 == hax.segment_count as usize {
@@ -364,14 +360,14 @@ pub fn decrypt_offline(
 
 /// Fetch a `.hax` container by URL and decrypt it with saved keys (no page
 /// fetch, no listen calls).
-pub fn download_cached(
-    agent: &ureq::Agent,
+pub async fn download_cached(
+    client: &Client,
     hax_url: &str,
     all_keys: &crypto::KeyMap,
     on_progress: Option<ProgressFn<'_>>,
 ) -> Result<(Vec<u8>, u32, f64)> {
     let mut opts = DownloadOptions::default();
-    let bytes = fetch_container(agent, hax_url, &mut opts)?;
+    let bytes = fetch_container(client, hax_url, &mut opts).await?;
     decrypt_offline(&bytes, all_keys, on_progress)
 }
 
@@ -387,14 +383,14 @@ pub struct KeyBundle {
 }
 
 /// Fetch only the first key branch and the `.hax` URL, without audio bytes.
-pub fn fetch_keys_only(
-    agent: &ureq::Agent,
+pub async fn fetch_keys_only(
+    client: &Client,
     page_url: &str,
     api_base: Option<&str>,
 ) -> Result<KeyBundle> {
     let api_base = api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(agent, page_url, api_base)?;
-    let initial = listen::listen(agent, &hs, -1)?;
+    let hs = listen::load_handshake(client, page_url, api_base).await?;
+    let initial = listen::listen(client, &hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }

@@ -10,7 +10,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/dawn-used-yeet-alt/hotaudio-extractor"
 keywords = ["hotaudio", "audio", "extractor", "download", "x25519", "chacha20poly1305"]
-categories = ["command-line-utilities", "cryptography"]
+categories = ["command-line-utilities", "cryptography", "wasm"]
 # No application dependencies: the signer is a native port of the player's
 # signature VM, so nothing is evaluated at runtime. Distribution is via GitHub
 # release binaries (see .github/workflows/release.yml).
@@ -19,13 +19,17 @@ publish = false
 [lib]
 name = "hotaudio"
 path = "src/lib.rs"
+# `cdylib` so `wasm-bindgen` can consume the same sources as an rlib; it costs
+# nothing native beyond a second link of a small library.
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "hotaudio-download"
 path = "src/bin/download.rs"
 
 [dependencies]
-# Crypto — RustCrypto. On x86-64 these dispatch to AES-NI/SHA-NI/AVX2 at runtime.
+# Crypto — RustCrypto. On x86-64 these dispatch to AES-NI/SHA-NI/AVX2 at runtime;
+# on wasm32 there is no SIMD dispatch, so they take the portable path.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", default-features = false, features = ["static_secrets", "precomputed-tables", "getrandom"] }
@@ -34,9 +38,38 @@ base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Blocking HTTP with rustls + connection pooling. Keeps the whole tool
-# single-threaded; the pipeline is latency-bound, not CPU-bound.
+# Native transport: blocking HTTP with rustls + connection pooling. Keeps the
+# whole tool single-threaded; the pipeline is latency-bound, not CPU-bound.
+# wasm32 has no blocking sockets, so it uses the fetch transport instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip", "platform-verifier"] }
+
+# Browser transport. `getrandom/wasm_js` is what gives `EphemeralSecret::random`
+# a CSPRNG: the `wasm32-unknown-unknown` target has no default backend.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+web-sys = { version = "0.3", features = [
+    "AbortController",
+    "AbortSignal",
+    "BinaryType",
+    "Headers",
+    "Performance",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "Request",
+    "RequestCredentials",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Window",
+    "WorkerGlobalScope",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [profile.release]
 opt-level = 3

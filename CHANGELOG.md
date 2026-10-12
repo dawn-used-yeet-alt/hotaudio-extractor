@@ -6,6 +6,32 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Browser/wasm build** (`wasm32-unknown-unknown`). The same pipeline now runs
+  over the browser's `fetch` instead of blocking `ureq`, with a `wasm-bindgen`
+  surface — `downloadTrack`, `downloadTrackWith`, `trackKeys`, `signPayload`,
+  `listTracks`. Segments are handed to a callback as they decrypt, so a page can
+  `appendBuffer` them into a `MediaSource` and play progressively. This closes the
+  "browser playback" non-goal recorded in `docs/ARCHITECTURE.md`.
+- `Client::with_url_rewrite`, for pointing the crate at a proxy or CDN mirror
+  without forking it, and `Client::with_fetch` (wasm) for hosts whose HTTP is not
+  the page's `fetch` — a Capacitor native bridge, for instance.
+- `docs/BROWSER.md`: the browser build end to end — MediaSource playback, the
+  proxy contract with the CORS and `User-Agent` measurements behind it, Capacitor
+  integration, and troubleshooting.
+
+### Changed
+
+- **The pipeline is `async` at the I/O boundary.** `listen`, `range`, `download`
+  and `http` entry points return futures. Native behaviour and performance are
+  unchanged — the transport blocks, so a native future never suspends and
+  `hotaudio::block_on` is a single poll. `download_streaming` takes an
+  `on_fragment` callback instead of a `&mut Write`, which is what enables MSE.
+- `http::api_agent()`/`bulk_agent()` become `http::Client::api()`/`.bulk()`.
+- Tests carry both `#[test]` and `#[wasm_bindgen_test]` attributes and run on both
+  targets from one body; CI gained a wasm job.
+
 ## [1.0.0] - 2026-10-07
 
 First release of the Rust implementation, which replaces the TypeScript package

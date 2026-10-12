@@ -14,11 +14,12 @@ pub use env::{ENV_HASHES, PERF_NOW, PINNED_NOZZLE_VERSION};
 pub use vm::{Rendered, SignError, sign, trace};
 
 /// Current Unix time in seconds, floored — the clock the signer reads.
+///
+/// Routed through [`crate::clock`] because `SystemTime::now` panics on
+/// `wasm32-unknown-unknown`, and the browser build must produce the same
+/// signature the native one does.
 pub fn now_secs() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+    crate::clock::unix_secs()
 }
 
 /// Compute the `X-Signature` header value for a listen-request payload,
@@ -36,14 +37,16 @@ pub fn sign_payload_at(payload: &str, timestamp_secs: f64) -> Result<String, Sig
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn bytecode_is_even_and_non_trivial() {
         // The program is 1314 entries: 657 two-byte instructions.
         assert_eq!(PROGRAM_LEN, 1314);
         assert_eq!(PROGRAM_LEN % 2, 0);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn env_hashes_present_and_unique() {
         let set: std::collections::HashSet<_> = ENV_HASHES.iter().collect();
         assert_eq!(set.len(), ENV_HASHES.len(), "duplicate env hash");

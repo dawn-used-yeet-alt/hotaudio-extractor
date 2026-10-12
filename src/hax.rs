@@ -340,7 +340,8 @@ fn bit_len(n: u32) -> u32 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn bit_lengths() {
         assert_eq!(bit_len(0), 0);
         assert_eq!(bit_len(1), 1);
@@ -348,7 +349,8 @@ mod tests {
         assert_eq!(bit_len(256), 9);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn tree_geometry_matches_reference() {
         // 10 segments -> leaf nodes 33..42, chain 1 -> 2 -> 4 -> ... -> leaf.
         let t = KeyTree::new(10);
@@ -357,7 +359,8 @@ mod tests {
         assert_eq!(t.leaf_node(9), 42);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn derives_deterministically_and_matches_manual_chain() {
         let root = [3u8; 32];
         let keys = HashMap::from([(1u32, root)]);
@@ -379,7 +382,8 @@ mod tests {
         assert_eq!(k0, expect);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn missing_root_is_reported() {
         let tree = KeyTree::new(10);
         let mut cache = HashMap::new();

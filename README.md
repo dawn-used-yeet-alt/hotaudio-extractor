@@ -14,8 +14,9 @@ A command-line audio extractor for <a href="https://hotaudio.net">hotaudio.net</
 ## Status
 
 This is the Rust implementation and the current `main` branch. The original TypeScript npm package is
-frozen on the `legacy` branch, kept only for its browser/MSE playback path, which has no Rust
-equivalent. See [docs/MIGRATION.md](docs/MIGRATION.md) for how the two map to each other.
+frozen on the `legacy` branch, kept only for its browser/MSE playback path, which now has a Rust
+equivalent in [`src/wasm.rs`](src/wasm.rs) — see [Browser / wasm](#browser--wasm) below. See
+[docs/MIGRATION.md](docs/MIGRATION.md) for how the two map to each other.
 
 ## Install
 
@@ -137,6 +138,19 @@ hotaudio-download "https://hotaudio.net/u/user/track-slug" --list-tracks
 >
 > - This tool depends on site internals, so it can break when they change.
 >   [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is slower but more stable.
+>
+> - **The user agent is fixed** at `Mozilla/5.0`, because Cloudflare returns 403 for Chrome user agents
+>   on the track page and listen endpoint. It is deliberately not configurable. In a browser the header
+>   is dropped entirely, since a page cannot set it — see [Browser / wasm](#browser--wasm).
+
+The other operational decisions are deliberate too, and the measurements behind
+them are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#reliability) so they do
+not get re-litigated. Requests are sequential by design: the server serialises
+per track, and parallel `Range` requests were measured and lost. Page, listen and
+range reads retry 3× with backoff; the bulk `.hax` transfer resumes via `Range`
+rather than restarting, and has no global timeout because large containers
+legitimately take minutes. No proxy is bundled for the browser build — that is
+the embedder's infrastructure, not this project's.
 
 ## Library
 
@@ -144,12 +158,15 @@ The crate is `hotaudio-rs` with the library name `hotaudio`. It is not published
 binaries are the distribution channel.
 
 ```rust
-use hotaudio::{download, http};
+use hotaudio::{block_on, download, http};
 
-let agent = http::api_agent();
-let mut opts = download::DownloadOptions::default();
-let result = download::download_from_page(&agent, url, &mut opts)?;
-std::fs::write("track.m4a", result.audio)?;
+block_on(async {
+    let client = http::Client::api();
+    let mut opts = download::DownloadOptions::default();
+    let track = download::download_from_page(&client, url, &mut opts).await?;
+    std::fs::write("track.m4a", track.audio)?;
+    Ok::<_, hotaudio::Error>(())
+})
 ```
 
 | Module | Responsibility |
@@ -159,8 +176,59 @@ std::fs::write("track.m4a", result.audio)?;
 | [`hax`](src/hax.rs) | Bencode, HAX0 header, segment key tree |
 | [`range`](src/range.rs) | HTTP `Range` reads, header probe, streaming decrypt |
 | [`listen`](src/listen.rs) | Page handshake and the encrypted listen API |
-| [`http`](src/http.rs) | Agents and retry policy |
+| [`http`](src/http/mod.rs) | `Client`, retry policy, per-target transport |
 | [`download`](src/download.rs) | Pipeline, key paging, saved-keys envelope |
+| [`clock`](src/clock.rs) | Clocks and sleeping, per target |
+| [`wasm`](src/wasm.rs) | The `wasm-bindgen` surface (`wasm32` only) |
+
+The pipeline is `async` at the I/O boundary so one implementation serves both
+transports. On a native build nothing ever suspends, so `block_on` is a single
+poll and costs nothing.
+
+## Browser / wasm
+
+The crate builds for `wasm32-unknown-unknown` and exposes a `wasm-bindgen` API.
+Segments are handed to a callback as they decrypt, so a page can append them to a
+`MediaSource` and start playing after one round trip.
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/hotaudio.wasm
+```
+
+```js
+import init, { downloadTrack } from "./pkg/hotaudio.js";
+await init();
+
+const media = new MediaSource();
+video.src = URL.createObjectURL(media);
+// ...on sourceopen, append each fragment to a SourceBuffer...
+const info = await downloadTrack(
+  "https://hotaudio.net/u/user/track",
+  (fragment) => sourceBuffer.appendBuffer(fragment),
+  (phase, loaded, total) => console.log(phase, `${loaded}/${total}`),
+);
+```
+
+Also exported: `downloadTrackWith` (proxy/custom-`fetch`), `trackKeys`,
+`signPayload` and `listTracks`.
+
+**A browser needs a proxy in front, and this crate does not ship one.** Measured
+against the live site: hotaudio.net and cdn.hotaudio.net send no
+`Access-Control-Allow-Origin` and refuse the cross-origin preflight, and
+`User-Agent` is a forbidden header a page cannot set — so Cloudflare 403s the
+browser's own. Put your own origin in front and pass a URL rewrite, or pass a
+replacement `fetch` if your host is not a page (a Capacitor native bridge, say):
+
+```js
+await downloadTrackWith(url, onFragment, onProgress, null,
+  (u) => u.replace("hotaudio.net", "proxy.example"));
+```
+
+A compliant proxy must rewrite the user agent, add CORS headers and answer the
+preflight, forward `Range` with real `206`s, and stream rather than buffer.
+**[docs/BROWSER.md](docs/BROWSER.md)** has the checklist, a MediaSource playback
+example, Capacitor integration and troubleshooting.
 
 ## Development
 
@@ -168,6 +236,22 @@ std::fs::write("track.m4a", result.audio)?;
 cargo test                    # offline, no network required
 bun scripts/verify-live.ts    # manual live check; names the failing stage
 ```
+
+The same test bodies run on both the native and browser targets, so a divergence
+between them fails CI rather than surfacing later. The browser tests need a runner,
+because `wasm32` binaries cannot be exec'd:
+
+```bash
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+cargo test --target wasm32-unknown-unknown
+```
+
+Suites: `signer_parity` (golden vectors from the reference signer), `hax_roundtrip`,
+`key_tree` (150 branch keys from a real 899-segment track), `http_resume` and
+`transport_fetch` (the browser transport against a stub `fetch`), and `perf_guard`
+(bulk decrypt throughput, so an async or copy regression on the hot path fails).
+`cargo test --release --test perf_guard` for the timing half; its correctness half
+runs everywhere.
 
 > [!NOTE]
 > After a site change, `bytecode.rs`, `env.rs` and the mirrored values in `scripts/shim.ts` must be
@@ -177,6 +261,7 @@ bun scripts/verify-live.ts    # manual live check; names the failing stage
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it fits together
+- [docs/BROWSER.md](docs/BROWSER.md): running in a browser, and proxying
 - [docs/PROTOCOL.md](docs/PROTOCOL.md): the wire protocol and the signature VM
 - [docs/MAINTENANCE.md](docs/MAINTENANCE.md): diagnosing and re-capturing
 - [docs/MIGRATION.md](docs/MIGRATION.md): moving from the TypeScript version

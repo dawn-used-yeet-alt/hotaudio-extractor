@@ -29,20 +29,26 @@ track page HTML
 | `hax` | Bencode reader, HAX0 header, and the segment key tree. |
 | `range` | HTTP `Range` reading: header probe, per-segment fetch, streaming decrypt. |
 | `listen` | Page handshake, `__ha_state` decrypt, the encrypted listen API. |
-| `http` | Agent construction (API vs bulk) and the retry policy. |
+| `http` | `Client`, retry policy, resume logic. Transport backends per target. |
 | `download` | The pipeline, key paging, saved-keys envelope. |
-| `bin/download` | CLI. |
+| `clock` | Wall clock, monotonic clock and sleeping, per target. |
+| `wasm` | The `wasm-bindgen` surface. `wasm32` only. |
+| `bin/download` | CLI. Native only. |
 
 Design rules:
 
 - **`signer` has no I/O and no dependencies** beyond `std`. It is a pure
   function of `(payload, timestamp)`, which is what makes it trivially testable
   and fuzzable against the reference.
-- **Two HTTP agents, deliberately.** `api_agent()` has a 30 s per-attempt
+- **Two HTTP clients, deliberately.** `Client::api()` has a 30 s per-attempt
   timeout because page and listen calls are latency-bound and one stalled
-  request should degrade into a bounded retry. `bulk_agent()` has no global
+  request should degrade into a bounded retry. `Client::bulk()` has no global
   timeout because a 15 MB container over a slow link legitimately takes
   minutes. Mixing these up produces either spurious failures or hangs.
+- **Async at the I/O boundary only.** `crypto`, `hax` and `signer` are
+  synchronous on both targets, so the CPU-bound half of the pipeline is
+  identical everywhere and the wasm build is not a second implementation of
+  the protocol.
 - **Miss-driven key paging.** On a key miss the downloader asks for exactly the
   missing segment index. Measurements showed the server serialises per track,
   so every request is provably needed and no lookahead can help.
@@ -131,16 +137,76 @@ Measured against the live CDN, so as to avoid re-measuring:
 - **Fixtures from the real world, not invented.** `tests/key_tree.rs` uses 150
   branch keys captured from a live 899-segment track, so tree-geometry drift
   fails immediately.
+- **One test body, two targets.** Tests carry `#[test]` and
+  `#[wasm_bindgen_test]` attributes and are run by both CI jobs, so a divergence
+  between browser and CLI behaviour fails a build rather than being discovered
+  in production. `tests/transport_fetch.rs` drives the real `fetch` backend
+  against a stub, which is how the transport is tested without a browser.
+- **Performance is asserted, not assumed.** `tests/perf_guard.rs` measures bulk
+  decrypt throughput and fails on an order-of-magnitude regression. The
+  throughput half is `#[cfg(not(debug_assertions))]` rather than `#[ignore]`: it
+  is a build profile where the assertion does not apply, not a test a human has
+  to remember to ask for. Its correctness half runs in every profile and on both
+  targets.
 - **Offline.** `cargo test` needs no network. Live checks are explicit,
   manual, and separate: `scripts/verify-live.ts`.
 
+## The browser transport
+
+`wasm32-unknown-unknown` has no sockets, no blocking call and no threads, so the
+browser build borrows the platform's HTTP stack instead. The split is drawn at
+the narrowest possible seam:
+
+| Shared, both targets | Native only | `wasm32` only |
+| --- | --- | --- |
+| retry and backoff policy | `ureq` + rustls | `fetch` |
+| resume-on-drop logic | `thread::sleep` | `setTimeout` promise |
+| URL rewriting | `Instant` / `SystemTime` | `performance.now()` / `Date.now()` |
+| the entire protocol pipeline | | `web-sys` streaming reads |
+
+`src/clock.rs` exists because `SystemTime::now()` and `Instant::now()` both
+**panic** on `wasm32-unknown-unknown`. Every clock read in the crate goes through
+it; nothing else may name either type. The values agree — `Date.now()` is Unix
+milliseconds — so the signer sees the same clock it always did, which the golden
+vectors confirm.
+
+The pipeline's I/O entry points are `async` so that one implementation serves
+both transports. On native nothing ever suspends, because the transport blocks,
+so `hotaudio::block_on` is a single poll of a ready future and costs nothing; if a
+future ever *does* suspend it panics rather than hanging, which turns a latent
+bug into a loud one. `tests/perf_guard.rs` asserts the decrypt path has not
+acquired a per-segment copy or await, which is the property this rests on.
+
+Streaming matters more in a browser than on the CLI: it is what lets a page
+`appendBuffer` each fragment into a `MediaSource` and start playing after one
+round trip, with peak memory of one segment instead of one container. It is also
+what keeps a fronting proxy from having to buffer the whole container — see
+below.
+
+### Why a browser build needs a proxy
+
+Measured against the live site: hotaudio.net and cdn.hotaudio.net send no
+`Access-Control-Allow-Origin` and refuse the cross-origin preflight, and
+`User-Agent` is a forbidden header a page cannot set — so Cloudflare 403s the
+browser's own. A page therefore cannot reach the site directly, however correct
+this crate is.
+
+A proxy is the embedder's infrastructure, and this crate deliberately does not
+ship one: egress costs and abuse liability are not something an interoperability
+tool should be running. What it does instead is make one trivial to point at —
+`Client::with_url_rewrite`, or `Client::with_fetch` for a host whose HTTP is not
+the page's `fetch` — and document what a compliant proxy must do, since a
+range-preserving streaming relay is what keeps the cost to bandwidth rather than
+memory. [docs/BROWSER.md](BROWSER.md) has the checklist and worked examples.
+
 ## Deliberate non-goals
 
-- **Browser playback.** The TypeScript implementation on the `legacy` branch has
-  an MSE streaming path (`extractHotaudioStream`). That is DOM API territory and
-  has no place in a server-side crate, so this version does not attempt it. The
-  equivalent capability — incremental segment delivery — is available through
-  `range.rs` and `--stream-to`.
+- **Shipping a proxy.** The browser build needs a same-origin front, for CORS and
+  user-agent reasons; pointing the crate at one is supported and documented, but
+  running one is the embedder's call, not this project's. See
+  [BROWSER.md](BROWSER.md).
 - **Concurrency.** Deliberately sequential; see the paging note above.
 - **Stealth.** The user agent is the bare `Mozilla/5.0` the site requires. This
-  is an interoperability tool, not a scraper that hides itself.
+  is an interoperability tool, not a scraper that hides itself. (On `wasm32` the
+  browser forbids setting it at all, so the header is dropped rather than
+  spoofed — see the browser transport section.)

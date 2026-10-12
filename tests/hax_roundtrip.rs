@@ -92,7 +92,8 @@ fn build_container(plaintexts: &[Vec<u8>], codec: &str, duration_ms: u64) -> Vec
     out
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn round_trips_a_synthetic_container() {
     let plaintexts: Vec<Vec<u8>> = (0..17)
         .map(|i| {
@@ -134,7 +135,8 @@ fn round_trips_a_synthetic_container() {
     assert_eq!(&audio[..4], &[0, 0, 0, 0x20]);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn rejects_bad_magic() {
     let mut container = build_container(&[vec![1, 2, 3]], "mp4a.40.2", 1000);
     container[..4].copy_from_slice(b"XXXX");
@@ -142,7 +144,8 @@ fn rejects_bad_magic() {
     assert!(err.to_string().contains("HAX0"), "got {err}");
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn wrong_keys_fail_closed() {
     let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 32]).collect();
     let container = build_container(&plaintexts, "mp4a.40.2", 1000);
@@ -156,7 +159,8 @@ fn wrong_keys_fail_closed() {
     assert!(err.to_string().contains("segment 0"), "got {err}");
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn detects_a_corrupted_slice() {
     let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 48]).collect();
     let mut container = build_container(&plaintexts, "mp4a.40.2", 1000);
@@ -167,7 +171,8 @@ fn detects_a_corrupted_slice() {
     assert!(decrypt_offline(&container, &keys, None).is_err());
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn in_place_decrypt_matches_one_shot() {
     let key = [3u8; 32];
     let plain = b"the quick brown fox jumps over the lazy dog".to_vec();
@@ -182,7 +187,8 @@ fn in_place_decrypt_matches_one_shot() {
     assert_eq!(&appended[6..], &plain[..]);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn bencode_round_trips() {
     let encoded = b"i42e";
     match Bencode::new(encoded).next_value().unwrap() {
@@ -207,7 +213,8 @@ fn bencode_round_trips() {
     assert!(Bencode::new(b"l").next_value().is_err());
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn reports_progress() {
     let plaintexts: Vec<Vec<u8>> = (0..32).map(|_| vec![1u8; 16]).collect();
     let container = build_container(&plaintexts, "mp4a.40.2", 1000);

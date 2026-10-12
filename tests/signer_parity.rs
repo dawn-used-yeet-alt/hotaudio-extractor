@@ -9,7 +9,8 @@
 
 use hotaudio::signer;
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn matches_golden_vectors() {
     let raw = include_str!("data/signer_golden.json");
     let vectors: Vec<(String, f64, String)> =
@@ -35,7 +36,8 @@ fn matches_golden_vectors() {
     );
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn signature_has_expected_shape() {
     let sig = signer::sign("{\"tid\":\"7\"}", 1_700_000_000.0).unwrap();
     // "9:" + 8 hex digits of big-endian timestamp + 24 hex digits of tag.
@@ -47,7 +49,8 @@ fn signature_has_expected_shape() {
     );
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn timestamp_is_big_endian_seconds() {
     for ts in [
         0.0,
@@ -66,7 +69,8 @@ fn timestamp_is_big_endian_seconds() {
     }
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn distinct_payloads_and_timestamps_differ() {
     let a = signer::sign("{\"a\":1}", 1_700_000_000.0).unwrap();
     let b = signer::sign("{\"a\":2}", 1_700_000_000.0).unwrap();
@@ -75,14 +79,16 @@ fn distinct_payloads_and_timestamps_differ() {
     assert_ne!(a, c, "timestamp must affect the signature");
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn signing_is_deterministic() {
     let a = signer::sign("{\"tid\":\"7\"}", 1_700_000_000.0).unwrap();
     let b = signer::sign("{\"tid\":\"7\"}", 1_700_000_000.0).unwrap();
     assert_eq!(a, b);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn utf16_length_semantics() {
     // A non-BMP character counts as two UTF-16 code units, which is what the
     // JS `.length` the VM reads reports. Golden vectors cover this too; this
@@ -92,7 +98,8 @@ fn utf16_length_semantics() {
     assert_ne!(ascii, astral);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn sign_payload_at_matches_sign() {
     // `sign_payload_at` is the pinned-clock wrapper used for replays and tests;
     // it must be exactly `sign` with the clock supplied rather than read.
@@ -102,7 +109,8 @@ fn sign_payload_at_matches_sign() {
     assert_eq!(at, direct);
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn trace_reproduces_a_stable_instruction_count() {
     // `trace` is the differential-tracing entry point documented in
     // docs/MAINTENANCE.md. Its length is the program's control-flow shape, so a
