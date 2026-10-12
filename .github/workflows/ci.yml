@@ -71,6 +71,12 @@ jobs:
           cargo +1.85 check --locked --target wasm32-unknown-unknown --lib
       - name: Clippy
         run: cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
+      # The runner is not on the image and `cargo install` would rebuild the
+      # whole tree. The CLI version must match the `wasm-bindgen` in Cargo.lock
+      # exactly: the runner rejects a test binary produced by a different one.
+      - uses: taiki-e/install-action@wasm-bindgen-cli
+        with:
+          version: 0.2.129
       # `wasm32-unknown-unknown` binaries cannot be exec'd; this runner executes
       # them through `wasm-bindgen`, which is what a page does.
       - name: Test
