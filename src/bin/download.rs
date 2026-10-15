@@ -14,11 +14,11 @@
 // stub, so the flags, parsers and helpers are unreachable there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::process::ExitCode;
 
-use hotaudio::crypto::Error;
+use hotaudio::crypto::{Error, KeyMap};
 use hotaudio::download::{self, DownloadOptions, Phase, Progress};
 use hotaudio::http::Client;
 use hotaudio::listen;
@@ -30,13 +30,19 @@ const USAGE: &str = "\
 hotaudio-download — download and decrypt a hotaudio.net track to playable .m4a
 
 Usage:
-  hotaudio-download <URL|HTML> [options]      full pipeline (fetch page, listen, download)
+  hotaudio-download <URL|HTML>... [options]   full pipeline (fetch page, listen, download)
   hotaudio-download --keys FILE [options]     cached re-download (no page fetch, no listen)
   hotaudio-download --hax FILE --keys FILE    fully offline decrypt of a local container
+
+Several sources may be given; they are processed in order and the run exits
+non-zero if any fails. Flags that name one path (--out, --stream-to, --save-keys,
+--save-hax, --keys-only, --list-tracks) require a single source.
 
 Options:
   --out PATH        write the decrypted audio here ('-' writes to stdout)
                     (default: the track title, sanitised, as .m4a)
+  --input FILE      read one source per line from FILE ('-' is stdin); blank
+                    lines are skipped
   --stream-to PATH  stream segments to PATH instead of buffering: peak memory of
                     one segment, first playable fragment after one round trip
                     ('-' streams to stdout)
@@ -77,6 +83,20 @@ const VALUE_FLAGS: &[&str] = &[
     "--api-base",
     "--progress",
     "--save-hax",
+    "--input",
+];
+
+/// Flags that name a single output or source, so they cannot be combined with
+/// more than one positional/`--input` source.
+const SINGLE_SOURCE_FLAGS: &[&str] = &[
+    "--out",
+    "--stream-to",
+    "--save-keys",
+    "--save-hax",
+    "--keys",
+    "--hax",
+    "--keys-only",
+    "--list-tracks",
 ];
 
 /// Flags that stand alone.
@@ -134,7 +154,6 @@ fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let source = positional(&args);
     let out = flag(&args, "--out");
     let stream_to = flag(&args, "--stream-to");
     let save_keys = flag(&args, "--save-keys");
@@ -158,8 +177,20 @@ fn run() -> ExitCode {
         }
     };
 
+    let sources = match collect_sources(&args) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}\n");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(name) = multi_source_conflict(&sources, &args) {
+        eprintln!("error: {name} cannot be used with multiple sources; each needs its own path\n");
+        return ExitCode::FAILURE;
+    }
+
     match hotaudio::block_on(execute(Run {
-        source,
+        sources,
         out,
         stream_to,
         save_keys,
@@ -185,7 +216,7 @@ fn run() -> ExitCode {
 }
 
 struct Run {
-    source: Option<String>,
+    sources: Vec<String>,
     out: Option<String>,
     stream_to: Option<String>,
     save_keys: Option<String>,
@@ -207,7 +238,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     // A URL that is not a canonical share link is usually a typo, and the
     // failure would otherwise only surface deep in the pipeline. This is a
     // warning, not a rejection: proxies and mirrors are legitimate.
-    if let Some(source) = &r.source {
+    for source in &r.sources {
         if is_url(source) && !hotaudio::is_hotaudio_url(source) {
             eprintln!(
                 "warning: '{source}' is not a canonical hotaudio share link \
@@ -232,6 +263,13 @@ async fn execute(r: Run) -> Result<(), Error> {
             progress(p);
         }
     };
+
+    // ---- Batch: several sources, each to its own title-derived file ----
+    // Single-source flags are rejected for several sources in `run`, so only
+    // the plain download path is reachable here.
+    if r.sources.len() >= 2 {
+        return run_batch(&r, &mut report).await;
+    }
 
     // ---- Offline: local .hax + saved keys, no network ----
     if let Some(hax_path) = &r.hax_path {
@@ -279,7 +317,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Track listing ----
     if r.list_tracks {
-        let Some(source) = &r.source else {
+        let Some(source) = r.sources.first() else {
             eprintln!("{USAGE}");
             return Err(Error::Protocol(
                 "--list-tracks needs a URL or HTML file".into(),
@@ -325,7 +363,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Keys only: handshake + first listen, no container ----
     if r.keys_only {
-        let Some(source) = &r.source else {
+        let Some(source) = r.sources.first() else {
             return Err(Error::Protocol("--keys-only needs a page URL".into()));
         };
         if !is_url(source) {
@@ -363,7 +401,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     }
 
     // ---- Cached mode: saved keys (+ envelope hax URL), no page/listen ----
-    if r.keys_path.is_some() && r.source.is_none() {
+    if r.keys_path.is_some() && r.sources.is_empty() {
         let saved = load_keys(&r.keys_path)?;
         let (keys, envelope_url, title) = (saved.keys, saved.hax_url, saved.title);
         let Some(url) = r.hax_url.or(envelope_url) else {
@@ -419,7 +457,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     }
 
     // ---- Online mode ----
-    let Some(source) = r.source else {
+    let Some(source) = r.sources.first().cloned() else {
         eprintln!("{USAGE}");
         return Err(Error::Protocol("no input given".into()));
     };
@@ -497,43 +535,15 @@ async fn execute(r: Run) -> Result<(), Error> {
         return Ok(());
     }
 
-    let res = if is_url(&source) {
-        let api = Client::api();
-        let bulk = Client::bulk();
-        let clients = download::Clients {
-            api: &api,
-            bulk: &bulk,
-        };
-        let mut opts = DownloadOptions {
-            initial_keys: seed,
-            on_progress: Some(&mut report),
-            api_base: r.api_base.as_deref(),
-            track_id: r.track_id.as_deref(),
-            capture_hax: r.save_hax.is_some(),
-        };
-        clients.download_from_page(&source, &mut opts).await?
-    } else {
-        let html = std::fs::read_to_string(&source)
-            .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
-        let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-        let mut hs = listen::handshake_from_html(&html, api_base, r.track_id.as_deref())?
-            .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
-        hs.listen_key = listen::extract_listen_key(&source);
-        let api = Client::api();
-        let bulk = Client::bulk();
-        let clients = download::Clients {
-            api: &api,
-            bulk: &bulk,
-        };
-        let mut opts = DownloadOptions {
-            initial_keys: seed,
-            on_progress: Some(&mut report),
-            api_base: r.api_base.as_deref(),
-            track_id: r.track_id.as_deref(),
-            capture_hax: r.save_hax.is_some(),
-        };
-        clients.download_with_handshake(&hs, &mut opts).await?
-    };
+    let res = fetch_online(
+        &source,
+        seed,
+        &mut report,
+        r.api_base.as_deref(),
+        r.track_id.as_deref(),
+        r.save_hax.is_some(),
+    )
+    .await?;
 
     if let Some(path) = &r.save_hax {
         if let Some(bytes) = &res.hax_bytes {
@@ -571,6 +581,124 @@ async fn execute(r: Run) -> Result<(), Error> {
         format!("Saved {}", std::path::Path::new(&out).display())
     };
     print_result(&out, &line);
+    Ok(())
+}
+
+/// Download one online source — a page URL or a local HTML file — and decrypt it.
+///
+/// Shared by single-source and batch modes. `initial_keys` seeds a resume; the
+/// HTML branch recovers the handshake from a saved page.
+async fn fetch_online(
+    source: &str,
+    initial_keys: Option<KeyMap>,
+    report: download::ProgressFn<'_>,
+    api_base: Option<&str>,
+    track_id: Option<&str>,
+    capture_hax: bool,
+) -> Result<download::Downloaded, Error> {
+    let api = Client::api();
+    let bulk = Client::bulk();
+    let clients = download::Clients {
+        api: &api,
+        bulk: &bulk,
+    };
+    let mut opts = DownloadOptions {
+        initial_keys,
+        on_progress: Some(report),
+        api_base,
+        track_id,
+        capture_hax,
+    };
+    if is_url(source) {
+        clients.download_from_page(source, &mut opts).await
+    } else {
+        let html = std::fs::read_to_string(source)
+            .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
+        let base = api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
+        let mut hs = listen::handshake_from_html(&html, base, track_id)?
+            .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
+        hs.listen_key = listen::extract_listen_key(source);
+        clients.download_with_handshake(&hs, &mut opts).await
+    }
+}
+
+/// Download several sources in order, continuing past failures.
+///
+/// Every failure is printed as it happens; the summary error makes the process
+/// exit non-zero if any occurred.
+async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Error> {
+    let mut written: HashSet<String> = HashSet::new();
+    let mut failures = 0usize;
+    for source in &r.sources {
+        if let Err(e) = batch_one(r, source, &mut *report, &mut written).await {
+            eprintln!("error: {source}: {e}");
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        return Err(Error::Http(format!(
+            "{failures} of {} tracks failed",
+            r.sources.len()
+        )));
+    }
+    Ok(())
+}
+
+/// One source in a batch: download it and write its title-derived file.
+///
+/// Tracking written paths turns a title collision into a clear per-source error
+/// instead of a silent overwrite.
+async fn batch_one(
+    r: &Run,
+    source: &str,
+    report: download::ProgressFn<'_>,
+    written: &mut HashSet<String>,
+) -> Result<(), Error> {
+    let started = hotaudio::clock::monotonic_ms();
+    let res = fetch_online(
+        source,
+        None,
+        report,
+        r.api_base.as_deref(),
+        r.track_id.as_deref(),
+        false,
+    )
+    .await?;
+    let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
+    let out = format!("{}.m4a", sanitize(&title));
+    if !written.insert(out.clone()) {
+        return Err(Error::State(format!(
+            "output {out} was already written by an earlier source; rename it and retry"
+        )));
+    }
+    write_file(&out, &res.audio)?;
+    if r.verbose {
+        eprintln!(
+            "verbose: {} segments, {} key page(s) in {:.1}s",
+            res.segment_count,
+            res.pages,
+            secs_since(started)
+        );
+    }
+    let line = if r.json {
+        let keys_json = download::keys_to_json(&res.keys, &res.hax_url, Some(&title));
+        DownloadInfo {
+            title: Some(&title),
+            duration: res.duration,
+            codec: &res.codec,
+            mime: res.mime,
+            bytes: res.audio.len() as u64,
+            segment_count: res.segment_count,
+            key_pages: res.pages,
+            hax_url: &res.hax_url,
+            keys_json: &keys_json,
+            saved_to: &out,
+        }
+        .to_json()
+    } else {
+        format!("Saved {}", std::path::Path::new(&out).display())
+    };
+    println!("{line}");
     Ok(())
 }
 
@@ -679,6 +807,22 @@ fn has_flag(args: &[String], name: &str) -> bool {
         .any(|a| a.split_once('=').map_or(a.as_str(), |(n, _)| n) == name)
 }
 
+/// The first single-path flag present, so a multi-source run can reject it.
+fn single_source_flag(args: &[String]) -> Option<&'static str> {
+    SINGLE_SOURCE_FLAGS
+        .iter()
+        .copied()
+        .find(|f| has_flag(args, f))
+}
+
+/// The single-path flag that rules out a multi-source run, if any.
+fn multi_source_conflict(sources: &[String], args: &[String]) -> Option<&'static str> {
+    if sources.len() < 2 {
+        return None;
+    }
+    single_source_flag(args)
+}
+
 /// Reject unknown flags and value flags whose value is missing or is itself
 /// another flag, so `hotaudio-download --out --list-tracks` fails instead of
 /// writing a file called `--list-tracks`.
@@ -704,8 +848,11 @@ fn validate(args: &[String]) -> Result<(), String> {
             );
         }
     }
-    for (i, arg) in args.iter().enumerate() {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
         if !arg.starts_with('-') {
+            i += 1;
             continue;
         }
         let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
@@ -713,36 +860,45 @@ fn validate(args: &[String]) -> Result<(), String> {
             if arg.contains('=') {
                 return Err(format!("{name} does not take a value"));
             }
+            i += 1;
             continue;
         }
         if !VALUE_FLAGS.contains(&name) {
             return Err(format!("unknown flag {arg}"));
         }
-        let value = arg
-            .split_once('=')
-            .map(|(_, v)| Some(v.to_string()))
-            .unwrap_or_else(|| args.get(i + 1).cloned());
+        // A bare value flag consumes the next argument, so it must be skipped:
+        // otherwise a `-` value would be scanned again and read as a flag.
+        let (value, step) = match arg.split_once('=') {
+            Some((_, v)) => (Some(v.to_string()), 1),
+            None => (args.get(i + 1).cloned(), 2),
+        };
         match value {
             None => return Err(format!("{name} needs a value")),
-            Some(v) if v.starts_with('-') => {
+            // `-` is a real value (stdout/stdin), so only a longer dash-word is
+            // treated as a flag that was passed where a value belongs.
+            Some(v) if v.starts_with('-') && v != "-" => {
                 return Err(format!("{name} needs a value, but got the flag {v}"));
             }
             Some(_) => {}
         }
+        i += step;
     }
     Ok(())
 }
 
-/// The first argument that is neither a flag nor a flag's value.
+/// Every argument that is neither a flag nor a flag's value, in order.
 ///
 /// Scanning must skip over values: in `--out a.m4a <URL>`, `a.m4a` is the
 /// output path, not the source.
-fn positional(args: &[String]) -> Option<String> {
+fn positionals(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
         if !arg.starts_with('-') {
-            return Some(arg.clone());
+            out.push(arg.clone());
+            i += 1;
+            continue;
         }
         let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
         // A bare value flag consumes the next argument; `--flag=value` does not.
@@ -752,7 +908,35 @@ fn positional(args: &[String]) -> Option<String> {
             1
         };
     }
-    None
+    out
+}
+
+/// Positional sources plus one per line of `--input` (`-` means stdin).
+///
+/// Blank lines are skipped. Positionals come first, then the file, in the order
+/// given.
+fn collect_sources(args: &[String]) -> Result<Vec<String>, String> {
+    let mut sources = positionals(args);
+    let Some(path) = flag(args, "--input") else {
+        return Ok(sources);
+    };
+    let text = if path == "-" {
+        let mut s = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut s)
+            .map_err(|e| format!("cannot read stdin: {e}"))?;
+        s
+    } else {
+        std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            sources.push(line.to_string());
+        }
+    }
+    Ok(sources)
 }
 
 /// Read a flag's value, accepting both `--flag value` and `--flag=value`.
@@ -996,28 +1180,63 @@ mod tests {
     }
 
     #[test]
-    fn positional_skips_flags_and_their_values() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    fn dash_is_a_valid_value() {
+        // `-` means stdout/stdin, not a flag.
+        assert!(validate(&["--out".into(), "-".into()]).is_ok());
+        assert!(validate(&["--input".into(), "-".into()]).is_ok());
+        // A real flag in the value position is still rejected.
+        assert!(validate(&["--out".into(), "--list-tracks".into()]).is_err());
+    }
 
+    #[test]
+    fn multi_source_rejects_single_path_flags() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let one = a(&["u1"]);
+        let two = a(&["u1", "u2"]);
+        // One source: nothing to reject.
+        assert_eq!(multi_source_conflict(&one, &a(&["--out", "a.m4a"])), None);
+        // Two sources: the offending single-path flag is named.
         assert_eq!(
-            positional(&a(&["https://x/u/a/b"])).as_deref(),
-            Some("https://x/u/a/b")
+            multi_source_conflict(&two, &a(&["--out", "a.m4a"])),
+            Some("--out")
         );
+        assert_eq!(
+            multi_source_conflict(&two, &a(&["--stream-to=a.m4a"])),
+            Some("--stream-to")
+        );
+        // Flags that apply to the whole run are allowed.
+        assert_eq!(
+            multi_source_conflict(&two, &a(&["--json", "--track", "t"])),
+            None
+        );
+    }
+
+    #[test]
+    fn positionals_skip_flags_and_their_values() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let url = || "https://x/u/a/b".to_string();
+
+        assert_eq!(positionals(&a(&["https://x/u/a/b"])), vec![url()]);
         // The value of --out must not be mistaken for the source.
         assert_eq!(
-            positional(&a(&["--out", "a.m4a", "https://x/u/a/b"])).as_deref(),
-            Some("https://x/u/a/b")
+            positionals(&a(&["--out", "a.m4a", "https://x/u/a/b"])),
+            vec![url()]
         );
         assert_eq!(
-            positional(&a(&["--out=a.m4a", "https://x/u/a/b"])).as_deref(),
-            Some("https://x/u/a/b")
+            positionals(&a(&["--out=a.m4a", "https://x/u/a/b"])),
+            vec![url()]
         );
         // Boolean flags do not consume the next argument.
         assert_eq!(
-            positional(&a(&["--list-tracks", "https://x/u/a/b"])).as_deref(),
-            Some("https://x/u/a/b")
+            positionals(&a(&["--list-tracks", "https://x/u/a/b"])),
+            vec![url()]
         );
-        assert_eq!(positional(&a(&["--list-tracks"])), None);
+        assert!(positionals(&a(&["--list-tracks"])).is_empty());
+        // Several sources are collected in order.
+        assert_eq!(
+            positionals(&a(&["https://x/u/a/b", "https://x/u/c/d"])),
+            vec![url(), "https://x/u/c/d".to_string()]
+        );
     }
 
     #[test]
