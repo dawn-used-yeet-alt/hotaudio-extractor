@@ -46,6 +46,15 @@ All notable changes to this project are documented here. Format follows
   `download::Downloaded` now exposes `pages`, the number of key branches that
   had to be paged.
 
+- **`--json` machine-readable output.** `--json` prints a result object on
+  stdout matching the wasm `downloadTrack` shape (`title`, `durationSecs`,
+  `codec`, `mime`, `bytes`, `segmentCount`, `keyPages`, `haxUrl`, `keysJson`)
+  plus `savedTo`, the path written. `--list-tracks --json` prints
+  `[{ id, key, title }]`, and `--progress=json` streams NDJSON progress events
+  on stderr. `download::Downloaded` gained `codec`, and
+  `download::download_cached` now returns `Downloaded` so every mode reports the
+  same result shape.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`

@@ -49,6 +49,9 @@ Options:
   --api-base URL    override the listen API base (default: https://hotaudio.net)
   -q, --quiet       suppress the progress reporter
   -v, --verbose     report key-page counts and timing
+  --json            print a JSON result object on stdout (a track array for
+                    --list-tracks)
+  --progress FORMAT progress on stderr: 'text' (default) or 'json' (NDJSON)
   --list-tracks     list the tracks on the page and exit
   -h, --help        show this help
   -V, --version     print the version and exit
@@ -67,6 +70,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--hax-url",
     "--track",
     "--api-base",
+    "--progress",
 ];
 
 /// Flags that stand alone.
@@ -80,6 +84,7 @@ const BOOL_FLAGS: &[&str] = &[
     "-q",
     "--verbose",
     "-v",
+    "--json",
 ];
 
 fn main() -> ExitCode {
@@ -134,6 +139,15 @@ fn run() -> ExitCode {
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    let json = args.iter().any(|a| a == "--json");
+    let progress_json = match flag(&args, "--progress").as_deref() {
+        None | Some("text") => false,
+        Some("json") => true,
+        Some(other) => {
+            eprintln!("error: --progress must be 'text' or 'json', got '{other}'");
+            return ExitCode::FAILURE;
+        }
+    };
 
     match hotaudio::block_on(execute(Run {
         source,
@@ -148,6 +162,8 @@ fn run() -> ExitCode {
         list_tracks,
         quiet,
         verbose,
+        json,
+        progress_json,
     })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -170,6 +186,8 @@ struct Run {
     list_tracks: bool,
     quiet: bool,
     verbose: bool,
+    json: bool,
+    progress_json: bool,
 }
 
 async fn execute(r: Run) -> Result<(), Error> {
@@ -187,11 +205,17 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     let started_ms = hotaudio::clock::monotonic_ms();
 
-    // The progress reporter, silenced under `--quiet`. One mutable closure is
-    // reused by every mode; it captures only `quiet`, so it does not borrow `r`.
+    // One progress closure for every mode. It captures only `quiet` and the
+    // format, so it does not borrow `r`; `--quiet` wins over `--progress=json`.
     let quiet = r.quiet;
+    let progress_json = r.progress_json;
     let mut report = move |p: Progress| {
-        if !quiet {
+        if quiet {
+            return;
+        }
+        if progress_json {
+            eprintln!("{}", progress_event(p));
+        } else {
             progress(p);
         }
     };
@@ -203,6 +227,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         let title = saved.title;
         let bytes = std::fs::read(hax_path)
             .map_err(|e| Error::Http(format!("cannot read {hax_path}: {e}")))?;
+        let hax = hotaudio::hax::Hax0::parse(&bytes)?;
         let (audio, segments, _) = download::decrypt_offline(&bytes, &keys, Some(&mut report))?;
         if r.verbose {
             eprintln!(
@@ -214,7 +239,27 @@ async fn execute(r: Run) -> Result<(), Error> {
         let title = title.unwrap_or_else(|| stem(hax_path));
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
         write_file(&out, &audio)?;
-        println!("Saved {}", std::path::Path::new(&out).display());
+        if r.json {
+            let keys_json = download::keys_to_json(&keys, "", Some(&title));
+            println!(
+                "{}",
+                DownloadInfo {
+                    title: Some(&title),
+                    duration: hax.duration_ms as f64 / 1000.0,
+                    codec: &hax.codec,
+                    mime: "audio/mp4",
+                    bytes: audio.len() as u64,
+                    segment_count: hax.segment_count,
+                    key_pages: 0,
+                    hax_url: "",
+                    keys_json: &keys_json,
+                    saved_to: &out,
+                }
+                .to_json()
+            );
+        } else {
+            println!("Saved {}", std::path::Path::new(&out).display());
+        }
         return Ok(());
     }
 
@@ -243,8 +288,23 @@ async fn execute(r: Run) -> Result<(), Error> {
                 "no tracks found (missing or undecryptable page state)".into(),
             ));
         };
-        for (id, _key, title) in tracks {
-            println!("{id}\t{title}");
+        if r.json {
+            let items: Vec<String> = tracks
+                .iter()
+                .map(|(id, key, title)| {
+                    format!(
+                        "{{\"id\":{},\"key\":{},\"title\":{}}}",
+                        json_string(id),
+                        json_string(key),
+                        json_string(title)
+                    )
+                })
+                .collect();
+            println!("[{}]", items.join(","));
+        } else {
+            for (id, _key, title) in &tracks {
+                println!("{id}\t{title}");
+            }
         }
         return Ok(());
     }
@@ -259,19 +319,39 @@ async fn execute(r: Run) -> Result<(), Error> {
             ));
         };
         let client = Client::bulk();
-        let (audio, segments, _) =
-            download::download_cached(&client, &url, &keys, Some(&mut report)).await?;
+        let res = download::download_cached(&client, &url, &keys, Some(&mut report)).await?;
         if r.verbose {
             eprintln!(
-                "verbose: {segments} segments in {:.1}s",
+                "verbose: {} segments in {:.1}s",
+                res.segment_count,
                 secs_since(started_ms)
             );
         }
         write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
-        write_file(&out, &audio)?;
-        println!("Saved {}", std::path::Path::new(&out).display());
+        write_file(&out, &res.audio)?;
+        if r.json {
+            let keys_json = download::keys_to_json(&keys, &url, Some(&title));
+            println!(
+                "{}",
+                DownloadInfo {
+                    title: Some(&title),
+                    duration: res.duration,
+                    codec: &res.codec,
+                    mime: res.mime,
+                    bytes: res.audio.len() as u64,
+                    segment_count: res.segment_count,
+                    key_pages: res.pages,
+                    hax_url: &url,
+                    keys_json: &keys_json,
+                    saved_to: &out,
+                }
+                .to_json()
+            );
+        } else {
+            println!("Saved {}", std::path::Path::new(&out).display());
+        }
         return Ok(());
     }
 
@@ -336,10 +416,29 @@ async fn execute(r: Run) -> Result<(), Error> {
                 secs_since(started_ms)
             );
         }
+        if r.json {
+            let keys_json = download::keys_to_json(&res.keys, &res.hax_url, title.as_deref());
+            println!(
+                "{}",
+                DownloadInfo {
+                    title: title.as_deref(),
+                    duration: res.duration,
+                    codec: &res.codec,
+                    mime: "audio/mp4",
+                    bytes: res.bytes,
+                    segment_count: res.segment_count,
+                    key_pages: res.pages,
+                    hax_url: &res.hax_url,
+                    keys_json: &keys_json,
+                    saved_to: dest.as_str(),
+                }
+                .to_json()
+            );
+        }
         return Ok(());
     }
 
-    let (audio, title, hax_url, keys, segments, pages) = if is_url(&source) {
+    let res = if is_url(&source) {
         let api = Client::api();
         let bulk = Client::bulk();
         let clients = download::Clients {
@@ -352,15 +451,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = clients.download_from_page(&source, &mut opts).await?;
-        (
-            res.audio,
-            res.title,
-            res.hax_url,
-            res.keys,
-            res.segment_count,
-            res.pages,
-        )
+        clients.download_from_page(&source, &mut opts).await?
     } else {
         let html = std::fs::read_to_string(&source)
             .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
@@ -380,34 +471,119 @@ async fn execute(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = clients.download_with_handshake(&hs, &mut opts).await?;
-        (
-            res.audio,
-            res.title,
-            res.hax_url,
-            res.keys,
-            res.segment_count,
-            res.pages,
-        )
+        clients.download_with_handshake(&hs, &mut opts).await?
     };
 
-    let title = title.unwrap_or_else(|| "hotaudio-track".into());
-    write_saved_keys(&r.save_keys, &hax_url, Some(&title), &keys)?;
+    let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
+    write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys)?;
     let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
-    write_file(&out, &audio)?;
+    write_file(&out, &res.audio)?;
     if r.verbose {
         eprintln!(
-            "verbose: {segments} segments, {pages} key page(s) in {:.1}s",
+            "verbose: {} segments, {} key page(s) in {:.1}s",
+            res.segment_count,
+            res.pages,
             secs_since(started_ms)
         );
     }
-    println!("Saved {}", std::path::Path::new(&out).display());
+    if r.json {
+        let keys_json = download::keys_to_json(&res.keys, &res.hax_url, Some(&title));
+        println!(
+            "{}",
+            DownloadInfo {
+                title: Some(&title),
+                duration: res.duration,
+                codec: &res.codec,
+                mime: res.mime,
+                bytes: res.audio.len() as u64,
+                segment_count: res.segment_count,
+                key_pages: res.pages,
+                hax_url: &res.hax_url,
+                keys_json: &keys_json,
+                saved_to: &out,
+            }
+            .to_json()
+        );
+    } else {
+        println!("Saved {}", std::path::Path::new(&out).display());
+    }
     Ok(())
 }
 
 /// Seconds elapsed since a `clock::monotonic_ms` reading.
 fn secs_since(started_ms: f64) -> f64 {
     (hotaudio::clock::monotonic_ms() - started_ms) / 1000.0
+}
+
+/// Escape a string as a JSON string literal, quotes included.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The `--json` result object.
+///
+/// Mirrors the wasm `downloadTrack` shape (`title`, `durationSecs`, `codec`,
+/// `mime`, `bytes`, `segmentCount`, `keyPages`, `haxUrl`, `keysJson`) plus
+/// `savedTo`, the path the CLI wrote. `keysJson` is already JSON, so it is
+/// embedded verbatim; `title` is `null` when unknown.
+struct DownloadInfo<'a> {
+    title: Option<&'a str>,
+    duration: f64,
+    codec: &'a str,
+    mime: &'a str,
+    bytes: u64,
+    segment_count: u32,
+    key_pages: u32,
+    hax_url: &'a str,
+    keys_json: &'a str,
+    saved_to: &'a str,
+}
+
+impl DownloadInfo<'_> {
+    fn to_json(&self) -> String {
+        let title = self.title.map_or_else(|| "null".to_string(), json_string);
+        format!(
+            "{{\"title\":{title},\"durationSecs\":{:.3},\"codec\":{},\"mime\":{},\"bytes\":{},\"segmentCount\":{},\"keyPages\":{},\"haxUrl\":{},\"keysJson\":{},\"savedTo\":{}}}",
+            self.duration,
+            json_string(self.codec),
+            json_string(self.mime),
+            self.bytes,
+            self.segment_count,
+            self.key_pages,
+            json_string(self.hax_url),
+            self.keys_json,
+            json_string(self.saved_to),
+        )
+    }
+}
+
+/// One NDJSON progress event for `--progress=json`.
+fn progress_event(p: Progress) -> String {
+    let phase = match p.phase {
+        Phase::Resolving => "resolving",
+        Phase::Fetching => "fetching",
+        Phase::Decrypting => "decrypting",
+    };
+    format!(
+        "{{\"phase\":{},\"loaded\":{},\"total\":{}}}",
+        json_string(phase),
+        p.loaded,
+        p.total
+    )
 }
 
 /// Progress reporting on stderr.
@@ -584,6 +760,8 @@ mod tests {
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
         assert!(validate(&["-v".into()]).is_ok());
+        assert!(validate(&["--json".into()]).is_ok());
+        assert!(validate(&["--progress".into(), "json".into()]).is_ok());
         // Inline JSON is a value, not a flag.
         assert!(validate(&["--keys".into(), "{\"a\":1}".into()]).is_ok());
     }
@@ -593,6 +771,57 @@ mod tests {
         let err = validate(&["--quiet".into(), "--verbose".into()]).unwrap_err();
         assert!(err.contains("mutually exclusive"), "got {err}");
         assert!(validate(&["-q".into(), "-v".into()]).is_err());
+    }
+
+    #[test]
+    fn json_string_escapes_control_characters() {
+        assert_eq!(json_string("plain"), "\"plain\"");
+        assert_eq!(json_string("a\"b"), "\"a\\\"b\"");
+        assert_eq!(json_string("a\\b"), "\"a\\\\b\"");
+        assert_eq!(json_string("a\nb\tc"), "\"a\\nb\\tc\"");
+        assert_eq!(json_string("\u{1}"), "\"\\u0001\"");
+    }
+
+    #[test]
+    fn download_info_is_a_json_object() {
+        let info = DownloadInfo {
+            title: Some("Track"),
+            duration: 12.5,
+            codec: "mp4a.40.2",
+            mime: "audio/mp4",
+            bytes: 1024,
+            segment_count: 4,
+            key_pages: 2,
+            hax_url: "https://cdn.hotaudio.net/a/x.hax",
+            keys_json: "{\"v\":1}",
+            saved_to: "out.m4a",
+        };
+        assert_eq!(
+            info.to_json(),
+            "{\"title\":\"Track\",\"durationSecs\":12.500,\"codec\":\"mp4a.40.2\",\
+             \"mime\":\"audio/mp4\",\"bytes\":1024,\"segmentCount\":4,\"keyPages\":2,\
+             \"haxUrl\":\"https://cdn.hotaudio.net/a/x.hax\",\"keysJson\":{\"v\":1},\
+             \"savedTo\":\"out.m4a\"}"
+        );
+
+        let untitled = DownloadInfo {
+            title: None,
+            ..info
+        };
+        assert!(untitled.to_json().contains("\"title\":null"));
+    }
+
+    #[test]
+    fn progress_event_is_ndjson() {
+        let p = Progress {
+            phase: Phase::Fetching,
+            loaded: 5,
+            total: 10,
+        };
+        assert_eq!(
+            progress_event(p),
+            "{\"phase\":\"fetching\",\"loaded\":5,\"total\":10}"
+        );
     }
 
     #[test]

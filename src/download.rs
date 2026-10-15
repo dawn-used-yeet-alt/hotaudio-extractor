@@ -60,6 +60,8 @@ pub struct Downloaded {
     /// Duration in seconds.
     pub duration: f64,
     pub mime: &'static str,
+    /// Container codec string (e.g. `mp4a.40.2`).
+    pub codec: String,
     /// Server-issued `.hax` URL.
     pub hax_url: String,
     /// Merged branch keys, for `--save-keys`.
@@ -375,6 +377,7 @@ pub async fn decrypt_container(
         keys,
         segment_count: hax.segment_count,
         pages,
+        codec: hax.codec,
     })
 }
 
@@ -527,15 +530,31 @@ pub fn decrypt_offline(
 
 /// Fetch a `.hax` container by URL and decrypt it with saved keys (no page
 /// fetch, no listen calls).
+///
+/// Returns the same [`Downloaded`] shape as the online entry points, so callers
+/// can report one result format regardless of how the keys arrived. `pages` is
+/// zero: the offline decrypt never pages key branches.
 pub async fn download_cached(
     client: &Client,
     hax_url: &str,
     all_keys: &crypto::KeyMap,
     on_progress: Option<ProgressFn<'_>>,
-) -> Result<(Vec<u8>, u32, f64)> {
+) -> Result<Downloaded> {
     let mut opts = DownloadOptions::default();
     let bytes = fetch_container(client, hax_url, &mut opts).await?;
-    decrypt_offline(&bytes, all_keys, on_progress)
+    let hax = Hax0::parse(&bytes)?;
+    let (audio, segment_count, duration) = decrypt_offline(&bytes, all_keys, on_progress)?;
+    Ok(Downloaded {
+        audio,
+        title: None,
+        duration,
+        mime: "audio/mp4",
+        codec: hax.codec,
+        hax_url: hax_url.to_string(),
+        keys: all_keys.clone(),
+        segment_count,
+        pages: 0,
+    })
 }
 
 /// The first key branch plus the `.hax` URL, without downloading audio.
