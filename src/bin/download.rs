@@ -273,6 +273,10 @@ async fn execute(r: Run) -> Result<(), Error> {
     let (audio, title, hax_url, keys) = if is_url(&source) {
         let api = Client::api();
         let bulk = Client::bulk();
+        let clients = download::Clients {
+            api: &api,
+            bulk: &bulk,
+        };
         // Bound the callback before handing it over: `Some(&mut progress)`
         // inline would extend the borrow only to the end of the statement.
         let on_progress = &mut progress;
@@ -282,7 +286,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = download_from_page_split(&api, &bulk, &source, &mut opts).await?;
+        let res = clients.download_from_page(&source, &mut opts).await?;
         (res.audio, res.title, res.hax_url, res.keys)
     } else {
         let html = std::fs::read_to_string(&source)
@@ -293,6 +297,10 @@ async fn execute(r: Run) -> Result<(), Error> {
         hs.listen_key = listen::extract_listen_key(&source);
         let api = Client::api();
         let bulk = Client::bulk();
+        let clients = download::Clients {
+            api: &api,
+            bulk: &bulk,
+        };
         let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
@@ -300,7 +308,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
-        let res = download_with_agents(&api, &bulk, &hs, &mut opts).await?;
+        let res = clients.download_with_handshake(&hs, &mut opts).await?;
         (res.audio, res.title, res.hax_url, res.keys)
     };
 
@@ -310,44 +318,6 @@ async fn execute(r: Run) -> Result<(), Error> {
     write_file(&out, &audio)?;
     println!("Saved {}", std::path::Path::new(&out).display());
     Ok(())
-}
-
-/// Online download that keeps the small API calls on the timeout-bound client and
-/// the bulk `.hax` fetch on the untimed one.
-async fn download_from_page_split(
-    api: &Client,
-    bulk: &Client,
-    page_url: &str,
-    opts: &mut DownloadOptions<'_>,
-) -> Result<download::Downloaded, Error> {
-    if let Some(cb) = opts.on_progress.as_mut() {
-        cb(Progress {
-            phase: Phase::Resolving,
-            loaded: 0,
-            total: 0,
-        });
-    }
-    let api_base = opts.api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(api, page_url, api_base, opts.track_id).await?;
-    download_with_agents(api, bulk, &hs, opts).await
-}
-
-/// Full pipeline with separate API and bulk clients.
-async fn download_with_agents(
-    api: &Client,
-    bulk: &Client,
-    hs: &listen::Handshake,
-    opts: &mut DownloadOptions<'_>,
-) -> Result<download::Downloaded, Error> {
-    let initial = listen::listen(api, hs, -1).await?;
-    if initial.url.is_empty() {
-        return Err(Error::Listen("listen API returned no .hax url".into()));
-    }
-    // The resumable transfer, not a plain GET: a dropped container must continue
-    // from the last byte rather than restart from zero. This is the same path the
-    // library takes, so the CLI cannot drift back to a non-resumable fetch.
-    let hax_bytes = download::fetch_container(bulk, &initial.url, opts).await?;
-    download::decrypt_container(api, hs, &hax_bytes, &initial, opts).await
 }
 
 /// Progress reporting on stderr.

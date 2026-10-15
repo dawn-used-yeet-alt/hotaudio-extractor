@@ -6,6 +6,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`download::Clients`**, a split-client entry point (`Clients { api, bulk }`)
+  whose `download_from_page` / `download_with_handshake` methods run the full
+  pipeline with small API calls on one client and the bulk container transfer on
+  another. `src/bin/download.rs` now uses it instead of reimplementing the
+  pipeline (`download_from_page_split` / `download_with_agents` are gone), which
+  is what let `--track` and the resumable transfer drift out of sync. The
+  single-client `download::download_from_page` and
+  `download::download_with_handshake` remain as `Clients::single` wrappers.
+
 ### Fixed
 
 - **Key paging no longer gives up after one draw.** The branch window returned

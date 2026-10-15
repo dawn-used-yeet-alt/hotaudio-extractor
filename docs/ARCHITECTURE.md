@@ -45,6 +45,8 @@ Design rules:
   request should degrade into a bounded retry. `Client::bulk()` has no global
   timeout because a 15 MB container over a slow link legitimately takes
   minutes. Mixing these up produces either spurious failures or hangs.
+  `download::Clients` carries the pair through the pipeline so callers run one
+  implementation instead of re-wiring the two clients themselves.
 - **Async at the I/O boundary only.** `crypto`, `hax` and `signer` are
   synchronous on both targets, so the CPU-bound half of the pipeline is
   identical everywhere and the wasm build is not a second implementation of
