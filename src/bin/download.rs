@@ -23,6 +23,9 @@ use hotaudio::download::{self, DownloadOptions, Phase, Progress};
 use hotaudio::http::Client;
 use hotaudio::listen;
 
+/// Program name, printed by `--version`.
+const BIN_NAME: &str = "hotaudio-download";
+
 const USAGE: &str = "\
 hotaudio-download — download and decrypt a hotaudio.net track to playable .m4a
 
@@ -46,6 +49,7 @@ Options:
   --api-base URL    override the listen API base (default: https://hotaudio.net)
   --list-tracks     list the tracks on the page and exit
   -h, --help        show this help
+  -V, --version     print the version and exit
 
 The user agent is fixed at Mozilla/5.0 and is not configurable: the site returns
 403 for Chrome user agents on the track page and the listen endpoint.";
@@ -64,7 +68,7 @@ const VALUE_FLAGS: &[&str] = &[
 ];
 
 /// Flags that stand alone.
-const BOOL_FLAGS: &[&str] = &["--list-tracks", "--help", "-h"];
+const BOOL_FLAGS: &[&str] = &["--list-tracks", "--help", "-h", "--version", "-V"];
 
 fn main() -> ExitCode {
     #[cfg(target_arch = "wasm32")]
@@ -90,6 +94,10 @@ fn run() -> ExitCode {
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{BIN_NAME} {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     if args.is_empty() {

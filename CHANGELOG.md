@@ -37,6 +37,9 @@ All notable changes to this project are documented here. Format follows
   `console.warn` on `wasm32`) when they disagree, which means the CDN layout
   moved. It keeps fetching the server-issued URL.
 
+- **`--version` / `-V`.** The binary prints `hotaudio-download <version>` from
+  `CARGO_PKG_VERSION`, and `--help` lists the flag.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
