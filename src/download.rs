@@ -3,8 +3,14 @@
 //! Key paging policy mirrors the measurements documented in the original: each
 //! `first:<n>` listen response unlocks a small window starting at segment `n`,
 //! and the server serialises per track, so on a cache miss we request exactly
-//! the missing index. Every request is then provably needed, which minimises
-//! both wall time and server load.
+//! the missing index. But the window *width* rotates per request (8/32/128), so
+//! one draw for an index can miss the leaves that need it; on a miss the index
+//! is drawn again, bounded by [`KEY_PAGE_ATTEMPTS`] (see [`derive_or_page`]).
+//!
+//! A sequential pass shrugs a miss off — a later segment pages again anyway — but
+//! random access (seeking) lands on an arbitrary segment and has no later
+//! iteration to absorb it, so the bounded retry lives here rather than in every
+//! caller.
 
 use std::collections::HashMap;
 
@@ -138,6 +144,86 @@ pub async fn fetch_container(
     Ok(resp.body)
 }
 
+/// How many times a miss-driven key page is redrawn before giving up.
+///
+/// Branch width rotates per request, so a draw can miss (`docs/PROTOCOL.md`
+/// §5). Four draws make a persistent miss vanishingly unlikely without letting a
+/// genuinely uncovered segment spin; the previous single-draw policy is what
+/// broke seeking.
+pub const KEY_PAGE_ATTEMPTS: u32 = 4;
+
+/// A source of key branches for miss-driven paging.
+///
+/// Paging the listen API is the only implementation that matters in production,
+/// but isolating it lets [`derive_or_page`] — the retry policy callers would
+/// otherwise reinvent — be tested without a network. `async` and
+/// deliberately not object-safe, for the reasons given on
+/// [`crate::range::RangeSource`].
+#[allow(async_fn_in_trait)]
+pub trait KeyPager {
+    /// Page the branch window starting at segment `idx` and return its keys in
+    /// the wire format (node index as a decimal string, key as hex).
+    ///
+    /// An empty or non-covering result is a miss, not an error: the caller
+    /// draws again.
+    async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>>;
+}
+
+/// [`KeyPager`] over the encrypted listen API.
+pub struct ListenPager<'a> {
+    client: &'a Client,
+    hs: &'a Handshake,
+}
+
+impl<'a> ListenPager<'a> {
+    /// Page `hs`'s track through `client`.
+    pub fn new(client: &'a Client, hs: &'a Handshake) -> Self {
+        Self { client, hs }
+    }
+}
+
+impl KeyPager for ListenPager<'_> {
+    async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
+        Ok(listen::listen(self.client, self.hs, idx as i64).await?.keys)
+    }
+}
+
+/// Derive the key for `seg_idx`, paging branches until one covers it.
+///
+/// `keys` is the caller's merged-key map and `cache` its derivation memo; both
+/// are updated in place. New keys invalidate the memo, since a new ancestor
+/// changes every key beneath it. `pages` counts listen requests actually made,
+/// misses included.
+///
+/// Fails only once [`KEY_PAGE_ATTEMPTS`] consecutive draws have all missed; a
+/// transport error from `pager` is propagated immediately rather than retried,
+/// so a real failure is not reported as an uncovered segment.
+pub async fn derive_or_page(
+    pager: &mut impl KeyPager,
+    tree: &KeyTree,
+    keys: &mut crypto::KeyMap,
+    cache: &mut crypto::KeyMap,
+    seg_idx: u32,
+    pages: &mut u32,
+) -> Result<[u8; 32]> {
+    for _ in 0..KEY_PAGE_ATTEMPTS {
+        let extra = pager.page(seg_idx).await?;
+        *pages += 1;
+        if listen::merge_keys(keys, &extra) == 0 {
+            // The window missed this leaf; the next draw gets a new width.
+            continue;
+        }
+        cache.clear();
+        if let Ok(key) = tree.derive(keys, seg_idx, cache) {
+            return Ok(key);
+        }
+        // Keys arrived, but none is an ancestor of this leaf. Draw again.
+    }
+    Err(Error::Protocol(format!(
+        "no key branch covered segment {seg_idx} after {KEY_PAGE_ATTEMPTS} attempts"
+    )))
+}
+
 /// Decrypt a container, paging key branches as needed.
 ///
 /// `client` is used for key paging (small, latency-bound calls); the container
@@ -165,21 +251,16 @@ pub async fn decrypt_container(
     let mut audio: Vec<u8> =
         Vec::with_capacity((hax.file_length.saturating_sub(hax.header_length)) as usize + 64);
 
+    let mut pager = ListenPager::new(client, hs);
+    let mut pages = 0u32;
     for i in 0..hax.segment_count as usize {
         let key = match tree.derive(&keys, i as u32, &mut cache) {
             Ok(k) => k,
             Err(KeyError::Missing { seg_idx }) => {
-                // Page exactly the missing index.
-                let extra = listen::listen(client, hs, seg_idx as i64).await?;
-                if listen::merge_keys(&mut keys, &extra.keys) == 0 {
-                    return Err(Error::Protocol(format!(
-                        "no key branch covered segment {seg_idx}"
-                    )));
-                }
-                cache.clear();
-                tree.derive(&keys, seg_idx, &mut cache).map_err(|_| {
-                    Error::Protocol(format!("key branch for segment {seg_idx} still missing"))
-                })?
+                derive_or_page(
+                    &mut pager, &tree, &mut keys, &mut cache, seg_idx, &mut pages,
+                )
+                .await?
             }
         };
 
@@ -250,26 +331,20 @@ pub async fn download_streaming(
             keys.entry(*node).or_insert(*key);
         }
     }
-    let mut cache: HashMap<u32, [u8; 32]> = HashMap::new();
+    let mut cache: crypto::KeyMap = HashMap::new();
 
     let mut written = 0u64;
     let mut paged = 0u32;
+    let mut pager = ListenPager::new(api_client, hs);
 
     for i in 0..hax.segment_count as usize {
         let key = match tree.derive(&keys, i as u32, &mut cache) {
             Ok(k) => k,
             Err(KeyError::Missing { seg_idx }) => {
-                let extra = listen::listen(api_client, hs, seg_idx as i64).await?;
-                if listen::merge_keys(&mut keys, &extra.keys) == 0 {
-                    return Err(Error::Protocol(format!(
-                        "no key branch covered segment {seg_idx}"
-                    )));
-                }
-                cache.clear();
-                paged += 1;
-                tree.derive(&keys, seg_idx, &mut cache).map_err(|_| {
-                    Error::Protocol(format!("key branch for segment {seg_idx} still missing"))
-                })?
+                derive_or_page(
+                    &mut pager, &tree, &mut keys, &mut cache, seg_idx, &mut paged,
+                )
+                .await?
             }
         };
 
@@ -473,4 +548,131 @@ pub fn parse_saved_keys(text: &str) -> Result<SavedKeys> {
         hax_url,
         title,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pager that replays a fixed script of windows, one per draw.
+    ///
+    /// `Err` entries fail the draw, so a script can mix misses, non-covering
+    /// hits and transport errors. Records the indices it was asked for.
+    struct ScriptedPager {
+        windows: Vec<std::result::Result<HashMap<String, String>, Error>>,
+        seen: Vec<u32>,
+    }
+
+    impl ScriptedPager {
+        fn new(windows: Vec<HashMap<String, String>>) -> Self {
+            Self {
+                windows: windows.into_iter().map(Ok).collect(),
+                seen: Vec::new(),
+            }
+        }
+
+        fn with_error(err: Error) -> Self {
+            Self {
+                windows: vec![Err(err)],
+                seen: Vec::new(),
+            }
+        }
+    }
+
+    impl KeyPager for ScriptedPager {
+        async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
+            self.seen.push(idx);
+            let at = self.seen.len() - 1;
+            match self.windows.get(at) {
+                Some(Ok(w)) => Ok(w.clone()),
+                Some(Err(e)) => Err(Error::Protocol(e.to_string())),
+                None => Ok(HashMap::new()),
+            }
+        }
+    }
+
+    /// A one-key wire window at `node`.
+    fn window(node: u32, byte: u8) -> HashMap<String, String> {
+        HashMap::from([(node.to_string(), crypto::hex_encode(&[byte; 32]))])
+    }
+
+    async_test!(a_draw_that_covers_the_leaf_takes_one_page {
+        let tree = KeyTree::new(899);
+        let mut keys = crypto::KeyMap::new();
+        let mut cache = crypto::KeyMap::new();
+        let mut pages = 0;
+        let mut pager = ScriptedPager::new(vec![window(1, 7)]);
+
+        let key = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
+            .await
+            .unwrap();
+
+        assert_eq!(pages, 1);
+        assert_eq!(pager.seen, vec![42]);
+        let expect = tree
+            .derive(&crypto::KeyMap::from([(1u32, [7u8; 32])]), 42, &mut HashMap::new())
+            .unwrap();
+        assert_eq!(key, expect);
+    });
+
+    async_test!(a_missed_window_is_redrawn_for_the_same_index {
+        // Window misses, then a non-ancestor arrives (keys merge but the leaf
+        // stays uncovered), then the root covers it. This is the seeking case
+        // the single-draw policy failed: the first draw is not the last word.
+        let tree = KeyTree::new(899);
+        let mut keys = crypto::KeyMap::new();
+        let mut cache = crypto::KeyMap::new();
+        let mut pages = 0;
+        let non_ancestor = tree.tree_base + 500;
+        let mut pager = ScriptedPager::new(vec![
+            HashMap::new(),
+            window(non_ancestor, 9),
+            window(1, 7),
+        ]);
+
+        let key = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
+            .await
+            .unwrap();
+
+        assert_eq!(pager.seen, vec![42, 42, 42], "must redraw the same index");
+        assert_eq!(pages, 3);
+        let expect = tree
+            .derive(&crypto::KeyMap::from([(1u32, [7u8; 32])]), 42, &mut HashMap::new())
+            .unwrap();
+        assert_eq!(key, expect);
+    });
+
+    async_test!(paging_gives_up_after_the_bounded_attempts {
+        let tree = KeyTree::new(899);
+        let mut keys = crypto::KeyMap::new();
+        let mut cache = crypto::KeyMap::new();
+        let mut pages = 0;
+        let mut pager = ScriptedPager::new(vec![]);
+
+        let err = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
+            .await
+            .unwrap_err();
+
+        assert_eq!(pages, KEY_PAGE_ATTEMPTS);
+        assert_eq!(pager.seen.len(), KEY_PAGE_ATTEMPTS as usize);
+        let msg = err.to_string();
+        assert!(msg.contains("segment 42"), "got {msg}");
+        assert!(msg.contains("4 attempts"), "got {msg}");
+    });
+
+    async_test!(a_transport_error_is_not_mistaken_for_a_miss {
+        let tree = KeyTree::new(899);
+        let mut keys = crypto::KeyMap::new();
+        let mut cache = crypto::KeyMap::new();
+        let mut pages = 0;
+        let mut pager = ScriptedPager::with_error(Error::Protocol("listen exploded".into()));
+
+        let err = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("listen exploded"), "got {err}");
+        assert_eq!(pager.seen, vec![42], "a failure must not be retried");
+        assert_eq!(pages, 0);
+    });
 }

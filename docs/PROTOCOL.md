@@ -171,7 +171,11 @@ Measured against the live API on an 899-segment track:
   already harvests lucky wide branches by merging everything returned.
 - Concurrent requests show no latency benefit; the server serialises per track.
 
-Hence the policy in `download.rs`: on a miss, request exactly the missing index.
+Because width rotates, one draw for an index can miss even though a later draw
+covers it. Hence the policy in `download.rs`: on a miss, redraw the missing
+index, bounded by `KEY_PAGE_ATTEMPTS`. A sequential pass recovers from a miss on
+the next segment anyway; random access (seeking) has no next segment, which is
+what the bound is for.
 
 ## 6. The signature VM
 
