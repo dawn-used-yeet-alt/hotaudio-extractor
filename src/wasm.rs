@@ -151,7 +151,7 @@ async fn stream(
     on_fragment: &Function,
     on_progress: Option<Function>,
 ) -> Result<JsValue> {
-    let hs = listen::load_handshake(client, page_url, crate::HOTAUDIO_API_BASE).await?;
+    let hs = listen::load_handshake(client, page_url, crate::HOTAUDIO_API_BASE, None).await?;
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
 
     let sink = on_fragment.clone();

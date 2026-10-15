@@ -81,13 +81,7 @@ pub async fn download_from_page(
         });
     }
     let api_base = opts.api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(client, page_url, api_base).await?;
-    if let Some(id) = opts.track_id {
-        // Re-derive the handshake for the requested track.
-        if hs.tid != id {
-            return Err(Error::Protocol(format!("track {id} not on page")));
-        }
-    }
+    let hs = listen::load_handshake(client, page_url, api_base, opts.track_id).await?;
     download_with_handshake(client, &hs, opts).await
 }
 
@@ -464,7 +458,9 @@ pub async fn fetch_keys_only(
     api_base: Option<&str>,
 ) -> Result<KeyBundle> {
     let api_base = api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(client, page_url, api_base).await?;
+    // No track selection here: keys-only callers take the page default. A
+    // requested track needs the track-aware download path.
+    let hs = listen::load_handshake(client, page_url, api_base, None).await?;
     let initial = listen::listen(client, &hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));

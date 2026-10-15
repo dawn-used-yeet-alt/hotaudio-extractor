@@ -19,6 +19,15 @@ All notable changes to this project are documented here. Format follows
   caller. A transport error still propagates unchanged rather than being retried
   and reported as an uncovered segment.
 
+- **`--track` now works for URL-based online downloads.** `listen::load_handshake`
+  built the handshake with no track id, so both the buffered and streamed online
+  paths ignored `--track`/`DownloadOptions::track_id` and always picked the
+  page's first track; only HTML-file input honoured it. The requested id is now
+  threaded through `load_handshake` and the online pipeline, and
+  `download::download_from_page` selects the track instead of merely rejecting a
+  mismatched id. A requested track the page does not carry is still an error
+  (`track <id> not on page`).
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`

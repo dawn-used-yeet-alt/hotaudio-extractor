@@ -230,7 +230,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         let api = Client::api();
         let hs = if is_url(&source) {
             let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-            listen::load_handshake(&api, &source, api_base).await?
+            listen::load_handshake(&api, &source, api_base, r.track_id.as_deref()).await?
         } else {
             let html = std::fs::read_to_string(&source)
                 .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
@@ -328,7 +328,7 @@ async fn download_from_page_split(
         });
     }
     let api_base = opts.api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(api, page_url, api_base).await?;
+    let hs = listen::load_handshake(api, page_url, api_base, opts.track_id).await?;
     download_with_agents(api, bulk, &hs, opts).await
 }
 

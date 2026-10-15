@@ -179,8 +179,17 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Fetch the track page and build a handshake.
-pub async fn load_handshake(client: &Client, page_url: &str, api_base: &str) -> Result<Handshake> {
+/// Fetch the track page and build a handshake, selecting `track_id` when given.
+///
+/// `track_id` is the same id `--track` accepts; `None` keeps the page's default
+/// (its first track). A requested id that the page does not carry is a protocol
+/// error rather than a silent fall-back to the default.
+pub async fn load_handshake(
+    client: &Client,
+    page_url: &str,
+    api_base: &str,
+    track_id: Option<&str>,
+) -> Result<Handshake> {
     let resp = client
         .request("GET", page_url, &[("User-Agent", crate::HOTAUDIO_UA)], None)
         .await?;
@@ -188,8 +197,16 @@ pub async fn load_handshake(client: &Client, page_url: &str, api_base: &str) -> 
         return Err(Error::Http(format!("track page returned {}", resp.status)));
     }
     let html = String::from_utf8_lossy(&resp.body).into_owned();
-    let mut handshake = handshake_from_html(&html, api_base, None)?
-        .ok_or_else(|| Error::State("page has no decryptable state".into()))?;
+    let mut handshake = handshake_from_html(&html, api_base, track_id)?.ok_or_else(|| {
+        // `handshake_from_html` returns `None` both for an unreadable page and
+        // for a missing track; only the former is a state problem.
+        match track_id {
+            Some(id) if extract_ha_state(&html).is_some() => {
+                Error::Protocol(format!("track {id} not on page"))
+            }
+            _ => Error::State("page has no decryptable state".into()),
+        }
+    })?;
     handshake.listen_key = extract_listen_key(page_url);
     Ok(handshake)
 }
@@ -384,6 +401,55 @@ mod tests {
         assert_eq!(
             hax_url_for_key("abc123"),
             "https://cdn.hotaudio.net/a/abc123.hax"
+        );
+    }
+
+    /// Page HTML whose `__ha_state` decrypts to two tracks, in order 9001, 9002.
+    fn multi_track_page() -> String {
+        use base64::Engine as _;
+
+        let state = concat!(
+            r#"{"pid":"p","tick":"t","key":""#,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            r#"","tracks":{"9001":{"key":"k1","title":"First"},"#,
+            r#""9002":{"key":"k2","title":"Second"}},"order":[9001,9002]}"#
+        );
+        let key = [7u8; 32];
+        // `decrypt_state` reads the key from the trailing 32 bytes, so seal first
+        // and append it, exactly as the site's payload is laid out.
+        let mut raw = crypto::seal_zero(&key, state.as_bytes()).expect("seal state");
+        raw.extend_from_slice(&key);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+        format!(r#"<script>var __ha_state = "{encoded}";</script>"#)
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn handshake_from_html_selects_the_requested_track() {
+        let html = multi_track_page();
+
+        let requested = handshake_from_html(&html, "https://hotaudio.net", Some("9002"))
+            .expect("state decrypts")
+            .expect("track 9002 exists");
+        assert_eq!(requested.tid, "9002");
+        assert_eq!(requested.track.title, "Second");
+
+        // No id keeps the page default: the first track in `order`.
+        let default = handshake_from_html(&html, "https://hotaudio.net", None)
+            .expect("state decrypts")
+            .expect("default track exists");
+        assert_eq!(default.tid, "9001");
+        assert_eq!(default.track.title, "First");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn handshake_from_html_returns_none_for_an_unknown_track() {
+        let html = multi_track_page();
+        assert!(
+            handshake_from_html(&html, "https://hotaudio.net", Some("9999"))
+                .expect("state decrypts")
+                .is_none()
         );
     }
 }
