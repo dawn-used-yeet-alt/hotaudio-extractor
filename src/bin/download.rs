@@ -147,6 +147,18 @@ struct Run {
 }
 
 async fn execute(r: Run) -> Result<(), Error> {
+    // A URL that is not a canonical share link is usually a typo, and the
+    // failure would otherwise only surface deep in the pipeline. This is a
+    // warning, not a rejection: proxies and mirrors are legitimate.
+    if let Some(source) = &r.source {
+        if is_url(source) && !hotaudio::is_hotaudio_url(source) {
+            eprintln!(
+                "warning: '{source}' is not a canonical hotaudio share link \
+                 (https://hotaudio.net/u/<user>/<track>); trying it anyway"
+            );
+        }
+    }
+
     // ---- Offline: local .hax + saved keys, no network ----
     if let Some(hax_path) = &r.hax_path {
         let saved = load_keys(&r.keys_path)?;

@@ -107,8 +107,13 @@ pub const HOTAUDIO_UA: &str = "Mozilla/5.0";
 pub const HOTAUDIO_API_BASE: &str = "https://hotaudio.net";
 
 /// Match canonical hotaudio share links.
+///
+/// The crate fetches whatever URL it is given, so this is a heuristic for
+/// catching a wrong link early, not an access-control check: mirrors, proxies and
+/// short links may legitimately fail it.
 pub fn is_hotaudio_url(url: &str) -> bool {
-    // https?://(www.)?hotaudio.net/u/<user>/<track> with an optional query.
+    // https?://(www.)?hotaudio.net/u/<user>/<track> with an optional query and
+    // an optional trailing slash.
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -118,12 +123,13 @@ pub fn is_hotaudio_url(url: &str) -> bool {
         return false;
     };
     let path = path.split(['?', '#']).next().unwrap_or("");
+    let path = path.trim_end_matches('/');
     // Expect exactly `u/<user>/<track>`.
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() != 3 || parts[0] != "u" {
-        return false;
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("u"), Some(user), Some(track), None) => !user.is_empty() && !track.is_empty(),
+        _ => false,
     }
-    !parts[1].is_empty() && !parts[2].is_empty()
 }
 
 #[cfg(test)]
@@ -135,8 +141,12 @@ mod tests {
     fn url_detection() {
         assert!(is_hotaudio_url("https://hotaudio.net/u/a/b"));
         assert!(is_hotaudio_url("https://www.hotaudio.net/u/a/b?x=1"));
+        assert!(is_hotaudio_url("http://hotaudio.net/u/a/b/"));
+        assert!(is_hotaudio_url("https://hotaudio.net/u/a/b/#frag"));
         assert!(!is_hotaudio_url("https://example.com/u/a/b"));
         assert!(!is_hotaudio_url("https://hotaudio.net/u/a"));
+        assert!(!is_hotaudio_url("https://hotaudio.net/u/a/b/c"));
+        assert!(!is_hotaudio_url("https://hotaudio.net/u//b"));
         assert!(!is_hotaudio_url("https://hotaudio.net/"));
     }
 }

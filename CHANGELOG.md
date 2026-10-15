@@ -25,6 +25,12 @@ All notable changes to this project are documented here. Format follows
   `Hax0::base_key` is now documented as parsed-but-unused: the player only logs
   it and never derives from it.
 
+- **Input URLs are checked early.** `is_hotaudio_url` is now used by the CLI and
+  the `downloadTrack` / `trackKeys` wasm exports to warn when a page URL does not
+  look like a canonical share link, so a typo surfaces before the pipeline fails
+  deep inside. The matcher also tolerates a trailing slash. It stays a hint, not
+  a gate: proxies and mirrors are supported, so the request still goes ahead.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
