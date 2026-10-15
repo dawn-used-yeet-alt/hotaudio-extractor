@@ -50,6 +50,10 @@ pub struct DownloadOptions<'a> {
     pub on_progress: ProgressSink<'a>,
     pub api_base: Option<&'a str>,
     pub track_id: Option<&'a str>,
+    /// Keep the raw `.hax` container bytes on [`Downloaded::hax_bytes`] so the
+    /// caller can archive them. Off by default: the container is 15–25 MB, and
+    /// buffered mode already holds the decrypted audio.
+    pub capture_hax: bool,
 }
 
 /// The decrypted track plus everything needed to reuse it.
@@ -69,6 +73,9 @@ pub struct Downloaded {
     pub segment_count: u32,
     /// How many key branches had to be paged.
     pub pages: u32,
+    /// The raw container bytes, present only when [`DownloadOptions::capture_hax`]
+    /// was set. Reusable with [`decrypt_offline`] and a saved-keys envelope.
+    pub hax_bytes: Option<Vec<u8>>,
 }
 
 /// The two clients a full download uses.
@@ -128,7 +135,11 @@ impl<'a> Clients<'a> {
         check_hax_url(hs, &initial.url);
 
         let hax_bytes = fetch_container(self.bulk, &initial.url, opts).await?;
-        decrypt_container(self.api, hs, &hax_bytes, &initial, opts).await
+        let mut downloaded = decrypt_container(self.api, hs, &hax_bytes, &initial, opts).await?;
+        if opts.capture_hax {
+            downloaded.hax_bytes = Some(hax_bytes);
+        }
+        Ok(downloaded)
     }
 }
 
@@ -378,6 +389,7 @@ pub async fn decrypt_container(
         segment_count: hax.segment_count,
         pages,
         codec: hax.codec,
+        hax_bytes: None,
     })
 }
 
@@ -533,17 +545,19 @@ pub fn decrypt_offline(
 ///
 /// Returns the same [`Downloaded`] shape as the online entry points, so callers
 /// can report one result format regardless of how the keys arrived. `pages` is
-/// zero: the offline decrypt never pages key branches.
+/// zero: the offline decrypt never pages key branches. When `capture_hax` is
+/// set, the raw container is kept on [`Downloaded::hax_bytes`] for archiving.
 pub async fn download_cached(
     client: &Client,
     hax_url: &str,
     all_keys: &crypto::KeyMap,
     on_progress: Option<ProgressFn<'_>>,
+    capture_hax: bool,
 ) -> Result<Downloaded> {
     let mut opts = DownloadOptions::default();
-    let bytes = fetch_container(client, hax_url, &mut opts).await?;
-    let hax = Hax0::parse(&bytes)?;
-    let (audio, segment_count, duration) = decrypt_offline(&bytes, all_keys, on_progress)?;
+    let hax_bytes = fetch_container(client, hax_url, &mut opts).await?;
+    let hax = Hax0::parse(&hax_bytes)?;
+    let (audio, segment_count, duration) = decrypt_offline(&hax_bytes, all_keys, on_progress)?;
     Ok(Downloaded {
         audio,
         title: None,
@@ -554,6 +568,7 @@ pub async fn download_cached(
         keys: all_keys.clone(),
         segment_count,
         pages: 0,
+        hax_bytes: capture_hax.then_some(hax_bytes),
     })
 }
 

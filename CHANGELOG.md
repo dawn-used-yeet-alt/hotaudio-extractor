@@ -60,6 +60,12 @@ All notable changes to this project are documented here. Format follows
   stderr, and the result line moves there too when stdout carries the audio, so
   the stream is never corrupted.
 
+- **`--save-hax PATH`.** Writes the raw `.hax` container alongside the decrypted
+  audio so it can be decrypted offline later (with `--save-keys`). Available in
+  every buffered mode; rejected with `--stream-to`, which never buffers the
+  container. `DownloadOptions` gained `capture_hax`, `Downloaded` gained
+  `hax_bytes`, and `download_cached` takes a `capture_hax` flag to carry it.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`

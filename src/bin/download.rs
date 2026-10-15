@@ -41,6 +41,8 @@ Options:
                     one segment, first playable fragment after one round trip
                     ('-' streams to stdout)
   --save-keys PATH  write the saved-keys envelope here for later reuse
+  --save-hax PATH   write the raw .hax container here for a later offline decrypt
+                    (buffered modes only; not with --stream-to)
   --keys PATH       saved-keys envelope to resume from; accepts a file path or
                     inline JSON. In online mode, seeds the key map so an
                     interrupted download refetches only what is missing
@@ -72,6 +74,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--track",
     "--api-base",
     "--progress",
+    "--save-hax",
 ];
 
 /// Flags that stand alone.
@@ -132,6 +135,7 @@ fn run() -> ExitCode {
     let out = flag(&args, "--out");
     let stream_to = flag(&args, "--stream-to");
     let save_keys = flag(&args, "--save-keys");
+    let save_hax = flag(&args, "--save-hax");
     let hax_path = flag(&args, "--hax");
     let hax_url = flag(&args, "--hax-url");
     let keys_path = flag(&args, "--keys");
@@ -155,6 +159,7 @@ fn run() -> ExitCode {
         out,
         stream_to,
         save_keys,
+        save_hax,
         hax_path,
         hax_url,
         keys_path,
@@ -179,6 +184,7 @@ struct Run {
     out: Option<String>,
     stream_to: Option<String>,
     save_keys: Option<String>,
+    save_hax: Option<String>,
     hax_path: Option<String>,
     hax_url: Option<String>,
     keys_path: Option<String>,
@@ -229,6 +235,9 @@ async fn execute(r: Run) -> Result<(), Error> {
         let bytes = std::fs::read(hax_path)
             .map_err(|e| Error::Http(format!("cannot read {hax_path}: {e}")))?;
         let hax = hotaudio::hax::Hax0::parse(&bytes)?;
+        if let Some(path) = &r.save_hax {
+            write_file(path, &bytes)?;
+        }
         let (audio, segments, _) = download::decrypt_offline(&bytes, &keys, Some(&mut report))?;
         if r.verbose {
             eprintln!(
@@ -318,7 +327,19 @@ async fn execute(r: Run) -> Result<(), Error> {
             ));
         };
         let client = Client::bulk();
-        let res = download::download_cached(&client, &url, &keys, Some(&mut report)).await?;
+        let res = download::download_cached(
+            &client,
+            &url,
+            &keys,
+            Some(&mut report),
+            r.save_hax.is_some(),
+        )
+        .await?;
+        if let Some(path) = &r.save_hax {
+            if let Some(bytes) = &res.hax_bytes {
+                write_file(path, bytes)?;
+            }
+        }
         if r.verbose {
             eprintln!(
                 "verbose: {} segments in {:.1}s",
@@ -443,6 +464,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             on_progress: Some(&mut report),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
+            capture_hax: r.save_hax.is_some(),
         };
         clients.download_from_page(&source, &mut opts).await?
     } else {
@@ -463,10 +485,16 @@ async fn execute(r: Run) -> Result<(), Error> {
             on_progress: Some(&mut report),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
+            capture_hax: r.save_hax.is_some(),
         };
         clients.download_with_handshake(&hs, &mut opts).await?
     };
 
+    if let Some(path) = &r.save_hax {
+        if let Some(bytes) = &res.hax_bytes {
+            write_file(path, bytes)?;
+        }
+    }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys)?;
     let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
@@ -608,6 +636,17 @@ fn validate(args: &[String]) -> Result<(), String> {
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     if quiet && verbose {
         return Err("--quiet and --verbose are mutually exclusive".into());
+    }
+    if args
+        .iter()
+        .any(|a| a == "--save-hax" || a.starts_with("--save-hax="))
+        && args
+            .iter()
+            .any(|a| a == "--stream-to" || a.starts_with("--stream-to="))
+    {
+        return Err(
+            "--save-hax needs the buffered container; it is not available with --stream-to".into(),
+        );
     }
     for (i, arg) in args.iter().enumerate() {
         if !arg.starts_with('-') {
@@ -790,6 +829,21 @@ mod tests {
         let err = validate(&["--quiet".into(), "--verbose".into()]).unwrap_err();
         assert!(err.contains("mutually exclusive"), "got {err}");
         assert!(validate(&["-q".into(), "-v".into()]).is_err());
+    }
+
+    #[test]
+    fn save_hax_conflicts_with_stream_to() {
+        assert!(
+            validate(&[
+                "--save-hax".into(),
+                "c.hax".into(),
+                "--stream-to".into(),
+                "a.m4a".into()
+            ])
+            .is_err()
+        );
+        assert!(validate(&["--save-hax=c.hax".into(), "--stream-to=a.m4a".into()]).is_err());
+        assert!(validate(&["--save-hax".into(), "c.hax".into()]).is_ok());
     }
 
     #[test]
