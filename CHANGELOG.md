@@ -6,6 +6,19 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Key paging no longer gives up after one draw.** The branch window returned
+  for an index rotates in width (8/32/128), so a single draw can miss the leaves
+  that need it; `decrypt_container` and `download_streaming` treated that first
+  miss as terminal. Sequential downloads usually recovered by luck on a later
+  segment, but random access (seeking) into an arbitrary segment failed
+  intermittently with `no key branch covered segment N`. Both paths now redraw
+  the same index through one shared helper (`download::derive_or_page`, bounded
+  by `KEY_PAGE_ATTEMPTS`), so the policy lives in the crate instead of in each
+  caller. A transport error still propagates unchanged rather than being retried
+  and reported as an uncovered segment.
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`
