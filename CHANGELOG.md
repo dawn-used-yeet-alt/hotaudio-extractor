@@ -27,6 +27,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
+  used `Content-Length` only for progress, so a body that ended cleanly but
+  short of the announced length was returned as success; it now compares the
+  final length and resumes for the remainder within the existing retry budget,
+  erroring if it never completes. The decrypted audio is also checked for an MP4
+  `ftyp` box at offset 4 before it is returned or streamed, mirroring
+  `scripts/verify-live.ts`.
+
 - **Key paging no longer gives up after one draw.** The branch window returned
   for an index rotates in width (8/32/128), so a single draw can miss the leaves
   that need it; `decrypt_container` and `download_streaming` treated that first

@@ -223,6 +223,7 @@ impl Client {
         let mut buf: Vec<u8> = Vec::new();
         let mut status: u16 = 0;
         let mut resp_headers: Vec<(String, String)> = Vec::new();
+        let mut expected: Option<u64> = None;
         let mut last: Option<Error> = None;
 
         for attempt in 1..=ATTEMPTS {
@@ -261,7 +262,8 @@ impl Client {
             // A server that ignores `Range` resends from the start; drop the
             // partial buffer so the body stays one contiguous copy of the
             // object.
-            if resume_at > 0 && code == 200 {
+            let ignored_range = resume_at > 0 && code == 200;
+            if ignored_range {
                 buf.clear();
             }
             if !(200..300).contains(&code) && !is_retryable(code) {
@@ -270,9 +272,16 @@ impl Client {
 
             status = code;
             resp_headers = head.headers;
+            // A 206 body is only the remainder, so its `Content-Length` is added
+            // to where it resumes; a 200 (range ignored, buffer cleared) is the
+            // whole object, so its offset is zero.
+            let body_offset = if ignored_range { 0 } else { resume_at };
             let total = head
                 .content_length
-                .map_or(0, |cl| cl.saturating_add(resume_at as u64));
+                .map_or(0, |cl| cl.saturating_add(body_offset as u64));
+            if total > 0 {
+                expected = Some(total);
+            }
 
             match body
                 .pump(&mut |chunk| {
@@ -281,8 +290,16 @@ impl Client {
                 })
                 .await
             {
-                // Clean end of body.
-                Ok(()) => break,
+                // Clean end of body. A body that stops short of the announced
+                // length is truncated, not complete: resume for the remainder
+                // rather than accept a short object.
+                Ok(()) => {
+                    if expected.is_some_and(|e| (buf.len() as u64) < e) && attempt != ATTEMPTS {
+                        clock::sleep(backoff(attempt, None).min(remaining(started))).await;
+                        continue;
+                    }
+                    break;
+                }
                 Err(err) => {
                     last = Some(err);
                     if attempt == ATTEMPTS {
@@ -295,6 +312,17 @@ impl Client {
 
         if status == 0 {
             return Err(last.unwrap_or_else(|| Error::Http("request failed".into())));
+        }
+        // Only a transfer that matches its announced length is complete. A body
+        // cut short by a proxy, or a wrong `Content-Length`, would otherwise
+        // decrypt into a corrupt MP4.
+        if let Some(expected) = expected {
+            if buf.len() as u64 != expected {
+                return Err(Error::Http(format!(
+                    ".hax transfer incomplete: got {} of {expected} bytes",
+                    buf.len()
+                )));
+            }
         }
         on_progress(buf.len() as u64, buf.len() as u64);
         Ok(FullResponse {

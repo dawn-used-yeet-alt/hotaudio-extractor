@@ -269,6 +269,21 @@ pub async fn derive_or_page(
     )))
 }
 
+/// Cheap sanity check that decrypted bytes are MP4.
+///
+/// The first decrypted bytes are the head of the original file, so a valid MP4
+/// has the `ftyp` box type at offset 4. This catches a truncated or wrongly
+/// keyed decrypt that happened to authenticate before the bytes are written or
+/// handed to a caller.
+fn ensure_mp4(audio: &[u8]) -> Result<()> {
+    if audio.len() < 8 || &audio[4..8] != b"ftyp" {
+        return Err(Error::Protocol(
+            "decrypted audio is not an MP4 (no ftyp box at offset 4)".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Decrypt a container, paging key branches as needed.
 ///
 /// `client` is used for key paging (small, latency-bound calls); the container
@@ -327,6 +342,7 @@ pub async fn decrypt_container(
         }
     }
 
+    ensure_mp4(&audio)?;
     Ok(Downloaded {
         audio,
         title: Some(hs.track.title.clone()).filter(|t| !t.is_empty()),
@@ -403,6 +419,11 @@ pub async fn download_streaming(
             )));
         }
         let plain = crypto::open_zero(&key, &slice)?;
+        if i == 0 {
+            // The first fragment is the earliest point a caller has MP4 bytes;
+            // reject a non-MP4 first segment before handing it over.
+            ensure_mp4(&plain)?;
+        }
         on_fragment(&plain)?;
         written += plain.len() as u64;
 
@@ -475,6 +496,7 @@ pub fn decrypt_offline(
             }
         }
     }
+    ensure_mp4(&audio)?;
     Ok((audio, hax.segment_count, hax.duration_ms as f64 / 1000.0))
 }
 

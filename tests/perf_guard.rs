@@ -128,7 +128,7 @@ fn build_container(tree: &KeyTree, keys: &KeyMap, segments: u32, segment_bytes: 
     let ciphertexts: Vec<Vec<u8>> = (0..segments)
         .map(|i| {
             let key = tree.derive(keys, i, &mut cache).expect("derive");
-            let plain: Vec<u8> = (0..segment_bytes)
+            let mut plain: Vec<u8> = (0..segment_bytes)
                 .map(|b| {
                     if b == 0 {
                         (i % 251) as u8
@@ -137,6 +137,11 @@ fn build_container(tree: &KeyTree, keys: &KeyMap, segments: u32, segment_bytes: 
                     }
                 })
                 .collect();
+            if i == 0 {
+                // A valid MP4 head, so `decrypt_offline`'s `ftyp` check passes.
+                // `plain[0]` stays 0, so the ordering assertion still holds.
+                plain[..8].copy_from_slice(b"\0\0\0\x20ftyp");
+            }
             hotaudio::crypto::seal_zero(&key, &plain).expect("seal")
         })
         .collect();

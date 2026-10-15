@@ -116,7 +116,10 @@ several full-length transfers. `get_resumable` keeps the bytes already read and
 asks only for the remainder via `Range`, which the CDN honours with `206`. A
 server that ignores `Range` and replies `200` causes the partial buffer to be
 discarded and the request to restart, so correctness never depends on range
-support. Covered by `tests/http_resume.rs`.
+support. The reassembled body is also checked against the announced
+`Content-Length` — a body cut short is an error, not a silently corrupt
+container — and the decrypted result is checked for an MP4 `ftyp` box before it
+is returned or handed to a caller. Covered by `tests/http_resume.rs`.
 
 ### What does *not* help
 
