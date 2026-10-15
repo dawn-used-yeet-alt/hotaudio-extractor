@@ -66,6 +66,12 @@ All notable changes to this project are documented here. Format follows
   container. `DownloadOptions` gained `capture_hax`, `Downloaded` gained
   `hax_bytes`, and `download_cached` takes a `capture_hax` flag to carry it.
 
+- **`--keys-only`.** With `--save-keys`, it does the handshake and first listen
+  and writes the envelope without fetching the container or decrypting, so keys
+  can be archived without a full download. `--track` selects a track. It reuses
+  `download::fetch_keys_only`, which gained a `track_id` argument. It needs
+  `--save-keys` and conflicts with `--hax`, `--keys` and `--stream-to`.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`

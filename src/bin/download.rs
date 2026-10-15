@@ -41,6 +41,8 @@ Options:
                     one segment, first playable fragment after one round trip
                     ('-' streams to stdout)
   --save-keys PATH  write the saved-keys envelope here for later reuse
+  --keys-only       save the first key branch (needs --save-keys) and exit, without
+                    fetching the container or decrypting
   --save-hax PATH   write the raw .hax container here for a later offline decrypt
                     (buffered modes only; not with --stream-to)
   --keys PATH       saved-keys envelope to resume from; accepts a file path or
@@ -89,6 +91,7 @@ const BOOL_FLAGS: &[&str] = &[
     "--verbose",
     "-v",
     "--json",
+    "--keys-only",
 ];
 
 fn main() -> ExitCode {
@@ -142,6 +145,7 @@ fn run() -> ExitCode {
     let track_id = flag(&args, "--track");
     let api_base = flag(&args, "--api-base");
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
+    let keys_only = args.iter().any(|a| a == "--keys-only");
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let json = args.iter().any(|a| a == "--json");
@@ -166,6 +170,7 @@ fn run() -> ExitCode {
         track_id,
         api_base,
         list_tracks,
+        keys_only,
         quiet,
         verbose,
         json,
@@ -191,6 +196,7 @@ struct Run {
     track_id: Option<String>,
     api_base: Option<String>,
     list_tracks: bool,
+    keys_only: bool,
     quiet: bool,
     verbose: bool,
     json: bool,
@@ -313,6 +319,45 @@ async fn execute(r: Run) -> Result<(), Error> {
             for (id, _key, title) in &tracks {
                 println!("{id}\t{title}");
             }
+        }
+        return Ok(());
+    }
+
+    // ---- Keys only: handshake + first listen, no container ----
+    if r.keys_only {
+        let Some(source) = &r.source else {
+            return Err(Error::Protocol("--keys-only needs a page URL".into()));
+        };
+        if !is_url(source) {
+            return Err(Error::Protocol(
+                "--keys-only needs a page URL, not a local file".into(),
+            ));
+        }
+        let client = Client::api();
+        let bundle = download::fetch_keys_only(
+            &client,
+            source,
+            r.api_base.as_deref(),
+            r.track_id.as_deref(),
+        )
+        .await?;
+        write_saved_keys(
+            &r.save_keys,
+            &bundle.hax_url,
+            bundle.title.as_deref(),
+            &bundle.keys,
+        )?;
+        if r.json {
+            let keys_json =
+                download::keys_to_json(&bundle.keys, &bundle.hax_url, bundle.title.as_deref());
+            let title = bundle
+                .title
+                .as_deref()
+                .map_or_else(|| "null".to_string(), json_string);
+            println!(
+                "{{\"title\":{title},\"haxUrl\":{},\"keysJson\":{keys_json}}}",
+                json_string(&bundle.hax_url)
+            );
         }
         return Ok(());
     }
@@ -628,25 +673,36 @@ fn progress(p: Progress) {
     let _ = std::io::stderr().flush();
 }
 
+/// Whether `name` appears as a flag, in either `--name` or `--name=value` form.
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter()
+        .any(|a| a.split_once('=').map_or(a.as_str(), |(n, _)| n) == name)
+}
+
 /// Reject unknown flags and value flags whose value is missing or is itself
 /// another flag, so `hotaudio-download --out --list-tracks` fails instead of
 /// writing a file called `--list-tracks`.
 fn validate(args: &[String]) -> Result<(), String> {
-    let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
-    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    let quiet = has_flag(args, "--quiet") || has_flag(args, "-q");
+    let verbose = has_flag(args, "--verbose") || has_flag(args, "-v");
     if quiet && verbose {
         return Err("--quiet and --verbose are mutually exclusive".into());
     }
-    if args
-        .iter()
-        .any(|a| a == "--save-hax" || a.starts_with("--save-hax="))
-        && args
-            .iter()
-            .any(|a| a == "--stream-to" || a.starts_with("--stream-to="))
-    {
+    if has_flag(args, "--save-hax") && has_flag(args, "--stream-to") {
         return Err(
             "--save-hax needs the buffered container; it is not available with --stream-to".into(),
         );
+    }
+    if has_flag(args, "--keys-only") {
+        if !has_flag(args, "--save-keys") {
+            return Err("--keys-only needs --save-keys".into());
+        }
+        if has_flag(args, "--hax") || has_flag(args, "--keys") || has_flag(args, "--stream-to") {
+            return Err(
+                "--keys-only only fetches keys; it conflicts with --hax, --keys and --stream-to"
+                    .into(),
+            );
+        }
     }
     for (i, arg) in args.iter().enumerate() {
         if !arg.starts_with('-') {
@@ -844,6 +900,31 @@ mod tests {
         );
         assert!(validate(&["--save-hax=c.hax".into(), "--stream-to=a.m4a".into()]).is_err());
         assert!(validate(&["--save-hax".into(), "c.hax".into()]).is_ok());
+    }
+
+    #[test]
+    fn keys_only_requires_save_keys() {
+        assert!(validate(&["--keys-only".into()]).is_err());
+        assert!(validate(&["--keys-only".into(), "--save-keys".into(), "k.json".into()]).is_ok());
+        assert!(validate(&["--keys-only".into(), "--save-keys=k.json".into()]).is_ok());
+    }
+
+    #[test]
+    fn keys_only_conflicts_with_other_modes() {
+        let base = [
+            "--keys-only".to_string(),
+            "--save-keys".to_string(),
+            "k.json".to_string(),
+        ];
+        for extra in [
+            ["--hax", "in.hax"],
+            ["--stream-to", "a.m4a"],
+            ["--keys", "k2.json"],
+        ] {
+            let mut args = base.to_vec();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            assert!(validate(&args).is_err(), "{extra:?}");
+        }
     }
 
     #[test]
