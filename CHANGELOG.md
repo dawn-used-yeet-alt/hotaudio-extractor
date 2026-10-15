@@ -40,6 +40,12 @@ All notable changes to this project are documented here. Format follows
 - **`--version` / `-V`.** The binary prints `hotaudio-download <version>` from
   `CARGO_PKG_VERSION`, and `--help` lists the flag.
 
+- **`--quiet` / `-q` and `--verbose` / `-v`.** `--quiet` silences the stderr
+  progress reporter; `--verbose` adds a stderr line with the segment count, key
+  page count and elapsed time (the two are mutually exclusive). To feed that,
+  `download::Downloaded` now exposes `pages`, the number of key branches that
+  had to be paged.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`

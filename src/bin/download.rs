@@ -47,6 +47,8 @@ Options:
   --hax-url URL     container URL for cached mode, when the envelope has none
   --track ID        select a track by id on a multi-track page
   --api-base URL    override the listen API base (default: https://hotaudio.net)
+  -q, --quiet       suppress the progress reporter
+  -v, --verbose     report key-page counts and timing
   --list-tracks     list the tracks on the page and exit
   -h, --help        show this help
   -V, --version     print the version and exit
@@ -68,7 +70,17 @@ const VALUE_FLAGS: &[&str] = &[
 ];
 
 /// Flags that stand alone.
-const BOOL_FLAGS: &[&str] = &["--list-tracks", "--help", "-h", "--version", "-V"];
+const BOOL_FLAGS: &[&str] = &[
+    "--list-tracks",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--quiet",
+    "-q",
+    "--verbose",
+    "-v",
+];
 
 fn main() -> ExitCode {
     #[cfg(target_arch = "wasm32")]
@@ -120,6 +132,8 @@ fn run() -> ExitCode {
     let track_id = flag(&args, "--track");
     let api_base = flag(&args, "--api-base");
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
+    let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
 
     match hotaudio::block_on(execute(Run {
         source,
@@ -132,6 +146,8 @@ fn run() -> ExitCode {
         track_id,
         api_base,
         list_tracks,
+        quiet,
+        verbose,
     })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -152,6 +168,8 @@ struct Run {
     track_id: Option<String>,
     api_base: Option<String>,
     list_tracks: bool,
+    quiet: bool,
+    verbose: bool,
 }
 
 async fn execute(r: Run) -> Result<(), Error> {
@@ -167,6 +185,17 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
     }
 
+    let started_ms = hotaudio::clock::monotonic_ms();
+
+    // The progress reporter, silenced under `--quiet`. One mutable closure is
+    // reused by every mode; it captures only `quiet`, so it does not borrow `r`.
+    let quiet = r.quiet;
+    let mut report = move |p: Progress| {
+        if !quiet {
+            progress(p);
+        }
+    };
+
     // ---- Offline: local .hax + saved keys, no network ----
     if let Some(hax_path) = &r.hax_path {
         let saved = load_keys(&r.keys_path)?;
@@ -174,7 +203,13 @@ async fn execute(r: Run) -> Result<(), Error> {
         let title = saved.title;
         let bytes = std::fs::read(hax_path)
             .map_err(|e| Error::Http(format!("cannot read {hax_path}: {e}")))?;
-        let (audio, _, _) = download::decrypt_offline(&bytes, &keys, Some(&mut progress))?;
+        let (audio, segments, _) = download::decrypt_offline(&bytes, &keys, Some(&mut report))?;
+        if r.verbose {
+            eprintln!(
+                "verbose: {segments} segments in {:.1}s",
+                secs_since(started_ms)
+            );
+        }
         write_saved_keys(&r.save_keys, "", title.as_deref(), &keys)?;
         let title = title.unwrap_or_else(|| stem(hax_path));
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
@@ -224,8 +259,14 @@ async fn execute(r: Run) -> Result<(), Error> {
             ));
         };
         let client = Client::bulk();
-        let (audio, _, _) =
-            download::download_cached(&client, &url, &keys, Some(&mut progress)).await?;
+        let (audio, segments, _) =
+            download::download_cached(&client, &url, &keys, Some(&mut report)).await?;
+        if r.verbose {
+            eprintln!(
+                "verbose: {segments} segments in {:.1}s",
+                secs_since(started_ms)
+            );
+        }
         write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
@@ -276,7 +317,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                     .write_all(fragment)
                     .map_err(|e| Error::Http(e.to_string()))
             },
-            Some(&mut progress),
+            Some(&mut report),
         )
         .await?;
         writer.flush().map_err(|e| Error::Http(e.to_string()))?;
@@ -287,27 +328,39 @@ async fn execute(r: Run) -> Result<(), Error> {
             "streamed {} bytes across {} segments ({} page(s)) to {}",
             res.bytes, res.segment_count, res.pages, dest
         );
+        if r.verbose {
+            eprintln!(
+                "verbose: {} segments, {} key page(s) in {:.1}s",
+                res.segment_count,
+                res.pages,
+                secs_since(started_ms)
+            );
+        }
         return Ok(());
     }
 
-    let (audio, title, hax_url, keys) = if is_url(&source) {
+    let (audio, title, hax_url, keys, segments, pages) = if is_url(&source) {
         let api = Client::api();
         let bulk = Client::bulk();
         let clients = download::Clients {
             api: &api,
             bulk: &bulk,
         };
-        // Bound the callback before handing it over: `Some(&mut progress)`
-        // inline would extend the borrow only to the end of the statement.
-        let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
-            on_progress: Some(on_progress),
+            on_progress: Some(&mut report),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
         let res = clients.download_from_page(&source, &mut opts).await?;
-        (res.audio, res.title, res.hax_url, res.keys)
+        (
+            res.audio,
+            res.title,
+            res.hax_url,
+            res.keys,
+            res.segment_count,
+            res.pages,
+        )
     } else {
         let html = std::fs::read_to_string(&source)
             .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
@@ -321,23 +374,40 @@ async fn execute(r: Run) -> Result<(), Error> {
             api: &api,
             bulk: &bulk,
         };
-        let on_progress = &mut progress;
         let mut opts = DownloadOptions {
             initial_keys: seed,
-            on_progress: Some(on_progress),
+            on_progress: Some(&mut report),
             api_base: r.api_base.as_deref(),
             track_id: r.track_id.as_deref(),
         };
         let res = clients.download_with_handshake(&hs, &mut opts).await?;
-        (res.audio, res.title, res.hax_url, res.keys)
+        (
+            res.audio,
+            res.title,
+            res.hax_url,
+            res.keys,
+            res.segment_count,
+            res.pages,
+        )
     };
 
     let title = title.unwrap_or_else(|| "hotaudio-track".into());
     write_saved_keys(&r.save_keys, &hax_url, Some(&title), &keys)?;
     let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
     write_file(&out, &audio)?;
+    if r.verbose {
+        eprintln!(
+            "verbose: {segments} segments, {pages} key page(s) in {:.1}s",
+            secs_since(started_ms)
+        );
+    }
     println!("Saved {}", std::path::Path::new(&out).display());
     Ok(())
+}
+
+/// Seconds elapsed since a `clock::monotonic_ms` reading.
+fn secs_since(started_ms: f64) -> f64 {
+    (hotaudio::clock::monotonic_ms() - started_ms) / 1000.0
 }
 
 /// Progress reporting on stderr.
@@ -367,6 +437,11 @@ fn progress(p: Progress) {
 /// another flag, so `hotaudio-download --out --list-tracks` fails instead of
 /// writing a file called `--list-tracks`.
 fn validate(args: &[String]) -> Result<(), String> {
+    let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    if quiet && verbose {
+        return Err("--quiet and --verbose are mutually exclusive".into());
+    }
     for (i, arg) in args.iter().enumerate() {
         if !arg.starts_with('-') {
             continue;
@@ -505,8 +580,19 @@ mod tests {
         assert!(validate(&["--out".into(), "a.m4a".into()]).is_ok());
         assert!(validate(&["--out=a.m4a".into()]).is_ok());
         assert!(validate(&["--list-tracks".into()]).is_ok());
+        assert!(validate(&["--quiet".into()]).is_ok());
+        assert!(validate(&["-q".into()]).is_ok());
+        assert!(validate(&["--verbose".into()]).is_ok());
+        assert!(validate(&["-v".into()]).is_ok());
         // Inline JSON is a value, not a flag.
         assert!(validate(&["--keys".into(), "{\"a\":1}".into()]).is_ok());
+    }
+
+    #[test]
+    fn quiet_and_verbose_conflict() {
+        let err = validate(&["--quiet".into(), "--verbose".into()]).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "got {err}");
+        assert!(validate(&["-q".into(), "-v".into()]).is_err());
     }
 
     #[test]

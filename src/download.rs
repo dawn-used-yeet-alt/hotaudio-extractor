@@ -65,6 +65,8 @@ pub struct Downloaded {
     /// Merged branch keys, for `--save-keys`.
     pub keys: crypto::KeyMap,
     pub segment_count: u32,
+    /// How many key branches had to be paged.
+    pub pages: u32,
 }
 
 /// The two clients a full download uses.
@@ -372,6 +374,7 @@ pub async fn decrypt_container(
         hax_url: initial.url.clone(),
         keys,
         segment_count: hax.segment_count,
+        pages,
     })
 }
 
