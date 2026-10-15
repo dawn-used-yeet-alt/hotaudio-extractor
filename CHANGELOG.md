@@ -46,6 +46,13 @@ All notable changes to this project are documented here. Format follows
   The CLI now goes through `download::fetch_container`, so both share one
   transfer path and the CLI cannot drift out of sync with it.
 
+- **Saved-keys envelopes carry a real timestamp and validate their version.**
+  `download::keys_to_json` wrote `"savedAt": ""`; it now writes an ISO-8601 UTC
+  timestamp (`clock::iso8601_utc`, pure integer arithmetic so it is identical on
+  both targets). `download::parse_saved_keys` now rejects an envelope whose
+  `version` is not `1` instead of silently misreading it; a bare
+  `{ index: hex }` map with no `version` is still accepted.
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`
