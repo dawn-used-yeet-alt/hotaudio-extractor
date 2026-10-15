@@ -39,7 +39,7 @@ blocking and has no DOM surface.
 | --- | --- |
 | `downloadHotaudioBuffer(url, opts?)` | `download::download_from_page(&agent, url, &mut opts)?` |
 | `downloadWithHandshake(hs, opts?)` | `download::download_with_handshake(&agent, &hs, &mut opts)?` |
-| `downloadHaxBuffer(url, keys, opts?)` | `download::download_cached(&agent, url, &keys, None)?` |
+| `downloadHaxBuffer(url, keys, opts?)` | `download::download_cached(&agent, url, &keys, None, false)?` |
 | `decryptHaxBuffer(bytes, keys, onProgress?)` | `download::decrypt_offline(&bytes, &keys, None)?` |
 | `loadHotaudioHandshake(url, opts?)` | `listen::load_handshake(&agent, url, api_base, track_id)?` |
 | `loadHandshakeFromHtml(html, apiBase?)` | `listen::handshake_from_html(&html, api_base, track_id)?` |
