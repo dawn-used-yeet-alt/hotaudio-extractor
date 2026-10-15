@@ -55,6 +55,11 @@ All notable changes to this project are documented here. Format follows
   `download::download_cached` now returns `Downloaded` so every mode reports the
   same result shape.
 
+- **`--out -` and `--stream-to -` write to stdout.** The decrypted audio can be
+  piped (`hotaudio-download <url> --out - | ffplay -`). Progress already went to
+  stderr, and the result line moves there too when stdout carries the audio, so
+  the stream is never corrupted.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
