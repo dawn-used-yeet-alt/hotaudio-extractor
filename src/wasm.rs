@@ -211,11 +211,9 @@ fn warn_if_not_canonical(page_url: &str) {
     if crate::is_hotaudio_url(page_url) {
         return;
     }
-    let msg = JsValue::from_str(&format!(
-        "hotaudio: '{page_url}' is not a canonical share link \
-         (https://hotaudio.net/u/<user>/<track>)"
+    crate::warn(&format!(
+        "'{page_url}' is not a canonical share link (https://hotaudio.net/u/<user>/<track>)"
     ));
-    web_sys::console::warn_1(&msg);
 }
 
 /// Call a JS function that must return a string, falling back to `fallback` if

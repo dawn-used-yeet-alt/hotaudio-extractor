@@ -31,6 +31,12 @@ All notable changes to this project are documented here. Format follows
   deep inside. The matcher also tolerates a trailing slash. It stays a hint, not
   a gate: proxies and mirrors are supported, so the request still goes ahead.
 
+- **The CDN `.hax`-URL tripwire now fires in normal use.** After the handshake,
+  `download` compares the server-issued `.hax` URL with the one derivable from
+  the track key (`listen::hax_url_for_key`) and warns (stderr natively,
+  `console.warn` on `wasm32`) when they disagree, which means the CDN layout
+  moved. It keeps fetching the server-issued URL.
+
 ### Fixed
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
