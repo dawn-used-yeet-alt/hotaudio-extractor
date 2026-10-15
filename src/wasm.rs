@@ -65,6 +65,7 @@ pub async fn download_track(
     on_fragment: Function,
     on_progress: Option<Function>,
 ) -> std::result::Result<JsValue, JsValue> {
+    warn_if_not_canonical(&page_url);
     download_track_with(&page_url, on_fragment, on_progress, None, None).await
 }
 
@@ -102,6 +103,7 @@ pub async fn download_track_with(
 /// offline fetch. Resolves with `{ title, haxUrl, keysJson }`.
 #[wasm_bindgen(js_name = trackKeys)]
 pub async fn track_keys(page_url: String) -> std::result::Result<JsValue, JsValue> {
+    warn_if_not_canonical(&page_url);
     let bundle = download::fetch_keys_only(&Client::api(), &page_url, None)
         .await
         .map_err(js_error)?;
@@ -199,6 +201,21 @@ async fn stream(
         download::keys_to_json(&streamed.keys, &streamed.hax_url, title.as_deref()),
     );
     Ok(info.into())
+}
+
+/// Warn through `console.warn` when a page URL is not a canonical share link.
+///
+/// The crate fetches whatever URL it is given — a proxy or mirror is a
+/// supported deployment — so this is a hint for a likely typo, not a rejection.
+fn warn_if_not_canonical(page_url: &str) {
+    if crate::is_hotaudio_url(page_url) {
+        return;
+    }
+    let msg = JsValue::from_str(&format!(
+        "hotaudio: '{page_url}' is not a canonical share link \
+         (https://hotaudio.net/u/<user>/<track>)"
+    ));
+    web_sys::console::warn_1(&msg);
 }
 
 /// Call a JS function that must return a string, falling back to `fallback` if
