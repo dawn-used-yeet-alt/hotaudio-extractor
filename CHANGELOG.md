@@ -72,7 +72,21 @@ All notable changes to this project are documented here. Format follows
   `download::fetch_keys_only`, which gained a `track_id` argument. It needs
   `--save-keys` and conflicts with `--hax`, `--keys` and `--stream-to`.
 
+- **Several sources and `--input FILE`.** `hotaudio-download` now takes multiple
+  positional URLs (or HTML files) and processes them in order, and `--input FILE`
+  reads one source per line (`-` is stdin, blank lines skipped). It continues
+  past a failing source and exits non-zero if any failed. Flags that name a
+  single path (`--out`, `--stream-to`, `--save-keys`, `--save-hax`, `--keys-only`,
+  `--list-tracks`) are rejected when more than one source is given. Two titles
+  that sanitise to the same filename make the later source fail instead of
+  silently overwriting the earlier one.
+
 ### Fixed
+
+- **A literal `-` is accepted as a flag value.** Validation rejected any value
+  starting with `-` as a missing value, so `--out -` (stdout, added for piping)
+  never worked; `-` is now allowed, while a longer dash-word in the value
+  position is still an error.
 
 - **Truncated transfers and non-MP4 output are rejected.** `http::get_resumable`
   used `Content-Length` only for progress, so a body that ended cleanly but
