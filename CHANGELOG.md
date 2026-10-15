@@ -17,6 +17,14 @@ All notable changes to this project are documented here. Format follows
   single-client `download::download_from_page` and
   `download::download_with_handshake` remain as `Clients::single` wrappers.
 
+- **The HAX0 extra metadata region is surfaced.** `Hax0` keeps the
+  still-encrypted `extraLength` region as `Hax0::extra`, and `KeyTree::extra_node`
+  / `KeyTree::derive_node` derive the node key (`tree_base - 1`, "segment" `-1`)
+  that decrypts it. The pinned player uses this blob for `ebur128` loudness
+  visualisation; it is not audio, so the pipeline still skips it.
+  `Hax0::base_key` is now documented as parsed-but-unused: the player only logs
+  it and never derives from it.
+
 ### Fixed
 
 - **Key paging no longer gives up after one draw.** The branch window returned

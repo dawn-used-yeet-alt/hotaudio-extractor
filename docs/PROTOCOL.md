@@ -125,6 +125,17 @@ offset 16: bencoded metadata dict, through headerLength
 Metadata keys: `codec`, `durationMs`, `segmentCount`, `segments` (a byte string
 of `segmentCount` × `{offset u32 LE, pts u32 LE}`), `baseKey`.
 
+When `extraLength > 0`, the region `[headerLength, headerLength + extraLength)`
+is an independent ChaCha20-Poly1305 ciphertext under a **zero nonce**, keyed by
+the tree node at `tree_base - 1` (segment index `-1`). The player bencode-decodes
+the plaintext into the map it calls `ext` and uses at least `ebur128` (loudness)
+for its visualiser. It is not audio and is not needed to decrypt the track; the
+crate surfaces the ciphertext as `Hax0::extra`.
+
+`baseKey` is decoded by the player only to log it; it is **not** used for
+derivation — every branch key comes from the listen API. The crate surfaces it as
+`Hax0::base_key` but does not derive from it.
+
 Segment `i` occupies `[segments[i].offset, segments[i+1].offset)`, and the last
 segment runs to `fileLength`. Each slice is an **independent** ChaCha20-Poly1305
 ciphertext under a **zero nonce**, keyed by the segment's derived key. There is
