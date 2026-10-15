@@ -28,6 +28,13 @@ All notable changes to this project are documented here. Format follows
   mismatched id. A requested track the page does not carry is still an error
   (`track <id> not on page`).
 
+- **The CLI's buffered download is resumable again.** `download_with_agents` in
+  `src/bin/download.rs` fetched the `.hax` container with a plain bulk `GET`, so
+  a dropped transfer restarted from byte zero while the library path
+  (`download::fetch_container` → `get_resumable`) continued from the last byte.
+  The CLI now goes through `download::fetch_container`, so both share one
+  transfer path and the CLI cannot drift out of sync with it.
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`

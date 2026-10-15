@@ -343,19 +343,11 @@ async fn download_with_agents(
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
-    let resp = bulk.request("GET", &initial.url, &[], None).await?;
-    if !resp.ok() {
-        return Err(Error::Http(format!(".hax fetch returned {}", resp.status)));
-    }
-    if let Some(cb) = opts.on_progress.as_mut() {
-        let n = resp.body.len() as u64;
-        cb(Progress {
-            phase: Phase::Fetching,
-            loaded: n,
-            total: n,
-        });
-    }
-    download::decrypt_container(api, hs, &resp.body, &initial, opts).await
+    // The resumable transfer, not a plain GET: a dropped container must continue
+    // from the last byte rather than restart from zero. This is the same path the
+    // library takes, so the CLI cannot drift back to a non-resumable fetch.
+    let hax_bytes = download::fetch_container(bulk, &initial.url, opts).await?;
+    download::decrypt_container(api, hs, &hax_bytes, &initial, opts).await
 }
 
 /// Progress reporting on stderr.
