@@ -535,7 +535,7 @@ pub fn keys_to_json(keys: &crypto::KeyMap, hax_url: &str, title: Option<&str>) -
         "version": 1,
         "haxUrl": hax_url,
         "title": title,
-        "savedAt": "",
+        "savedAt": crate::clock::iso8601_utc(),
         "keys": map,
     });
     serde_json::to_string_pretty(&envelope).unwrap_or_default()
@@ -553,9 +553,27 @@ pub struct SavedKeys {
 }
 
 /// Parse a saved-keys envelope (or a bare `{ index: hex }` map).
+///
+/// An envelope `version` must be `1`; any other value is rejected rather than
+/// misread. A bare map has no version and stays accepted for files written
+/// before the envelope.
 pub fn parse_saved_keys(text: &str) -> Result<SavedKeys> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| Error::Protocol(e.to_string()))?;
+
+    // A bare `{ index: hex }` map has no `version`; an envelope that does must be
+    // one this parser understands, so a future format fails loudly instead of
+    // being misread as v1.
+    if let Some(version) = value.get("version") {
+        let version = version
+            .as_u64()
+            .ok_or_else(|| Error::Protocol("envelope version must be an integer".into()))?;
+        if version != 1 {
+            return Err(Error::Protocol(format!(
+                "unsupported saved-keys version {version}; expected 1"
+            )));
+        }
+    }
 
     let keys_obj = match value.get("keys") {
         Some(k) => k.clone(),
@@ -722,4 +740,55 @@ mod tests {
         assert_eq!(pager.seen, vec![42], "a failure must not be retried");
         assert_eq!(pages, 0);
     });
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn saved_keys_envelope_round_trips() {
+        let keys: crypto::KeyMap = [(1u32, [7u8; 32]), (4u32, [9u8; 32])].into_iter().collect();
+        let json = keys_to_json(&keys, "https://cdn.hotaudio.net/a/x.hax", Some("A Title"));
+
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["version"].as_u64(), Some(1));
+        let saved_at = value["savedAt"].as_str().expect("savedAt is a string");
+        assert_eq!(saved_at.len(), 20, "savedAt is not ISO-8601: {saved_at}");
+        assert!(saved_at.ends_with('Z'), "savedAt is not UTC: {saved_at}");
+
+        let parsed = parse_saved_keys(&json).expect("round-trips");
+        assert_eq!(parsed.keys, keys);
+        assert_eq!(
+            parsed.hax_url.as_deref(),
+            Some("https://cdn.hotaudio.net/a/x.hax")
+        );
+        assert_eq!(parsed.title.as_deref(), Some("A Title"));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn saved_keys_accepts_v1_and_bare_maps() {
+        let key_hex = crypto::hex_encode(&[7u8; 32]);
+        let envelope = format!(r#"{{"version":1,"keys":{{"1":"{key_hex}"}}}}"#);
+        assert!(parse_saved_keys(&envelope).is_ok());
+
+        // No `version`: a bare `{ index: hex }` map, still accepted.
+        let bare = format!(r#"{{"1":"{key_hex}"}}"#);
+        assert!(parse_saved_keys(&bare).is_ok());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn saved_keys_rejects_unknown_version() {
+        let key_hex = crypto::hex_encode(&[7u8; 32]);
+        let envelope = format!(r#"{{"version":2,"keys":{{"1":"{key_hex}"}}}}"#);
+        let err = parse_saved_keys(&envelope).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("version 2"), "got {msg}");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn saved_keys_rejects_a_non_integer_version() {
+        let key_hex = crypto::hex_encode(&[7u8; 32]);
+        let envelope = format!(r#"{{"version":"1","keys":{{"1":"{key_hex}"}}}}"#);
+        assert!(parse_saved_keys(&envelope).is_err());
+    }
 }

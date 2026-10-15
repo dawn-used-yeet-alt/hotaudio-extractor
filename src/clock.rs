@@ -35,6 +35,49 @@ pub fn unix_secs() -> f64 {
     }
 }
 
+/// The current time as an ISO-8601 UTC timestamp, e.g. `2026-10-15T12:34:56Z`.
+///
+/// Whole seconds, and pure integer arithmetic after the single [`unix_secs`]
+/// read, so it is identical on both targets and never names `SystemTime`.
+#[must_use]
+pub(crate) fn iso8601_utc() -> String {
+    iso8601_from_unix(unix_secs() as i64)
+}
+
+/// Format Unix seconds as `YYYY-MM-DDTHH:MM:SSZ`.
+fn iso8601_from_unix(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let second_of_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute, second) = (
+        second_of_day / 3_600,
+        (second_of_day % 3_600) / 60,
+        second_of_day % 60,
+    );
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Days since the Unix epoch to `(year, month, day)`, by Howard Hinnant's
+/// `civil_from_days`. `div_euclid` supplies the floor division the algorithm
+/// assumes, so pre-epoch days would still map to a valid date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153; // [0, 11], March-based
+    let day = day_of_year - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    (
+        if month <= 2 { year + 1 } else { year },
+        month as u32,
+        day as u32,
+    )
+}
+
 /// A monotonic millisecond reading, used only for measuring how long a retry
 /// sequence has already taken. The absolute value is meaningless; only
 /// differences are.
@@ -159,6 +202,25 @@ mod tests {
         // seconds, or seconds for millis) without depending on the real date.
         assert!(now > 1_577_836_800.0, "unix_secs looks like millis: {now}");
         assert!(now < 4_102_444_800.0, "unix_secs is too far ahead: {now}");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn formats_iso8601_utc() {
+        assert_eq!(iso8601_from_unix(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601_from_unix(946_684_800), "2000-01-01T00:00:00Z");
+        assert_eq!(iso8601_from_unix(1_700_000_000), "2023-11-14T22:13:20Z");
+        // A leap day, to catch a wrong leap-year rule.
+        assert_eq!(iso8601_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn iso8601_utc_is_well_formed() {
+        let now = iso8601_utc();
+        assert_eq!(now.len(), 20, "got {now}");
+        assert!(now.ends_with('Z'), "got {now}");
+        assert_eq!(now.as_bytes()[10], b'T', "got {now}");
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
