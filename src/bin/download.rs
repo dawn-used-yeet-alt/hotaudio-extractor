@@ -35,10 +35,11 @@ Usage:
   hotaudio-download --hax FILE --keys FILE    fully offline decrypt of a local container
 
 Options:
-  --out PATH        write the decrypted audio here
+  --out PATH        write the decrypted audio here ('-' writes to stdout)
                     (default: the track title, sanitised, as .m4a)
   --stream-to PATH  stream segments to PATH instead of buffering: peak memory of
                     one segment, first playable fragment after one round trip
+                    ('-' streams to stdout)
   --save-keys PATH  write the saved-keys envelope here for later reuse
   --keys PATH       saved-keys envelope to resume from; accepts a file path or
                     inline JSON. In online mode, seeds the key map so an
@@ -239,27 +240,25 @@ async fn execute(r: Run) -> Result<(), Error> {
         let title = title.unwrap_or_else(|| stem(hax_path));
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
         write_file(&out, &audio)?;
-        if r.json {
+        let line = if r.json {
             let keys_json = download::keys_to_json(&keys, "", Some(&title));
-            println!(
-                "{}",
-                DownloadInfo {
-                    title: Some(&title),
-                    duration: hax.duration_ms as f64 / 1000.0,
-                    codec: &hax.codec,
-                    mime: "audio/mp4",
-                    bytes: audio.len() as u64,
-                    segment_count: hax.segment_count,
-                    key_pages: 0,
-                    hax_url: "",
-                    keys_json: &keys_json,
-                    saved_to: &out,
-                }
-                .to_json()
-            );
+            DownloadInfo {
+                title: Some(&title),
+                duration: hax.duration_ms as f64 / 1000.0,
+                codec: &hax.codec,
+                mime: "audio/mp4",
+                bytes: audio.len() as u64,
+                segment_count: hax.segment_count,
+                key_pages: 0,
+                hax_url: "",
+                keys_json: &keys_json,
+                saved_to: &out,
+            }
+            .to_json()
         } else {
-            println!("Saved {}", std::path::Path::new(&out).display());
-        }
+            format!("Saved {}", std::path::Path::new(&out).display())
+        };
+        print_result(&out, &line);
         return Ok(());
     }
 
@@ -331,27 +330,25 @@ async fn execute(r: Run) -> Result<(), Error> {
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
         write_file(&out, &res.audio)?;
-        if r.json {
+        let line = if r.json {
             let keys_json = download::keys_to_json(&keys, &url, Some(&title));
-            println!(
-                "{}",
-                DownloadInfo {
-                    title: Some(&title),
-                    duration: res.duration,
-                    codec: &res.codec,
-                    mime: res.mime,
-                    bytes: res.audio.len() as u64,
-                    segment_count: res.segment_count,
-                    key_pages: res.pages,
-                    hax_url: &url,
-                    keys_json: &keys_json,
-                    saved_to: &out,
-                }
-                .to_json()
-            );
+            DownloadInfo {
+                title: Some(&title),
+                duration: res.duration,
+                codec: &res.codec,
+                mime: res.mime,
+                bytes: res.audio.len() as u64,
+                segment_count: res.segment_count,
+                key_pages: res.pages,
+                hax_url: &url,
+                keys_json: &keys_json,
+                saved_to: &out,
+            }
+            .to_json()
         } else {
-            println!("Saved {}", std::path::Path::new(&out).display());
-        }
+            format!("Saved {}", std::path::Path::new(&out).display())
+        };
+        print_result(&out, &line);
         return Ok(());
     }
 
@@ -384,9 +381,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             hs
         };
 
-        let file = std::fs::File::create(dest)
-            .map_err(|e| Error::Http(format!("cannot create {dest}: {e}")))?;
-        let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, open_output(dest)?);
 
         let res = download::download_streaming(
             &api,
@@ -418,22 +413,20 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
         if r.json {
             let keys_json = download::keys_to_json(&res.keys, &res.hax_url, title.as_deref());
-            println!(
-                "{}",
-                DownloadInfo {
-                    title: title.as_deref(),
-                    duration: res.duration,
-                    codec: &res.codec,
-                    mime: "audio/mp4",
-                    bytes: res.bytes,
-                    segment_count: res.segment_count,
-                    key_pages: res.pages,
-                    hax_url: &res.hax_url,
-                    keys_json: &keys_json,
-                    saved_to: dest.as_str(),
-                }
-                .to_json()
-            );
+            let line = DownloadInfo {
+                title: title.as_deref(),
+                duration: res.duration,
+                codec: &res.codec,
+                mime: "audio/mp4",
+                bytes: res.bytes,
+                segment_count: res.segment_count,
+                key_pages: res.pages,
+                hax_url: &res.hax_url,
+                keys_json: &keys_json,
+                saved_to: dest.as_str(),
+            }
+            .to_json();
+            print_result(dest, &line);
         }
         return Ok(());
     }
@@ -486,27 +479,25 @@ async fn execute(r: Run) -> Result<(), Error> {
             secs_since(started_ms)
         );
     }
-    if r.json {
+    let line = if r.json {
         let keys_json = download::keys_to_json(&res.keys, &res.hax_url, Some(&title));
-        println!(
-            "{}",
-            DownloadInfo {
-                title: Some(&title),
-                duration: res.duration,
-                codec: &res.codec,
-                mime: res.mime,
-                bytes: res.audio.len() as u64,
-                segment_count: res.segment_count,
-                key_pages: res.pages,
-                hax_url: &res.hax_url,
-                keys_json: &keys_json,
-                saved_to: &out,
-            }
-            .to_json()
-        );
+        DownloadInfo {
+            title: Some(&title),
+            duration: res.duration,
+            codec: &res.codec,
+            mime: res.mime,
+            bytes: res.audio.len() as u64,
+            segment_count: res.segment_count,
+            key_pages: res.pages,
+            hax_url: &res.hax_url,
+            keys_json: &keys_json,
+            saved_to: &out,
+        }
+        .to_json()
     } else {
-        println!("Saved {}", std::path::Path::new(&out).display());
-    }
+        format!("Saved {}", std::path::Path::new(&out).display())
+    };
+    print_result(&out, &line);
     Ok(())
 }
 
@@ -714,8 +705,36 @@ fn write_saved_keys(
     Ok(())
 }
 
+/// Write bytes to `path`, or to stdout when `path` is `-`.
 fn write_file(path: &str, bytes: &[u8]) -> Result<(), Error> {
-    std::fs::write(path, bytes).map_err(|e| Error::Http(format!("cannot write {path}: {e}")))
+    let mut out = open_output(path)?;
+    out.write_all(bytes)
+        .map_err(|e| Error::Http(e.to_string()))?;
+    out.flush().map_err(|e| Error::Http(e.to_string()))
+}
+
+/// A writer for `path`, or stdout when `path` is `-`.
+///
+/// `-` lets the audio be piped (`--out - | ffplay -`). Progress and the result
+/// line stay on stderr in that case (see [`print_result`]) so the stream is
+/// never corrupted.
+fn open_output(path: &str) -> Result<Box<dyn Write>, Error> {
+    if path == "-" {
+        return Ok(Box::new(std::io::stdout()));
+    }
+    let file = std::fs::File::create(path)
+        .map_err(|e| Error::Http(format!("cannot create {path}: {e}")))?;
+    Ok(Box::new(file))
+}
+
+/// Print a result line to stdout, or to stderr when `dest` is stdout (`-`),
+/// where stdout carries the audio instead.
+fn print_result(dest: &str, line: &str) {
+    if dest == "-" {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
 }
 
 /// Strip characters that are illegal in filenames.
@@ -822,6 +841,14 @@ mod tests {
             progress_event(p),
             "{\"phase\":\"fetching\",\"loaded\":5,\"total\":10}"
         );
+    }
+
+    #[test]
+    fn open_output_selects_stdout_for_dash() {
+        // `-` must not touch the filesystem.
+        assert!(open_output("-").is_ok());
+        // Any other path is opened for writing, so a bad directory errors.
+        assert!(open_output("/no/such/dir/out.m4a").is_err());
     }
 
     #[test]
