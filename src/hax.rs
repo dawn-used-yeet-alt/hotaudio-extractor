@@ -34,8 +34,24 @@ pub struct Segment {
 pub struct Hax0 {
     pub file_length: u32,
     pub header_length: u32,
+    /// Length in bytes of the region between the bencoded header and the first
+    /// segment. Zero when the container carries no extra metadata.
     pub extra_length: u32,
+    /// Server-provided root key material.
+    ///
+    /// Parsed and exposed, but deliberately not used for derivation: the pinned
+    /// player decodes it only to log it, and every branch key comes from the
+    /// listen API. Kept as a tripwire for a future server that seeds keys here.
     pub base_key: Vec<u8>,
+    /// The raw, still-encrypted extra region (`extraLength` bytes after the
+    /// header), empty when there is none.
+    ///
+    /// The player decrypts it with the key at [`KeyTree::extra_node`] and
+    /// bencode-decodes the result into the map it calls `ext` (at least
+    /// `ebur128` loudness data for its visualiser). It is not audio, so the
+    /// download pipeline does not consume it; it is surfaced for callers that
+    /// want it. See `docs/PROTOCOL.md` §4.
+    pub extra: Vec<u8>,
     pub codec: String,
     pub duration_ms: u64,
     pub segment_count: u32,
@@ -148,6 +164,10 @@ impl Hax0 {
         let extra_length = u32::from_le_bytes(buf[12..16].try_into().unwrap());
 
         let header_end = (header_length as usize).min(buf.len());
+        let extra_end = header_end
+            .saturating_add(extra_length as usize)
+            .min(buf.len());
+        let extra = buf.get(header_end..extra_end).unwrap_or(&[]).to_vec();
         let meta_bytes = buf.get(16..header_end).unwrap_or(&[]);
         let meta = match Bencode::new(meta_bytes).next_value()? {
             BValue::Dict(d) => d,
@@ -218,6 +238,7 @@ impl Hax0 {
             header_length,
             extra_length,
             base_key,
+            extra,
             codec,
             duration_ms,
             segment_count,
@@ -282,6 +303,15 @@ impl KeyTree {
         leaf >> (self.depth - level)
     }
 
+    /// Node index of the extra metadata blob ("segment" `-1`).
+    ///
+    /// The container's `extraLength` region is keyed here, one slot below the
+    /// first leaf, rather than by a segment.
+    #[must_use]
+    pub fn extra_node(&self) -> u32 {
+        self.tree_base - 1
+    }
+
     /// Derive the key for segment `seg_idx`.
     ///
     /// Starts at the nearest known ancestor in `keys` and hashes down. `cache`
@@ -293,14 +323,27 @@ impl KeyTree {
         seg_idx: u32,
         cache: &mut crypto::KeyMap,
     ) -> std::result::Result<[u8; 32], KeyError> {
-        let leaf = self.leaf_node(seg_idx);
+        self.derive_node(keys, self.leaf_node(seg_idx), cache)
+            .map_err(|_| KeyError::Missing { seg_idx })
+    }
 
+    /// Derive the key for an arbitrary tree node.
+    ///
+    /// [`derive`](Self::derive) is the segment case; this is what a non-segment
+    /// node such as [`extra_node`](Self::extra_node) needs. `node` must be a
+    /// valid node index (its bit length at most `depth`).
+    pub fn derive_node(
+        &self,
+        keys: &crypto::KeyMap,
+        node: u32,
+        cache: &mut crypto::KeyMap,
+    ) -> std::result::Result<[u8; 32], KeyError> {
         // Find the deepest ancestor we actually have a key for.
         let mut start_level = None;
         let mut current = [0u8; 32];
         for level in 0..=self.depth {
-            let node = self.node_at(leaf, level);
-            if let Some(k) = keys.get(&node) {
+            let n = self.node_at(node, level);
+            if let Some(k) = keys.get(&n) {
                 start_level = Some(level);
                 current = *k;
                 break;
@@ -308,22 +351,22 @@ impl KeyTree {
         }
         let mut level = match start_level {
             Some(l) => l,
-            None => return Err(KeyError::Missing { seg_idx }),
+            None => return Err(KeyError::Missing { seg_idx: node }),
         };
 
         while level < self.depth {
             level += 1;
-            let node = self.node_at(leaf, level);
-            if let Some(hit) = cache.get(&node) {
+            let n = self.node_at(node, level);
+            if let Some(hit) = cache.get(&n) {
                 current = *hit;
                 continue;
             }
             // child = SHA-256(parent || low byte of this level's node index)
             let mut hasher = Sha256::new();
             hasher.update(current);
-            hasher.update([(node & 0xff) as u8]);
+            hasher.update([(n & 0xff) as u8]);
             let derived: [u8; 32] = hasher.finalize().into();
-            cache.insert(node, derived);
+            cache.insert(n, derived);
             current = derived;
         }
         Ok(current)
@@ -380,6 +423,37 @@ mod tests {
             expect = step(expect, b);
         }
         assert_eq!(k0, expect);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn derives_the_extra_node_below_the_first_leaf() {
+        let root = [5u8; 32];
+        let keys = HashMap::from([(1u32, root)]);
+        let tree = KeyTree::new(10); // tree_base 33, first leaf 33
+        assert_eq!(tree.extra_node(), 32);
+
+        let mut cache = HashMap::new();
+        let extra = tree
+            .derive_node(&keys, tree.extra_node(), &mut cache)
+            .unwrap();
+
+        // Manual root -> 2 -> 4 -> 8 -> 16 -> 32.
+        let step = |p: [u8; 32], b: u8| -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update(p);
+            h.update([b]);
+            h.finalize().into()
+        };
+        let mut expect = root;
+        for b in [2u8, 4, 8, 16, 32] {
+            expect = step(expect, b);
+        }
+        assert_eq!(extra, expect);
+
+        // It is not on a segment's path, so its key differs from leaf 0's.
+        let leaf0 = tree.derive(&keys, 0, &mut cache).unwrap();
+        assert_ne!(extra, leaf0);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

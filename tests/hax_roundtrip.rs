@@ -24,8 +24,14 @@ fn bint(n: u64) -> Vec<u8> {
 }
 
 /// Build a valid HAX0 container whose segments encrypt `plaintexts` under keys
-/// derived from `root`, and return `(container, root)`.
-fn build_container(plaintexts: &[Vec<u8>], codec: &str, duration_ms: u64) -> Vec<u8> {
+/// derived from `root`, plus an optional extra metadata region, and return the
+/// container bytes.
+fn build_container(
+    plaintexts: &[Vec<u8>],
+    codec: &str,
+    duration_ms: u64,
+    extra: Option<&[u8]>,
+) -> Vec<u8> {
     let root: [u8; 32] = [7u8; 32];
     let segment_count = plaintexts.len() as u32;
     let tree = KeyTree::new(segment_count);
@@ -38,6 +44,17 @@ fn build_container(plaintexts: &[Vec<u8>], codec: &str, duration_ms: u64) -> Vec
         let key = tree.derive(&keys, i, &mut cache).expect("root present");
         ciphers.push(seal_zero(&key, &plaintexts[i as usize]).expect("seal"));
     }
+
+    // The extra blob is keyed at the node below the first leaf ("segment" -1).
+    let extra_cipher = match extra {
+        Some(plain) => {
+            let key = tree
+                .derive_node(&keys, tree.extra_node(), &mut cache)
+                .expect("root present");
+            seal_zero(&key, plain).expect("seal extra")
+        }
+        None => Vec::new(),
+    };
 
     // Segment table: offset/pts pairs, filled once offsets are known.
     let mut table = vec![0u8; segment_count as usize * 8];
@@ -58,7 +75,7 @@ fn build_container(plaintexts: &[Vec<u8>], codec: &str, duration_ms: u64) -> Vec
     meta.push(b'e');
 
     let header_length = 16 + meta.len() as u32;
-    let mut cursor = header_length;
+    let mut cursor = header_length + extra_cipher.len() as u32;
     for (i, c) in ciphers.iter().enumerate() {
         table[i * 8..i * 8 + 4].copy_from_slice(&cursor.to_le_bytes());
         table[(i * 8 + 4)..(i * 8 + 8)].copy_from_slice(&((i as u32) * 1000).to_le_bytes());
@@ -83,8 +100,9 @@ fn build_container(plaintexts: &[Vec<u8>], codec: &str, duration_ms: u64) -> Vec
     out.extend(b"HAX0");
     out.extend(cursor.to_le_bytes());
     out.extend(header_length.to_le_bytes());
-    out.extend(0u32.to_le_bytes());
+    out.extend((extra_cipher.len() as u32).to_le_bytes());
     out.extend(&meta);
+    out.extend(&extra_cipher);
     for c in &ciphers {
         out.extend(c);
     }
@@ -111,7 +129,7 @@ fn round_trips_a_synthetic_container() {
         })
         .collect();
 
-    let container = build_container(&plaintexts, "mp4a.40.2", 90_000);
+    let container = build_container(&plaintexts, "mp4a.40.2", 90_000, None);
 
     // Header parses with the expected metadata.
     let hax = Hax0::parse(&container).expect("parse");
@@ -137,8 +155,41 @@ fn round_trips_a_synthetic_container() {
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
+fn surfaces_and_keys_the_extra_region() {
+    let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 40]).collect();
+    // A tiny, valid bencode dict, the shape the player decodes into `ext`.
+    let extra_plain = b"d1:ai42ee".to_vec();
+    let container = build_container(&plaintexts, "mp4a.40.2", 1000, Some(&extra_plain));
+
+    let hax = Hax0::parse(&container).expect("parse");
+    // The extra region is the ciphertext between the header and the first segment.
+    assert_eq!(hax.extra_length as usize, extra_plain.len() + 16);
+    assert_eq!(hax.segments[0].offset, hax.header_length + hax.extra_length);
+    assert_eq!(hax.extra.len(), extra_plain.len() + 16);
+    assert_ne!(
+        hax.extra, extra_plain,
+        "the extra region must stay encrypted"
+    );
+
+    // It decrypts under the tree's "segment -1" node, and the segments still
+    // decrypt unaffected.
+    let keys = HashMap::from([(1u32, [7u8; 32])]);
+    let tree = KeyTree::new(hax.segment_count);
+    let mut cache = HashMap::new();
+    let key = tree
+        .derive_node(&keys, tree.extra_node(), &mut cache)
+        .expect("root present");
+    let decrypted = crypto::open_zero(&key, &hax.extra).expect("decrypt extra");
+    assert_eq!(decrypted, extra_plain);
+
+    let (audio, _, _) = decrypt_offline(&container, &keys, None).expect("decrypt");
+    assert_eq!(audio, plaintexts.concat());
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn rejects_bad_magic() {
-    let mut container = build_container(&[vec![1, 2, 3]], "mp4a.40.2", 1000);
+    let mut container = build_container(&[vec![1, 2, 3]], "mp4a.40.2", 1000, None);
     container[..4].copy_from_slice(b"XXXX");
     let err = Hax0::parse(&container).unwrap_err();
     assert!(err.to_string().contains("HAX0"), "got {err}");
@@ -148,7 +199,7 @@ fn rejects_bad_magic() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn wrong_keys_fail_closed() {
     let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 32]).collect();
-    let container = build_container(&plaintexts, "mp4a.40.2", 1000);
+    let container = build_container(&plaintexts, "mp4a.40.2", 1000, None);
 
     // A wrong root must fail authentication, not silently produce garbage.
     let wrong = HashMap::from([(1u32, [9u8; 32])]);
@@ -163,7 +214,7 @@ fn wrong_keys_fail_closed() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn detects_a_corrupted_slice() {
     let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 48]).collect();
-    let mut container = build_container(&plaintexts, "mp4a.40.2", 1000);
+    let mut container = build_container(&plaintexts, "mp4a.40.2", 1000, None);
     // Flip a byte inside the first segment's ciphertext.
     let last = container.len() - 1;
     container[last] ^= 0xff;
@@ -217,7 +268,7 @@ fn bencode_round_trips() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn reports_progress() {
     let plaintexts: Vec<Vec<u8>> = (0..32).map(|_| vec![1u8; 16]).collect();
-    let container = build_container(&plaintexts, "mp4a.40.2", 1000);
+    let container = build_container(&plaintexts, "mp4a.40.2", 1000, None);
     let keys = HashMap::from([(1u32, [7u8; 32])]);
 
     let mut seen: Vec<(u64, u64)> = Vec::new();
