@@ -67,37 +67,88 @@ pub struct Downloaded {
     pub segment_count: u32,
 }
 
-/// Download a track from its page URL.
+/// The two clients a full download uses.
+///
+/// The split is deliberate (`docs/ARCHITECTURE.md`): `api` carries the small,
+/// latency-bound page, listen and key-paging calls under a timeout, while `bulk`
+/// fetches the 15–25 MB container with no timeout, because that transfer
+/// legitimately takes minutes on a slow link. This type is what lets the library
+/// run the pipeline without the caller reimplementing it just to hold two
+/// clients; pass [`Clients::single`] when the split does not matter.
+#[derive(Clone, Copy)]
+pub struct Clients<'a> {
+    /// Page, listen and key-paging calls.
+    pub api: &'a Client,
+    /// The `.hax` container transfer.
+    pub bulk: &'a Client,
+}
+
+impl<'a> Clients<'a> {
+    /// Both roles on one client, for callers that do not need the split.
+    #[must_use]
+    pub fn single(client: &'a Client) -> Self {
+        Self {
+            api: client,
+            bulk: client,
+        }
+    }
+
+    /// Download a track from its page URL.
+    pub async fn download_from_page(
+        &self,
+        page_url: &str,
+        opts: &mut DownloadOptions<'_>,
+    ) -> Result<Downloaded> {
+        if let Some(cb) = opts.on_progress.as_mut() {
+            cb(Progress {
+                phase: Phase::Resolving,
+                loaded: 0,
+                total: 0,
+            });
+        }
+        let api_base = opts.api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
+        let hs = listen::load_handshake(self.api, page_url, api_base, opts.track_id).await?;
+        self.download_with_handshake(&hs, opts).await
+    }
+
+    /// Download using an existing handshake.
+    pub async fn download_with_handshake(
+        &self,
+        hs: &Handshake,
+        opts: &mut DownloadOptions<'_>,
+    ) -> Result<Downloaded> {
+        let initial = listen::listen(self.api, hs, -1).await?;
+        if initial.url.is_empty() {
+            return Err(Error::Listen("listen API returned no .hax url".into()));
+        }
+
+        let hax_bytes = fetch_container(self.bulk, &initial.url, opts).await?;
+        decrypt_container(self.api, hs, &hax_bytes, &initial, opts).await
+    }
+}
+
+/// Download a track from its page URL, on one client for both roles.
+///
+/// The whole pipeline runs on `client`, including the container transfer. Use
+/// [`Clients`] to keep small API calls and the bulk transfer on separate
+/// timeout policies.
 pub async fn download_from_page(
     client: &Client,
     page_url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Downloaded> {
-    if let Some(cb) = opts.on_progress.as_mut() {
-        cb(Progress {
-            phase: Phase::Resolving,
-            loaded: 0,
-            total: 0,
-        });
-    }
-    let api_base = opts.api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    let hs = listen::load_handshake(client, page_url, api_base, opts.track_id).await?;
-    download_with_handshake(client, &hs, opts).await
+    let clients = Clients::single(client);
+    clients.download_from_page(page_url, opts).await
 }
 
-/// Download using an existing handshake.
+/// Download using an existing handshake, on one client for both roles.
 pub async fn download_with_handshake(
     client: &Client,
     hs: &Handshake,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Downloaded> {
-    let initial = listen::listen(client, hs, -1).await?;
-    if initial.url.is_empty() {
-        return Err(Error::Listen("listen API returned no .hax url".into()));
-    }
-
-    let hax_bytes = fetch_container(client, &initial.url, opts).await?;
-    decrypt_container(client, hs, &hax_bytes, &initial, opts).await
+    let clients = Clients::single(client);
+    clients.download_with_handshake(hs, opts).await
 }
 
 /// Fetch the `.hax` container. `client` should be the untimed bulk client,
