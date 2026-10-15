@@ -230,3 +230,56 @@ fn reports_progress_monotonically() {
     let (last_loaded, _) = *samples.last().expect("samples");
     assert_eq!(last_loaded, body.len() as u64);
 }
+
+#[test]
+fn errors_when_the_body_is_shorter_than_content_length() {
+    // A body that ends cleanly but short of the announced length must not be
+    // accepted: it decrypts into a corrupt container.
+    let body = payload(50_000);
+    let sent = 20_000usize;
+
+    let listener = bind();
+    let addr = listener.local_addr().expect("addr");
+    let hits = Arc::new(AtomicUsize::new(0));
+
+    let server = {
+        let body = body.clone();
+        let hits = hits.clone();
+        std::thread::spawn(move || {
+            // Every attempt promises the full length, sends a short prefix, and
+            // closes cleanly, so only the length check can reject it.
+            for _ in 0..http::ATTEMPTS {
+                let (stream, _) = listener.accept().expect("accept");
+                let _ = read_request(&stream);
+                hits.fetch_add(1, Ordering::SeqCst);
+                let mut out = stream.try_clone().expect("clone");
+                let _ = write!(
+                    out,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = out.write_all(&body[..sent]);
+                let _ = out.flush();
+                drop(out);
+                drop(stream);
+            }
+        })
+    };
+
+    let result = block_on(http::Client::get_resumable(
+        &client(),
+        &format!("http://{addr}/short"),
+        &[],
+        |_, _| {},
+    ));
+    server.join().expect("server thread");
+
+    // `FullResponse` is not `Debug`, so `expect_err` is unavailable here.
+    let err = match result {
+        Ok(_) => panic!("a short body must not be accepted"),
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("incomplete"), "got {msg}");
+    assert_eq!(hits.load(Ordering::SeqCst), http::ATTEMPTS);
+}

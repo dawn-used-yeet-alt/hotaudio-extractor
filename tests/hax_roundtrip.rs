@@ -156,7 +156,19 @@ fn round_trips_a_synthetic_container() {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn surfaces_and_keys_the_extra_region() {
-    let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 40]).collect();
+    let plaintexts: Vec<Vec<u8>> = (0..4)
+        .map(|i| {
+            if i == 0 {
+                // A valid MP4 head, so the decrypt passes the `ftyp` check.
+                let mut p = vec![0, 0, 0, 0x20];
+                p.extend(b"ftypM4A ");
+                p.extend(vec![0; 30]);
+                p
+            } else {
+                vec![i as u8; 40]
+            }
+        })
+        .collect();
     // A tiny, valid bencode dict, the shape the player decodes into `ext`.
     let extra_plain = b"d1:ai42ee".to_vec();
     let container = build_container(&plaintexts, "mp4a.40.2", 1000, Some(&extra_plain));
@@ -267,7 +279,18 @@ fn bencode_round_trips() {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn reports_progress() {
-    let plaintexts: Vec<Vec<u8>> = (0..32).map(|_| vec![1u8; 16]).collect();
+    let plaintexts: Vec<Vec<u8>> = (0..32)
+        .map(|i| {
+            if i == 0 {
+                let mut p = vec![0, 0, 0, 0x20];
+                p.extend(b"ftypM4A ");
+                p.extend(vec![1u8; 4]);
+                p
+            } else {
+                vec![1u8; 16]
+            }
+        })
+        .collect();
     let container = build_container(&plaintexts, "mp4a.40.2", 1000, None);
     let keys = HashMap::from([(1u32, [7u8; 32])]);
 
@@ -278,4 +301,16 @@ fn reports_progress() {
     }
     assert!(!seen.is_empty(), "no progress reported");
     assert_eq!(seen.last().unwrap(), &(32, 32), "must finish at 32/32");
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn rejects_non_mp4_output() {
+    // A container that decrypts cleanly but is not an MP4 must not be reported
+    // as success: the `ftyp` sanity check catches it.
+    let plaintexts: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 32]).collect();
+    let container = build_container(&plaintexts, "mp4a.40.2", 1000, None);
+    let keys = HashMap::from([(1u32, [7u8; 32])]);
+    let err = decrypt_offline(&container, &keys, None).unwrap_err();
+    assert!(err.to_string().contains("ftyp"), "got {err}");
 }
