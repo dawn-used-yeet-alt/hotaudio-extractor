@@ -584,15 +584,17 @@ pub struct KeyBundle {
 }
 
 /// Fetch only the first key branch and the `.hax` URL, without audio bytes.
+///
+/// `track_id` selects a track on a multi-track page; `None` takes the page
+/// default, the same rule as [`download_with_handshake`].
 pub async fn fetch_keys_only(
     client: &Client,
     page_url: &str,
     api_base: Option<&str>,
+    track_id: Option<&str>,
 ) -> Result<KeyBundle> {
     let api_base = api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
-    // No track selection here: keys-only callers take the page default. A
-    // requested track needs the track-aware download path.
-    let hs = listen::load_handshake(client, page_url, api_base, None).await?;
+    let hs = listen::load_handshake(client, page_url, api_base, track_id).await?;
     let initial = listen::listen(client, &hs, -1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));

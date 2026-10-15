@@ -45,7 +45,7 @@ blocking and has no DOM surface.
 | `loadHandshakeFromHtml(html, apiBase?)` | `listen::handshake_from_html(&html, api_base, track_id)?` |
 | `listenRequest(hs, first, opts?)` | `listen::listen(&agent, &hs, first)?` |
 | `listHotaudioTracks(html)` | `listen::list_tracks(&html)` |
-| `fetchHotaudioKeys(url, opts?)` | `download::fetch_keys_only(&agent, url, api_base)?` |
+| `fetchHotaudioKeys(url, opts?)` | `download::fetch_keys_only(&agent, url, api_base, None)?` |
 | `parseSavedKeys(text)` | `download::parse_saved_keys(&text)?` |
 | `signHotaudioPayload(payload, ts?)` | `signer::sign(payload, ts)` |
 | `parseHax0Header(buf)` | `hax::Hax0::parse(&buf)` |
