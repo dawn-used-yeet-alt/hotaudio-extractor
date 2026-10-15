@@ -121,6 +121,7 @@ impl<'a> Clients<'a> {
         if initial.url.is_empty() {
             return Err(Error::Listen("listen API returned no .hax url".into()));
         }
+        check_hax_url(hs, &initial.url);
 
         let hax_bytes = fetch_container(self.bulk, &initial.url, opts).await?;
         decrypt_container(self.api, hs, &hax_bytes, &initial, opts).await
@@ -269,6 +270,26 @@ pub async fn derive_or_page(
     )))
 }
 
+/// The derived `.hax` URL when the server-issued one disagrees, else `None`.
+///
+/// [`listen::hax_url_for_key`] observes that the URL is fully determined by the
+/// track key, so a disagreement means the CDN layout moved. This is a tripwire,
+/// not a correction: the server-issued URL is still the one that gets fetched.
+fn hax_url_disagreement(issued: &str, track_key: &str) -> Option<String> {
+    let derived = listen::hax_url_for_key(track_key);
+    (issued != derived).then_some(derived)
+}
+
+/// Check a server-issued `.hax` URL against the one derived from the handshake.
+fn check_hax_url(hs: &Handshake, issued: &str) {
+    if let Some(derived) = hax_url_disagreement(issued, &hs.track.key) {
+        crate::warn(&format!(
+            "issued .hax url '{issued}' does not match the derived '{derived}'; \
+             the CDN layout may have changed"
+        ));
+    }
+}
+
 /// Cheap sanity check that decrypted bytes are MP4.
 ///
 /// The first decrypted bytes are the head of the original file, so a valid MP4
@@ -378,6 +399,7 @@ pub async fn download_streaming(
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
+    check_hax_url(hs, &initial.url);
 
     // Small ranged reads belong on the timeout-bound client.
     let mut source = HttpRangeSource::new(api_client, &initial.url);
@@ -538,6 +560,7 @@ pub async fn fetch_keys_only(
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
+    check_hax_url(&hs, &initial.url);
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
     Ok(KeyBundle {
         keys: listen::keys_to_map(&initial.keys),
@@ -812,5 +835,15 @@ mod tests {
         let key_hex = crypto::hex_encode(&[7u8; 32]);
         let envelope = format!(r#"{{"version":"1","keys":{{"1":"{key_hex}"}}}}"#);
         assert!(parse_saved_keys(&envelope).is_err());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn hax_url_tripwire_flags_only_a_derived_mismatch() {
+        assert!(hax_url_disagreement("https://cdn.hotaudio.net/a/abc.hax", "abc").is_none());
+        assert_eq!(
+            hax_url_disagreement("https://cdn.example.net/a/abc.hax", "abc").as_deref(),
+            Some("https://cdn.hotaudio.net/a/abc.hax")
+        );
     }
 }

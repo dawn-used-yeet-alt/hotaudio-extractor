@@ -106,6 +106,17 @@ pub const HOTAUDIO_UA: &str = "Mozilla/5.0";
 /// Base URL for the encrypted listen handshake.
 pub const HOTAUDIO_API_BASE: &str = "https://hotaudio.net";
 
+/// Emit a non-fatal diagnostic.
+///
+/// Native writes to stderr; `wasm32` has no stderr, so it goes to
+/// `console.warn`. Centralised so both transports report the same way.
+pub(crate) fn warn(msg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(msg));
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("warning: {msg}");
+}
+
 /// Match canonical hotaudio share links.
 ///
 /// The crate fetches whatever URL it is given, so this is a heuristic for
