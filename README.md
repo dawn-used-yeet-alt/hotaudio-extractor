@@ -101,6 +101,9 @@ hotaudio-download "https://hotaudio.net/u/user/track-slug" --proxy http://127.0.
 # Retry harder and give each API call a longer per-attempt timeout
 hotaudio-download "https://hotaudio.net/u/user/track-slug" --retries 5 --timeout 60
 
+# Space listen/key-paging requests when bulk-downloading (politeness, not correctness)
+hotaudio-download "https://hotaudio.net/u/user/album" --all-tracks --delay 500
+
 # Re-download from saved keys (no need to contact the page again)
 hotaudio-download --keys keys.json --out track.m4a
 

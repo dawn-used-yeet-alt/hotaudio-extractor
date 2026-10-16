@@ -120,6 +120,10 @@ All notable changes to this project are documented here. Format follows
   default 30). The bulk container transfer keeps its deliberate no-timeout;
   `--retries` still applies to it.
 
+- **Politeness delay.** `--delay MS` (or `download::DownloadOptions::delay_ms`)
+  pauses before each listen/key-paging request, defaulting to 0. It only spaces
+  load for bulk/batch runs; correctness never depends on it.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value

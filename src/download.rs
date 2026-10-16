@@ -54,6 +54,10 @@ pub struct DownloadOptions<'a> {
     /// caller can archive them. Off by default: the container is 15–25 MB, and
     /// buffered mode already holds the decrypted audio.
     pub capture_hax: bool,
+    /// Politeness pause before each listen/key-paging request, in milliseconds.
+    /// `0` (the default) disables it. It only spaces load for bulk/batch use and
+    /// never affects correctness.
+    pub delay_ms: u64,
 }
 
 /// The decrypted track plus everything needed to reuse it.
@@ -128,7 +132,7 @@ impl<'a> Clients<'a> {
         hs: &Handshake,
         opts: &mut DownloadOptions<'_>,
     ) -> Result<Downloaded> {
-        let initial = listen::listen(self.api, hs, -1).await?;
+        let initial = listen::listen(self.api, hs, -1, opts.delay_ms).await?;
         if initial.url.is_empty() {
             return Err(Error::Listen("listen API returned no .hax url".into()));
         }
@@ -234,18 +238,34 @@ pub trait KeyPager {
 pub struct ListenPager<'a> {
     client: &'a Client,
     hs: &'a Handshake,
+    delay_ms: u64,
 }
 
 impl<'a> ListenPager<'a> {
     /// Page `hs`'s track through `client`.
     pub fn new(client: &'a Client, hs: &'a Handshake) -> Self {
-        Self { client, hs }
+        Self {
+            client,
+            hs,
+            delay_ms: 0,
+        }
+    }
+
+    /// Pause `delay_ms` before each page request, for politeness on bulk jobs.
+    #[must_use]
+    pub fn with_delay_ms(mut self, delay_ms: u64) -> Self {
+        self.delay_ms = delay_ms;
+        self
     }
 }
 
 impl KeyPager for ListenPager<'_> {
     async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
-        Ok(listen::listen(self.client, self.hs, idx as i64).await?.keys)
+        Ok(
+            listen::listen(self.client, self.hs, idx as i64, self.delay_ms)
+                .await?
+                .keys,
+        )
     }
 }
 
@@ -347,7 +367,7 @@ pub async fn decrypt_container(
     let mut audio: Vec<u8> =
         Vec::with_capacity((hax.file_length.saturating_sub(hax.header_length)) as usize + 64);
 
-    let mut pager = ListenPager::new(client, hs);
+    let mut pager = ListenPager::new(client, hs).with_delay_ms(opts.delay_ms);
     let mut pages = 0u32;
     for i in 0..hax.segment_count as usize {
         let key = match tree.derive(&keys, i as u32, &mut cache) {
@@ -406,14 +426,18 @@ pub async fn decrypt_container(
 /// browser build able to append straight to a `MediaSource`: the first call is
 /// the earliest point at which the output is a valid (if short) MP4. Returning
 /// an error aborts the download.
+///
+/// `delay_ms` pauses before each listen/key-paging request, as in
+/// [`DownloadOptions::delay_ms`].
 pub async fn download_streaming(
     api_client: &Client,
     hs: &Handshake,
     initial_keys: Option<&crypto::KeyMap>,
+    delay_ms: u64,
     mut on_fragment: impl FnMut(&[u8]) -> Result<()>,
     mut on_progress: Option<ProgressFn<'_>>,
 ) -> Result<Streamed> {
-    let initial = listen::listen(api_client, hs, -1).await?;
+    let initial = listen::listen(api_client, hs, -1, delay_ms).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
@@ -436,7 +460,7 @@ pub async fn download_streaming(
 
     let mut written = 0u64;
     let mut paged = 0u32;
-    let mut pager = ListenPager::new(api_client, hs);
+    let mut pager = ListenPager::new(api_client, hs).with_delay_ms(delay_ms);
 
     for i in 0..hax.segment_count as usize {
         let key = match tree.derive(&keys, i as u32, &mut cache) {
@@ -586,16 +610,18 @@ pub struct KeyBundle {
 /// Fetch only the first key branch and the `.hax` URL, without audio bytes.
 ///
 /// `track_id` selects a track on a multi-track page; `None` takes the page
-/// default, the same rule as [`download_with_handshake`].
+/// default, the same rule as [`download_with_handshake`]. `delay_ms` pauses
+/// before the listen request, as in [`DownloadOptions::delay_ms`].
 pub async fn fetch_keys_only(
     client: &Client,
     page_url: &str,
     api_base: Option<&str>,
     track_id: Option<&str>,
+    delay_ms: u64,
 ) -> Result<KeyBundle> {
     let api_base = api_base.unwrap_or(crate::HOTAUDIO_API_BASE);
     let hs = listen::load_handshake(client, page_url, api_base, track_id).await?;
-    let initial = listen::listen(client, &hs, -1).await?;
+    let initial = listen::listen(client, &hs, -1, delay_ms).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }

@@ -304,4 +304,7 @@ see [MAINTENANCE.md](MAINTENANCE.md).
 ## 7. Rate limiting and politeness
 
 Measured: a per-request server-side floor of about 1 s dominates; concurrency
-changes nothing. The downloader is sequential by design.
+changes nothing. The downloader is sequential by design. For extra spacing on
+bulk or batch runs, `--delay MS` (and `download::DownloadOptions::delay_ms`)
+pauses before each listen/key-paging request; it is politeness only, and
+correctness never depends on it.
