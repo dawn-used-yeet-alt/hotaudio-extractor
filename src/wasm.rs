@@ -222,6 +222,18 @@ pub fn sign_payload(payload: &str) -> std::result::Result<String, JsValue> {
     crate::signer::sign_payload(payload).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// The `X-Signature` this crate would send for `payload` at `timestamp_secs`
+/// (Unix seconds, fractional allowed).
+///
+/// `signPayload` stamps the current time; this pins the clock, so a host can
+/// reproduce a known vector from `tests/data/signer_golden.json` without waiting
+/// for a matching instant.
+#[wasm_bindgen(js_name = signPayloadAt)]
+pub fn sign_payload_at(payload: &str, timestamp_secs: f64) -> std::result::Result<String, JsValue> {
+    crate::signer::sign_payload_at(payload, timestamp_secs)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Tracks listed on a page, without any network call beyond the page itself.
 ///
 /// Takes page HTML as readily as a URL, so a host that already fetched the page

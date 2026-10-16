@@ -36,6 +36,18 @@ fn matches_golden_vectors() {
     );
 }
 
+/// The wasm `signPayloadAt` export pins the clock exactly as the VM does.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn wasm_sign_payload_at_matches_golden() {
+    let raw = include_str!("data/signer_golden.json");
+    let vectors: Vec<(String, f64, String)> =
+        serde_json::from_str(raw).expect("golden vectors parse");
+    let (payload, ts, expected) = vectors.first().expect("no golden vectors");
+    let got = hotaudio::wasm::sign_payload_at(payload, *ts).expect("sign");
+    assert_eq!(&got, expected);
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn signature_has_expected_shape() {
