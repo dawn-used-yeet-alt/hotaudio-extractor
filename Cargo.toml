@@ -46,7 +46,7 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip", 
 # Ctrl-C for the CLI. Pinned exactly: 3.5.1+ pulls `nix 0.31`, which pins a
 # `libc` older than the rest of the tree and would duplicate it; 3.5.0 stays on
 # `nix ^0.30` and reuses the `windows-sys 0.61` already in the graph.
-ctrlc = "=3.5.0"
+ctrlc = "=3.5.2"
 
 # CLI parsing, `--help` and the generated completions and man page. Not the
 # library, and not `wasm32`: there is no argv there, and clap supports that
