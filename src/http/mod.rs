@@ -16,6 +16,10 @@
 //! uses `fetch` (`fetch_backend`). Neither target can block the other, so the
 //! entry points are `async`, and a native future never actually suspends — see
 //! `exec::block_on`.
+//!
+//! Proxies are the native transport's concern: `ureq` reads the standard
+//! `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables, and
+//! [`Client::with_proxy`] overrides them. The browser uses its own settings.
 
 use std::time::Duration;
 
@@ -145,6 +149,27 @@ impl Client {
     pub fn with_fetch(mut self, fetch: wasm_bindgen::JsValue) -> Self {
         self.backend = self.backend.with_fetch(fetch);
         self
+    }
+
+    /// Route every request through `proxy`, an HTTP(S) CONNECT proxy URL
+    /// (`http://host:port`, optionally with credentials).
+    ///
+    /// Overrides the proxy taken from the environment, which the transport
+    /// applies by default (`ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`, plus
+    /// `NO_PROXY`). Returns an error for a malformed URL or an unsupported
+    /// scheme (SOCKS needs ureq's `socks-proxy` feature, which is off).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_proxy(mut self, proxy: &str) -> Result<Self> {
+        self.backend = self.backend.with_proxy(proxy)?;
+        Ok(self)
+    }
+
+    /// `wasm32` has no proxy configuration of its own: the browser's `fetch`
+    /// already uses the embedder's settings, and [`Client::with_fetch`] is the
+    /// seam for a host that needs one. This returns the client unchanged.
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_proxy(self, _proxy: &str) -> Result<Self> {
+        Ok(self)
     }
 
     fn url(&self, url: &str) -> String {
@@ -411,6 +436,17 @@ mod tests {
         for status in [200, 301, 400, 403, 404, 451] {
             assert!(!is_retryable(status), "{status} should not be retryable");
         }
+    }
+
+    /// Proxies are the native transport's concern: on `wasm32`
+    /// [`Client::with_proxy`] is a no-op, so parsing only means anything here.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn proxy_urls_are_validated() {
+        assert!(Client::api().with_proxy("http://127.0.0.1:8080").is_ok());
+        // SOCKS needs ureq's `socks-proxy` feature, which this build keeps off.
+        assert!(Client::api().with_proxy("socks5://127.0.0.1:1080").is_err());
+        assert!(Client::api().with_proxy("not a url").is_err());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

@@ -105,6 +105,13 @@ All notable changes to this project are documented here. Format follows
   a title can never inject one, and `--out` still wins. Unknown or unclosed
   placeholders are rejected before any network work.
 
+- **`--proxy` and proxy environment variables.** The native transport honours
+  `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` (and `NO_PROXY`) by default, and
+  `--proxy URL` — or `http::Client::with_proxy` — overrides them with an explicit
+  HTTP(S) CONNECT proxy. A malformed URL, or a scheme this build cannot speak
+  (SOCKS needs a `ureq` feature that is off), is an error. On `wasm32` the
+  browser's `fetch` owns proxying, so `Client::with_proxy` is a documented no-op.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value

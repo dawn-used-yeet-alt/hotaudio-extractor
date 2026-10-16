@@ -67,6 +67,9 @@ Options:
   --track ID        select a track by id on a multi-track page
   --all-tracks      download every track on the page, sequentially
   --api-base URL    override the listen API base (default: https://hotaudio.net)
+  --proxy URL       send requests through an HTTP(S) proxy, e.g.
+                    http://127.0.0.1:8080; ALL_PROXY/HTTPS_PROXY/HTTP_PROXY and
+                    NO_PROXY are honored when this is not given
   -q, --quiet       suppress the progress reporter
   -v, --verbose     report key-page counts and timing
   --json            print a JSON result object on stdout (a track array for
@@ -90,6 +93,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--hax-url",
     "--track",
     "--api-base",
+    "--proxy",
     "--progress",
     "--save-hax",
     "--input",
@@ -177,6 +181,7 @@ fn run() -> ExitCode {
     let keys_path = flag(&args, "--keys");
     let track_id = flag(&args, "--track");
     let api_base = flag(&args, "--api-base");
+    let proxy = flag(&args, "--proxy");
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let keys_only = args.iter().any(|a| a == "--keys-only");
     let all_tracks = args.iter().any(|a| a == "--all-tracks");
@@ -227,6 +232,7 @@ fn run() -> ExitCode {
         keys_path,
         track_id,
         api_base,
+        proxy,
         list_tracks,
         keys_only,
         all_tracks,
@@ -256,6 +262,7 @@ struct Run {
     keys_path: Option<String>,
     track_id: Option<String>,
     api_base: Option<String>,
+    proxy: Option<String>,
     list_tracks: bool,
     keys_only: bool,
     all_tracks: bool,
@@ -365,7 +372,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             ));
         };
         let tracks = if is_url(source) {
-            let client = Client::api();
+            let client = api_client(r.proxy.as_deref())?;
             let resp = client.request("GET", source, &[], None).await?;
             if !resp.ok() {
                 return Err(Error::Http(format!("page returned {}", resp.status)));
@@ -412,7 +419,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                 "--keys-only needs a page URL, not a local file".into(),
             ));
         }
-        let client = Client::api();
+        let client = api_client(r.proxy.as_deref())?;
         let bundle = download::fetch_keys_only(
             &client,
             source,
@@ -451,7 +458,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                 "keys file has no .hax URL — pass --hax-url or use online mode".into(),
             ));
         };
-        let client = Client::bulk();
+        let client = bulk_client(r.proxy.as_deref())?;
         let res = download::download_cached(
             &client,
             &url,
@@ -513,7 +520,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Streamed mode: ranged reads, one segment in memory at a time ----
     if let Some(dest) = &r.stream_to {
-        let api = Client::api();
+        let api = api_client(r.proxy.as_deref())?;
         let hs = if is_url(&source) {
             let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
             listen::load_handshake(&api, &source, api_base, r.track_id.as_deref()).await?
@@ -591,6 +598,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         &mut report,
         r.api_base.as_deref(),
         r.track_id.as_deref(),
+        r.proxy.as_deref(),
         r.save_hax.is_some(),
     )
     .await?;
@@ -646,10 +654,11 @@ async fn fetch_online(
     report: download::ProgressFn<'_>,
     api_base: Option<&str>,
     track_id: Option<&str>,
+    proxy: Option<&str>,
     capture_hax: bool,
 ) -> Result<download::Downloaded, Error> {
-    let api = Client::api();
-    let bulk = Client::bulk();
+    let api = api_client(proxy)?;
+    let bulk = bulk_client(proxy)?;
     let clients = download::Clients {
         api: &api,
         bulk: &bulk,
@@ -671,6 +680,25 @@ async fn fetch_online(
             .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
         hs.listen_key = listen::extract_listen_key(source);
         clients.download_with_handshake(&hs, &mut opts).await
+    }
+}
+
+/// A small-call client, with `--proxy` applied when given.
+fn api_client(proxy: Option<&str>) -> Result<Client, Error> {
+    apply_proxy(Client::api(), proxy)
+}
+
+/// The bulk-transfer client, with `--proxy` applied when given.
+fn bulk_client(proxy: Option<&str>) -> Result<Client, Error> {
+    apply_proxy(Client::bulk(), proxy)
+}
+
+/// Apply `--proxy` to `client`; without it the transport honors the standard
+/// proxy environment variables on its own.
+fn apply_proxy(client: Client, proxy: Option<&str>) -> Result<Client, Error> {
+    match proxy {
+        Some(url) => client.with_proxy(url),
+        None => Ok(client),
     }
 }
 
@@ -708,7 +736,7 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
         ));
     };
     let html = if is_url(source) {
-        let client = Client::api();
+        let client = api_client(r.proxy.as_deref())?;
         let resp = client.request("GET", source, &[], None).await?;
         if !resp.ok() {
             return Err(Error::Http(format!("page returned {}", resp.status)));
@@ -765,7 +793,16 @@ async fn batch_one(
     index: usize,
 ) -> Result<(), Error> {
     let started = hotaudio::clock::monotonic_ms();
-    let res = fetch_online(source, None, report, r.api_base.as_deref(), track_id, false).await?;
+    let res = fetch_online(
+        source,
+        None,
+        report,
+        r.api_base.as_deref(),
+        track_id,
+        r.proxy.as_deref(),
+        false,
+    )
+    .await?;
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     let out = derived_name(r.filename_template.as_deref(), &title, index);
     if !written.insert(out.clone()) {
@@ -1346,6 +1383,7 @@ mod tests {
         assert!(validate(&["--no-clobber".into()]).is_ok());
         assert!(validate(&["--force".into()]).is_ok());
         assert!(validate(&["--filename-template".into(), "{index}-{title}".into()]).is_ok());
+        assert!(validate(&["--proxy".into(), "http://127.0.0.1:8080".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1589,6 +1627,10 @@ mod tests {
         // The template value is skipped like any other flag value.
         assert_eq!(
             positionals(&a(&["--filename-template", "{title}", "https://x/u/a/b"])),
+            vec![url()]
+        );
+        assert_eq!(
+            positionals(&a(&["--proxy", "http://127.0.0.1:8080", "https://x/u/a/b"])),
             vec![url()]
         );
         assert!(positionals(&a(&["--list-tracks"])).is_empty());

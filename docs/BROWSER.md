@@ -144,6 +144,14 @@ container and the browser never holds more than a segment. A 15 MB track is
 over 99% of the traffic, so this is the whole cost model: one extra network hop,
 a handful of extra round trips on the small API calls, and no added CPU.
 
+### Native `--proxy` is not the browser's proxy
+
+The CLI's `--proxy` and the `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`
+environment variables configure an HTTP(S) CONNECT tunnel for the *native*
+transport. A page cannot choose its proxy, and this crate does not try:
+`Client::with_proxy` is a documented no-op on `wasm32`. Proxying in a browser is
+the embedder's job — the origin in front above, or a replacement `fetch`.
+
 ## Hosts that are not a page
 
 Capacitor, React Native and Electron shells usually have a native HTTP bridge
