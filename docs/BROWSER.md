@@ -90,14 +90,28 @@ const blob = new Blob(parts, { type: info.mime });
 
 ## Other exports
 
-- `downloadTrackWith(url, onFragment, onProgress, fetchImpl, rewrite)` — a
-  replacement `fetch` and/or a URL rewrite. This is the integration seam; see
+- `downloadTrackWith(url, onFragment, onProgress, fetchImpl, rewrite, trackId)` —
+  a replacement `fetch` and/or a URL rewrite. This is the integration seam; see
   below.
-- `trackKeys(url)` — handshake and first key branch without downloading audio.
+- `trackKeys(url, trackId)` — handshake and first key branch without downloading
+  audio.
 - `signPayload(payload)` — the `X-Signature` for a payload right now, so a host
   can diff against the reference signer in the browser.
 - `listTracks(htmlOrUrlHtml)` — `[{ id, key, title }, …]`. Takes page HTML, so a
   host that already fetched the page need not fetch it twice.
+
+### Selecting a track
+
+`downloadTrack`, `downloadTrackWith` and `trackKeys` take an optional trailing
+`trackId`. Omit it (or pass `null`/`undefined`) for the page's default track.
+
+```js
+const tracks = listTracks(pageHtml);
+const info = await downloadTrack(url, onFragment, onProgress, tracks[1].id);
+```
+
+An id the page does not carry is rejected with `track <id> not on page` rather
+than silently falling back to the first track.
 
 ## A proxy is required — this crate does not ship one
 
