@@ -8,6 +8,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **Generated `--help`, plus a man page and shell completions.** The CLI is now
+  parsed by `clap`, so the usage text, `--version` and the error messages all
+  come from one flag definition instead of a hand-maintained string. The binary
+  prints a man page (`--man-page`) and completions for bash, zsh, fish and
+  PowerShell (`--completions <shell>`), and each release publishes them as
+  `hotaudio-completions-<tag>.tar.gz`. Existing flags, exit codes, conflicts and
+  config-file defaults are unchanged.
+
 - **A reproducible wasm package build.** `scripts/build-wasm.sh` builds the
   cdylib once and runs `wasm-bindgen` for both `web` and `nodejs` into `pkg/`,
   generated `.d.ts` types included, and checks that the CLI matches the

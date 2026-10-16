@@ -329,9 +329,49 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # Shell completions and a man page are platform-independent, and generating
+  # them needs a binary that can run, so they are produced once here rather than
+  # in the per-target matrix (part of which is cross-compiled and cannot exec).
+  # Both are printed by the released binary itself, so there is nothing to keep
+  # in sync.
+  completions:
+    name: completions and man page
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: completions
+
+      - name: Generate
+        run: |
+          set -euo pipefail
+          tag="${{ needs.check.outputs.tag }}"
+          stage="hotaudio-completions-${tag}"
+          mkdir -p "dist/$stage/completions" "dist/$stage/man"
+          cargo build --release --locked
+          exe=target/release/hotaudio-download
+          for shell in bash zsh fish powershell; do
+            "$exe" --completions "$shell" > "dist/$stage/completions/hotaudio-download.$shell"
+          done
+          "$exe" --man-page > "dist/$stage/man/hotaudio-download.1"
+          cp README.md LICENSE CHANGELOG.md "dist/$stage/"
+          tar -czf "dist/${stage}.tar.gz" -C dist "$stage"
+          rm -rf "dist/$stage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: completions
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: [check, build, wasm]
+    needs: [check, build, wasm, completions]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

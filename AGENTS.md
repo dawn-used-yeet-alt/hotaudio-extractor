@@ -52,6 +52,7 @@ cargo run --release --manifest-path live/Cargo.toml -- \
 - `src/listen.rs` — page handshake + encrypted listen API
 - `src/hax.rs` — bencode, HAX0 header, segment key tree; `src/range.rs` — `Range` reads
 - `src/download.rs` — pipeline, key paging, saved-keys envelope; `src/bin/download.rs` — CLI
+  (`clap`-parsed and `wasm32`-gated, with its dependencies in the non-wasm table)
 - `src/http/` — `Client` + shared policy, one transport per target
 - `src/clock.rs` — clocks and sleeping, per target
 - `src/wasm.rs` — the `wasm-bindgen` surface, `wasm32` only

@@ -20,6 +20,7 @@ Download the archive for your platform, extract it, and run `hotaudio-download`:
 | Android / Termux | ARM64 | `hotaudio-download-<tag>-aarch64-linux-android.tar.gz` |
 | Android / Termux | x86-64 | `hotaudio-download-<tag>-x86_64-linux-android.tar.gz` |
 | Browser / Node (wasm) | wasm32 | `hotaudio-wasm-<tag>.tar.gz` |
+| Shell completions + man page | any | `hotaudio-completions-<tag>.tar.gz` |
 
 On Unix, `chmod +x hotaudio-download` after extraction.
 
@@ -82,7 +83,10 @@ hotaudio-download --hax audio.hax --keys keys.json --out track.m4a
 hotaudio-download https://hotaudio.net/u/user/track-slug --list-tracks
 ```
 
-Run `hotaudio-download --help` for every flag.
+Run `hotaudio-download --help` for every flag. The completions archive holds
+bash, zsh, fish and PowerShell completions (`completions/`) and a man page
+(`man/hotaudio-download.1`); the binary prints the same files with
+`--completions <shell>` and `--man-page`.
 
 ## Library and browser build
 

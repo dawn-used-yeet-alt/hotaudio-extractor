@@ -23,74 +23,16 @@ use hotaudio::download::{self, DownloadOptions, Phase, Progress};
 use hotaudio::http::{Client, Retry};
 use hotaudio::listen;
 
+#[cfg(not(target_arch = "wasm32"))]
+use clap::{CommandFactory, Parser};
+
 /// Program name, printed by `--version`.
 const BIN_NAME: &str = "hotaudio-download";
 
-const USAGE: &str = "\
-hotaudio-download — download and decrypt a hotaudio.net track to playable .m4a
-
-Usage:
-  hotaudio-download <URL|HTML>... [options]   full pipeline (fetch page, listen, download)
-  hotaudio-download --keys FILE [options]     cached re-download (no page fetch, no listen)
-  hotaudio-download --hax FILE --keys FILE    fully offline decrypt of a local container
-
-Several sources may be given; they are processed in order and the run exits
-non-zero if any fails. Flags that name one path (--out, --stream-to, --save-keys,
---save-hax, --keys-only, --list-tracks) require a single source and are not
-available with --all-tracks.
-
-Options:
-  --out PATH        write the decrypted audio here ('-' writes to stdout)
-                    (default: the track title, sanitised, as .m4a)
-  --filename-template PATTERN
-                    name title-derived outputs from PATTERN: {title}, {index}
-                    (1-based) and {ext} are substituted, and '/' separates
-                    directories. An explicit --out or --stream-to wins
-  --output-dir DIR  write title-derived outputs under DIR (default: the current
-                    directory); an explicit --out or --stream-to wins
-  --config PATH     read defaults from PATH instead of
-                    $XDG_CONFIG_HOME/hotaudio/config.toml; CLI flags win
-  --input FILE      read one source per line from FILE ('-' is stdin); blank
-                    lines are skipped
-  --stream-to PATH  stream segments to PATH instead of buffering: peak memory of
-                    one segment, first playable fragment after one round trip
-                    ('-' streams to stdout)
-  --save-keys PATH  write the saved-keys envelope here for later reuse
-  --keys-only       save the first key branch (needs --save-keys) and exit, without
-                    fetching the container or decrypting
-  --save-hax PATH   write the raw .hax container here for a later offline decrypt
-                    (buffered modes only; not with --stream-to)
-  --verify          after decrypting, walk the MP4 boxes and check the output's
-                    duration against the container; fails loudly on a mismatch
-                    (needs a file destination, not --stream-to -)
-  --no-clobber      fail instead of replacing an existing output file (audio,
-                    keys or .hax); parent directories are still created
-  --force           replace existing output files (the default)
-  --keys PATH       saved-keys envelope to resume from; accepts a file path or
-                    inline JSON. In online mode, seeds the key map so an
-                    interrupted download refetches only what is missing
-  --hax PATH        decrypt this local .hax container (fully offline)
-  --hax-url URL     container URL for cached mode, when the envelope has none
-  --track ID        select a track by id on a multi-track page
-  --all-tracks      download every track on the page, sequentially
-  --api-base URL    override the listen API base (default: https://hotaudio.net)
-  --proxy URL       send requests through an HTTP(S) proxy, e.g.
-                    http://127.0.0.1:8080; ALL_PROXY/HTTPS_PROXY/HTTP_PROXY and
-                    NO_PROXY are honored when this is not given
-  --retries N       retry a failed request up to N times (default 2)
-  --timeout SECS    per-attempt timeout for API calls (default 30); the bulk
-                    container transfer keeps no timeout by design
-  --delay MS        pause before each listen/key-paging request (default 0);
-                    politeness for bulk/batch runs, never needed for correctness
-  -q, --quiet       suppress the progress reporter
-  -v, --verbose     report key-page counts and timing
-  --json            print a JSON result object on stdout (a track array for
-                    --list-tracks)
-  --progress FORMAT progress on stderr: 'text' (default) or 'json' (NDJSON)
-  --list-tracks     list the tracks on the page and exit
-  -h, --help        show this help
-  -V, --version     print the version and exit
-
+/// Text after the generated option list: what clap cannot derive from an
+/// argument's own documentation.
+#[cfg(not(target_arch = "wasm32"))]
+const AFTER_HELP: &str = "\
 The user agent is fixed at Mozilla/5.0 and is not configurable: the site returns
 403 for Chrome user agents on the track page and the listen endpoint.
 
@@ -105,60 +47,161 @@ Config file:
   (milliseconds). Command-line flags override the file; an absent default file
   is not an error.";
 
-/// Flags that take a value. Anything else starting with `-` is rejected, so a
-/// typo fails loudly instead of being silently ignored.
-const VALUE_FLAGS: &[&str] = &[
-    "--out",
-    "--stream-to",
-    "--save-keys",
-    "--keys",
-    "--hax",
-    "--hax-url",
-    "--track",
-    "--api-base",
-    "--proxy",
-    "--retries",
-    "--timeout",
-    "--delay",
-    "--progress",
-    "--save-hax",
-    "--input",
-    "--filename-template",
-    "--output-dir",
-    "--config",
-];
+/// The command line, as clap sees it.
+///
+/// Native-only, like clap itself (see `Cargo.toml`): there is no argv on
+/// `wasm32`, and upstream supports that target only best-effort, which a
+/// required-green build cannot rest on. The pure helpers below (`sanitize`, the
+/// config parser, name derivation) stay target-agnostic and keep their wasm
+/// tests.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Parser)]
+#[command(
+    name = BIN_NAME,
+    version,
+    about = "Download and decrypt a hotaudio.net track to a playable .m4a",
+    long_about = "Download and decrypt a hotaudio.net track to a playable .m4a. Online mode runs \
+                  the full pipeline (fetch page, listen, download); `--keys` re-downloads from \
+                  saved keys without a page fetch; `--hax --keys` decrypts a local container with \
+                  no network at all. Several sources may be given and are processed in order; the \
+                  run exits non-zero if any fails.",
+    after_help = AFTER_HELP,
+    arg_required_else_help = true,
+)]
+struct Cli {
+    /// Page URL or saved HTML to process (several are handled in order)
+    #[arg(value_name = "URL|HTML")]
+    sources: Vec<String>,
 
-/// Flags that name a single output or source, so they cannot be combined with
-/// more than one positional/`--input` source.
-const SINGLE_SOURCE_FLAGS: &[&str] = &[
-    "--out",
-    "--stream-to",
-    "--save-keys",
-    "--save-hax",
-    "--keys",
-    "--hax",
-    "--keys-only",
-    "--list-tracks",
-];
+    /// Write the decrypted audio here, or '-' for stdout (default: the track title, sanitised)
+    #[arg(long, value_name = "PATH")]
+    out: Option<String>,
 
-/// Flags that stand alone.
-const BOOL_FLAGS: &[&str] = &[
-    "--list-tracks",
-    "--help",
-    "-h",
-    "--version",
-    "-V",
-    "--quiet",
-    "-q",
-    "--verbose",
-    "-v",
-    "--json",
-    "--keys-only",
-    "--all-tracks",
-    "--no-clobber",
-    "--force",
-    "--verify",
-];
+    /// Name title-derived outputs from PATTERN: {title}, {index} (1-based), {ext}; an explicit --out or --stream-to wins
+    #[arg(long, value_name = "PATTERN")]
+    filename_template: Option<String>,
+
+    /// Write title-derived outputs under DIR (default: the current directory); an explicit --out or --stream-to wins
+    #[arg(long, value_name = "DIR")]
+    output_dir: Option<String>,
+
+    /// Read defaults from PATH instead of the default config file
+    #[arg(long, value_name = "PATH")]
+    config: Option<String>,
+
+    /// Read one source per line from FILE, or '-' for stdin; blank lines are skipped
+    #[arg(long, value_name = "FILE")]
+    input: Option<String>,
+
+    /// Stream segments to PATH instead of buffering: one segment in memory, first playable fragment after one round trip
+    #[arg(long, value_name = "PATH")]
+    stream_to: Option<String>,
+
+    /// Write the saved-keys envelope here for later reuse
+    #[arg(long, value_name = "PATH")]
+    save_keys: Option<String>,
+
+    /// Save the first key branch (needs --save-keys) and exit, without the container or a decrypt
+    #[arg(long, requires = "save_keys", conflicts_with_all = ["hax", "keys", "stream_to", "verify"])]
+    keys_only: bool,
+
+    /// Write the raw .hax container here for a later offline decrypt (buffered modes only)
+    #[arg(long, value_name = "PATH", conflicts_with = "stream_to")]
+    save_hax: Option<String>,
+
+    /// After decrypting, walk the MP4 boxes and check the output against the container; fails loudly on a mismatch
+    #[arg(long)]
+    verify: bool,
+
+    /// Fail instead of replacing an existing output file (audio, keys or .hax)
+    #[arg(long, conflicts_with = "force")]
+    no_clobber: bool,
+
+    /// Replace existing output files (the default)
+    #[arg(long, conflicts_with = "no_clobber")]
+    force: bool,
+
+    /// Saved-keys envelope to resume from: a file path or inline JSON; online it seeds the key map
+    #[arg(long, value_name = "PATH|JSON")]
+    keys: Option<String>,
+
+    /// Decrypt this local .hax container (fully offline)
+    #[arg(long, value_name = "PATH")]
+    hax: Option<String>,
+
+    /// Container URL for cached mode, when the envelope has none
+    #[arg(long, value_name = "URL")]
+    hax_url: Option<String>,
+
+    /// Select a track by id on a multi-track page
+    #[arg(long, value_name = "ID")]
+    track: Option<String>,
+
+    /// Download every track on the page, sequentially; drop --track
+    #[arg(long, conflicts_with = "track")]
+    all_tracks: bool,
+
+    /// Override the listen API base (default: hotaudio.net)
+    #[arg(long, value_name = "URL")]
+    api_base: Option<String>,
+
+    /// Send requests through an HTTP(S) proxy; ALL_PROXY/HTTPS_PROXY/HTTP_PROXY and NO_PROXY are honored too
+    #[arg(long, value_name = "URL")]
+    proxy: Option<String>,
+
+    /// Retry a failed request up to N times (default 2)
+    #[arg(long, value_name = "N")]
+    retries: Option<usize>,
+
+    /// Per-attempt timeout for API calls, in seconds (default 30); the bulk container transfer keeps no timeout by design
+    #[arg(long, value_name = "SECS", value_parser = clap::value_parser!(u64).range(1..))]
+    timeout: Option<u64>,
+
+    /// Pause this many milliseconds before each listen/key-paging request (default 0); politeness for bulk runs
+    #[arg(long, value_name = "MS")]
+    delay: Option<u64>,
+
+    /// Suppress the progress reporter
+    #[arg(short, long, conflicts_with = "verbose")]
+    quiet: bool,
+
+    /// Report key-page counts and timing
+    #[arg(short, long, conflicts_with = "quiet")]
+    verbose: bool,
+
+    /// Print a JSON result object on stdout (a track array for --list-tracks)
+    #[arg(long)]
+    json: bool,
+
+    /// Progress on stderr: 'text' (default) or 'json' (NDJSON)
+    #[arg(long, value_name = "FORMAT", value_parser = ["text", "json"])]
+    progress: Option<String>,
+
+    /// List the tracks on the page and exit
+    #[arg(long)]
+    list_tracks: bool,
+
+    /// Print shell completions for SHELL to stdout and exit (used by packaging)
+    #[arg(long, value_name = "SHELL", hide = true)]
+    completions: Option<clap_complete::Shell>,
+
+    /// Print the man page to stdout and exit (used by packaging)
+    #[arg(long, hide = true)]
+    man_page: bool,
+}
+
+/// The generated `--help`, for the few runtime errors that are not parse
+/// failures but still leave the user needing the usage.
+#[cfg(not(target_arch = "wasm32"))]
+fn usage() -> String {
+    Cli::command().render_help().to_string()
+}
+
+/// Render the man page (roff) for the binary, as `--man-page` prints it.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_man(out: &mut impl Write) -> std::io::Result<()> {
+    clap_mangen::Man::new(Cli::command()).render(out)
+}
 
 /// Process exit codes, so a script can tell failure classes apart without
 /// parsing stderr. Documented in `--help`; `0` is `ExitCode::SUCCESS` and `1` is
@@ -238,29 +281,33 @@ fn main() -> ExitCode {
 /// both transports; natively it never suspends, so driving it is a single poll.
 #[cfg(not(target_arch = "wasm32"))]
 fn run() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = Cli::parse();
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}");
+    // Packaging hooks, hidden from the help: they print machine-readable output
+    // and exit without touching the network.
+    if let Some(shell) = cli.completions {
+        clap_complete::generate(shell, &mut Cli::command(), BIN_NAME, &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("{BIN_NAME} {}", env!("CARGO_PKG_VERSION"));
-        return ExitCode::SUCCESS;
+    if cli.man_page {
+        return match write_man(&mut std::io::stdout()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: cannot write the man page: {e}");
+                ExitCode::from(code::IO)
+            }
+        };
     }
-    if args.is_empty() {
-        eprintln!("{USAGE}");
-        return ExitCode::from(code::USAGE);
-    }
-    if let Err(e) = validate(&args) {
+
+    if let Err(e) = validate_mode(&cli) {
         eprintln!("error: {e}\n");
-        eprintln!("{USAGE}");
+        eprintln!("{}", usage());
         return ExitCode::from(code::USAGE);
     }
 
     // Defaults from the config file, then the CLI overrides them: every
-    // `flag(..).or(config.…)` below is "flag wins, else file, else built-in".
-    let config = match Config::load(flag(&args, "--config").as_deref()) {
+    // `cli.field.or(config.…)` below is "flag wins, else file, else built-in".
+    let config = match Config::load(cli.config.as_deref()) {
         Ok(config) => config,
         Err(message) => {
             eprintln!("error: {message}\n");
@@ -268,72 +315,32 @@ fn run() -> ExitCode {
         }
     };
 
-    let out = flag(&args, "--out");
-    let filename_template = flag(&args, "--filename-template").or(config.filename_template);
-    let output_dir = flag(&args, "--output-dir").or(config.output_dir);
-    let stream_to = flag(&args, "--stream-to");
-    let save_keys = flag(&args, "--save-keys");
-    let save_hax = flag(&args, "--save-hax");
-    let hax_path = flag(&args, "--hax");
-    let hax_url = flag(&args, "--hax-url");
-    let keys_path = flag(&args, "--keys");
-    let track_id = flag(&args, "--track");
-    let api_base = flag(&args, "--api-base").or(config.api_base);
-    let proxy = flag(&args, "--proxy").or(config.proxy);
-    let retry = match retry_from(&args, config.retries) {
-        Ok(retry) => retry,
-        Err(message) => {
-            eprintln!("error: {message}\n");
-            return ExitCode::from(code::USAGE);
-        }
-    };
-    let api_timeout_ms = match timeout_from(&args, config.timeout_secs) {
+    let api_timeout_ms = match timeout_ms(cli.timeout, config.timeout_secs) {
         Ok(timeout) => timeout,
         Err(message) => {
             eprintln!("error: {message}\n");
             return ExitCode::from(code::USAGE);
         }
     };
-    let delay_ms = match delay_from(&args, config.delay_ms) {
-        Ok(delay) => delay,
-        Err(message) => {
-            eprintln!("error: {message}\n");
-            return ExitCode::from(code::USAGE);
-        }
-    };
-    let list_tracks = args.iter().any(|a| a == "--list-tracks");
-    let keys_only = args.iter().any(|a| a == "--keys-only");
-    let all_tracks = args.iter().any(|a| a == "--all-tracks");
-    let clobber = if args.iter().any(|a| a == "--no-clobber") {
+    let clobber = if cli.no_clobber {
         Clobber::Refuse
     } else {
         Clobber::Replace
     };
-    let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
-    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
-    let json = args.iter().any(|a| a == "--json");
-    let verify = args.iter().any(|a| a == "--verify");
-    let progress_json = match flag(&args, "--progress").as_deref() {
-        None | Some("text") => false,
-        Some("json") => true,
-        Some(other) => {
-            eprintln!("error: --progress must be 'text' or 'json', got '{other}'");
-            return ExitCode::from(code::USAGE);
-        }
-    };
+    let progress_json = cli.progress.as_deref() == Some("json");
 
-    let sources = match collect_sources(&args) {
+    let sources = match collect_sources(&cli) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}\n");
             return ExitCode::from(code::IO);
         }
     };
-    if all_tracks && sources.len() != 1 {
+    if cli.all_tracks && sources.len() != 1 {
         eprintln!("error: --all-tracks needs exactly one page URL or HTML file\n");
         return ExitCode::from(code::USAGE);
     }
-    if let Some(name) = multi_output_conflict(&sources, all_tracks, &args) {
+    if let Some(name) = multi_output_conflict(sources.len(), cli.all_tracks, &cli) {
         eprintln!(
             "error: {name} names one path; it cannot be used with several sources or --all-tracks\n"
         );
@@ -342,30 +349,30 @@ fn run() -> ExitCode {
 
     match hotaudio::block_on(execute(Run {
         sources,
-        out,
-        filename_template,
-        output_dir,
-        stream_to,
-        save_keys,
-        save_hax,
-        hax_path,
-        hax_url,
-        keys_path,
-        track_id,
-        api_base,
-        proxy,
-        retry,
+        out: cli.out,
+        filename_template: cli.filename_template.or(config.filename_template),
+        output_dir: cli.output_dir.or(config.output_dir),
+        stream_to: cli.stream_to,
+        save_keys: cli.save_keys,
+        save_hax: cli.save_hax,
+        hax_path: cli.hax,
+        hax_url: cli.hax_url,
+        keys_path: cli.keys,
+        track_id: cli.track,
+        api_base: cli.api_base.or(config.api_base),
+        proxy: cli.proxy.or(config.proxy),
+        retry: retry_for(cli.retries, config.retries),
         api_timeout_ms,
-        delay_ms,
-        list_tracks,
-        keys_only,
-        all_tracks,
+        delay_ms: delay_ms(cli.delay, config.delay_ms),
+        list_tracks: cli.list_tracks,
+        keys_only: cli.keys_only,
+        all_tracks: cli.all_tracks,
         clobber,
-        quiet,
-        verbose,
-        json,
+        quiet: cli.quiet,
+        verbose: cli.verbose,
+        json: cli.json,
         progress_json,
-        verify,
+        verify: cli.verify,
         cancel: install_ctrlc(),
     })) {
         Ok(()) => ExitCode::SUCCESS,
@@ -517,9 +524,8 @@ async fn execute(r: Run) -> Result<(), Error> {
     // ---- Track listing ----
     if r.list_tracks {
         let Some(source) = r.sources.first() else {
-            eprintln!("{USAGE}");
             return Err(Error::Protocol(
-                "--list-tracks needs a URL or HTML file".into(),
+                "--list-tracks needs a URL or HTML file; see --help".into(),
             ));
         };
         let tracks = if is_url(source) {
@@ -670,8 +676,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Online mode ----
     let Some(source) = r.sources.first().cloned() else {
-        eprintln!("{USAGE}");
-        return Err(Error::Protocol("no input given".into()));
+        return Err(Error::Protocol("no input given; see --help".into()));
     };
 
     let seed = match &r.keys_path {
@@ -894,47 +899,33 @@ fn net_of(r: &Run) -> Net<'_> {
 
 /// The retry policy: `--retries N` (`N` retries after the first attempt), else
 /// the config's `retries`, else the built-in default.
-fn retry_from(args: &[String], fallback: Option<usize>) -> Result<Retry, String> {
-    let retries = match flag(args, "--retries") {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("--retries needs a whole number, got '{value}'"))?,
-        None => match fallback {
-            Some(n) => n,
-            None => return Ok(Retry::default()),
+#[cfg(not(target_arch = "wasm32"))]
+fn retry_for(flag: Option<usize>, fallback: Option<usize>) -> Retry {
+    match flag.or(fallback) {
+        Some(n) => Retry {
+            attempts: n.saturating_add(1),
+            ..Retry::default()
         },
-    };
-    Ok(Retry {
-        attempts: retries.saturating_add(1),
-        ..Retry::default()
-    })
+        None => Retry::default(),
+    }
 }
 
-/// The per-attempt API timeout: `--timeout SECS`, else the config's `timeout`.
-fn timeout_from(args: &[String], fallback: Option<u64>) -> Result<Option<u64>, String> {
-    let secs = match flag(args, "--timeout") {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("--timeout needs a whole number of seconds, got '{value}'"))?,
-        None => match fallback {
-            Some(secs) => secs,
-            None => return Ok(None),
-        },
-    };
-    if secs == 0 {
-        return Err("--timeout must be at least 1 second".into());
+/// The per-attempt API timeout in milliseconds: `--timeout SECS`, else the
+/// config's `timeout`. Zero is rejected either way.
+#[cfg(not(target_arch = "wasm32"))]
+fn timeout_ms(flag: Option<u64>, fallback: Option<u64>) -> Result<Option<u64>, String> {
+    match flag.or(fallback) {
+        None => Ok(None),
+        Some(0) => Err("--timeout must be at least 1 second".into()),
+        Some(secs) => Ok(Some(secs.saturating_mul(1000))),
     }
-    Ok(Some(secs.saturating_mul(1000)))
 }
 
-/// The politeness pause: `--delay MS`, else the config's `delay`.
-fn delay_from(args: &[String], fallback: Option<u64>) -> Result<u64, String> {
-    match flag(args, "--delay") {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("--delay needs a whole number of milliseconds, got '{value}'")),
-        None => Ok(fallback.unwrap_or(0)),
-    }
+/// The politeness pause in milliseconds: `--delay MS`, else the config's
+/// `delay`, else none.
+#[cfg(not(target_arch = "wasm32"))]
+fn delay_ms(flag: Option<u64>, fallback: Option<u64>) -> u64 {
+    flag.or(fallback).unwrap_or(0)
 }
 
 /// A small-call client for `net`: `--timeout` and `--retries` applied.
@@ -1210,147 +1201,71 @@ fn progress(p: Progress) {
     let _ = std::io::stderr().flush();
 }
 
-/// Whether `name` appears as a flag, in either `--name` or `--name=value` form.
-fn has_flag(args: &[String], name: &str) -> bool {
-    args.iter()
-        .any(|a| a.split_once('=').map_or(a.as_str(), |(n, _)| n) == name)
-}
-
-/// The first single-path flag present, so a multi-source run can reject it.
-fn single_source_flag(args: &[String]) -> Option<&'static str> {
-    SINGLE_SOURCE_FLAGS
-        .iter()
-        .copied()
-        .find(|f| has_flag(args, f))
+/// The first single-path flag present, so a multi-source run can name the one
+/// that rules it out. Order decides which is named when several are given.
+#[cfg(not(target_arch = "wasm32"))]
+fn single_path_flag(cli: &Cli) -> Option<&'static str> {
+    if cli.out.is_some() {
+        return Some("--out");
+    }
+    if cli.stream_to.is_some() {
+        return Some("--stream-to");
+    }
+    if cli.save_keys.is_some() {
+        return Some("--save-keys");
+    }
+    if cli.save_hax.is_some() {
+        return Some("--save-hax");
+    }
+    if cli.keys.is_some() {
+        return Some("--keys");
+    }
+    if cli.hax.is_some() {
+        return Some("--hax");
+    }
+    if cli.keys_only {
+        return Some("--keys-only");
+    }
+    if cli.list_tracks {
+        return Some("--list-tracks");
+    }
+    None
 }
 
 /// The single-path flag that rules out a multi-output run, if any.
 ///
 /// A run is multi-output when it has several sources or is `--all-tracks`.
-fn multi_output_conflict(
-    sources: &[String],
-    all_tracks: bool,
-    args: &[String],
-) -> Option<&'static str> {
-    if sources.len() < 2 && !all_tracks {
+#[cfg(not(target_arch = "wasm32"))]
+fn multi_output_conflict(sources: usize, all_tracks: bool, cli: &Cli) -> Option<&'static str> {
+    if sources < 2 && !all_tracks {
         return None;
     }
-    single_source_flag(args)
+    single_path_flag(cli)
 }
 
-/// Reject unknown flags and value flags whose value is missing or is itself
-/// another flag, so `hotaudio-download --out --list-tracks` fails instead of
-/// writing a file called `--list-tracks`.
-fn validate(args: &[String]) -> Result<(), String> {
-    let quiet = has_flag(args, "--quiet") || has_flag(args, "-q");
-    let verbose = has_flag(args, "--verbose") || has_flag(args, "-v");
-    if quiet && verbose {
-        return Err("--quiet and --verbose are mutually exclusive".into());
+/// The checks clap cannot express: a bad template, and a rule that depends on a
+/// *value* rather than mere presence (`--verify` cannot check a stream written
+/// to stdout).
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_mode(cli: &Cli) -> Result<(), String> {
+    if cli.verify && cli.stream_to.as_deref() == Some("-") {
+        return Err("--verify cannot check a stream written to stdout; write to a file".into());
     }
-    if has_flag(args, "--no-clobber") && has_flag(args, "--force") {
-        return Err("--no-clobber and --force are mutually exclusive".into());
-    }
-    if has_flag(args, "--save-hax") && has_flag(args, "--stream-to") {
-        return Err(
-            "--save-hax needs the buffered container; it is not available with --stream-to".into(),
-        );
-    }
-    if has_flag(args, "--keys-only") {
-        if !has_flag(args, "--save-keys") {
-            return Err("--keys-only needs --save-keys".into());
-        }
-        if has_flag(args, "--hax") || has_flag(args, "--keys") || has_flag(args, "--stream-to") {
-            return Err(
-                "--keys-only only fetches keys; it conflicts with --hax, --keys and --stream-to"
-                    .into(),
-            );
-        }
-    }
-    if has_flag(args, "--all-tracks") && has_flag(args, "--track") {
-        return Err("--all-tracks downloads every track; drop --track".into());
-    }
-    if has_flag(args, "--verify") {
-        if has_flag(args, "--keys-only") {
-            return Err("--verify checks decrypted audio; it conflicts with --keys-only".into());
-        }
-        if flag(args, "--stream-to").as_deref() == Some("-") {
-            return Err("--verify cannot check a stream written to stdout; write to a file".into());
-        }
-    }
-    let template = flag(args, "--filename-template").unwrap_or_default();
-    if let Some(message) = template_error(&template) {
+    let template = cli.filename_template.as_deref().unwrap_or_default();
+    if let Some(message) = template_error(template) {
         return Err(message);
     }
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if !arg.starts_with('-') {
-            i += 1;
-            continue;
-        }
-        let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
-        if BOOL_FLAGS.contains(&name) {
-            if arg.contains('=') {
-                return Err(format!("{name} does not take a value"));
-            }
-            i += 1;
-            continue;
-        }
-        if !VALUE_FLAGS.contains(&name) {
-            return Err(format!("unknown flag {arg}"));
-        }
-        // A bare value flag consumes the next argument, so it must be skipped:
-        // otherwise a `-` value would be scanned again and read as a flag.
-        let (value, step) = match arg.split_once('=') {
-            Some((_, v)) => (Some(v.to_string()), 1),
-            None => (args.get(i + 1).cloned(), 2),
-        };
-        match value {
-            None => return Err(format!("{name} needs a value")),
-            // `-` is a real value (stdout/stdin), so only a longer dash-word is
-            // treated as a flag that was passed where a value belongs.
-            Some(v) if v.starts_with('-') && v != "-" => {
-                return Err(format!("{name} needs a value, but got the flag {v}"));
-            }
-            Some(_) => {}
-        }
-        i += step;
-    }
     Ok(())
-}
-
-/// Every argument that is neither a flag nor a flag's value, in order.
-///
-/// Scanning must skip over values: in `--out a.m4a <URL>`, `a.m4a` is the
-/// output path, not the source.
-fn positionals(args: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if !arg.starts_with('-') {
-            out.push(arg.clone());
-            i += 1;
-            continue;
-        }
-        let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
-        // A bare value flag consumes the next argument; `--flag=value` does not.
-        i += if VALUE_FLAGS.contains(&name) && !arg.contains('=') {
-            2
-        } else {
-            1
-        };
-    }
-    out
 }
 
 /// Positional sources plus one per line of `--input` (`-` means stdin).
 ///
 /// Blank lines are skipped. Positionals come first, then the file, in the order
 /// given.
-fn collect_sources(args: &[String]) -> Result<Vec<String>, String> {
-    let mut sources = positionals(args);
-    let Some(path) = flag(args, "--input") else {
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_sources(cli: &Cli) -> Result<Vec<String>, String> {
+    let mut sources = cli.sources.clone();
+    let Some(path) = cli.input.as_deref() else {
         return Ok(sources);
     };
     let text = if path == "-" {
@@ -1361,7 +1276,7 @@ fn collect_sources(args: &[String]) -> Result<Vec<String>, String> {
             .map_err(|e| format!("cannot read stdin: {e}"))?;
         s
     } else {
-        std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?
     };
     for line in text.lines() {
         let line = line.trim();
@@ -1370,19 +1285,6 @@ fn collect_sources(args: &[String]) -> Result<Vec<String>, String> {
         }
     }
     Ok(sources)
-}
-
-/// Read a flag's value, accepting both `--flag value` and `--flag=value`.
-fn flag(args: &[String], name: &str) -> Option<String> {
-    for (i, arg) in args.iter().enumerate() {
-        if let Some(value) = arg.strip_prefix(&format!("{name}=")) {
-            return Some(value.to_string());
-        }
-        if arg == name {
-            return args.get(i + 1).cloned();
-        }
-    }
-    None
 }
 
 /// Defaults from the config file. Every field is `None` when the file is absent
@@ -1421,7 +1323,7 @@ impl Config {
         Self::parse(&text).map_err(|e| format!("config {}: {e}", path.display()))
     }
 
-    /// Parse the flat TOML subset documented in [`USAGE`].
+    /// Parse the flat TOML subset documented in `--help`.
     ///
     /// Only `key = value` lines are accepted, with `#` comments and blank lines
     /// skipped; values are double-quoted strings or integers. Tables, arrays and
@@ -1924,141 +1826,135 @@ fn stem(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Parse `args` the way the binary would, with the program name prepended.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec!["hotaudio-download"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn rejects_unknown_flags() {
-        assert!(validate(&["--nope".into(), "x".into()]).is_err());
-        assert!(validate(&["-x".into()]).is_err());
+        assert!(parse(&["--nope", "x"]).is_err());
+        assert!(parse(&["-x"]).is_err());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn accepts_known_flag_forms() {
-        assert!(validate(&["--out".into(), "a.m4a".into()]).is_ok());
-        assert!(validate(&["--out=a.m4a".into()]).is_ok());
-        assert!(validate(&["--list-tracks".into()]).is_ok());
-        assert!(validate(&["--all-tracks".into()]).is_ok());
-        assert!(validate(&["--no-clobber".into()]).is_ok());
-        assert!(validate(&["--force".into()]).is_ok());
-        assert!(validate(&["--filename-template".into(), "{index}-{title}".into()]).is_ok());
-        assert!(validate(&["--proxy".into(), "http://127.0.0.1:8080".into()]).is_ok());
-        assert!(validate(&["--retries".into(), "3".into()]).is_ok());
-        assert!(validate(&["--timeout".into(), "60".into()]).is_ok());
-        assert!(validate(&["--delay".into(), "500".into()]).is_ok());
-        assert!(validate(&["--quiet".into()]).is_ok());
-        assert!(validate(&["-q".into()]).is_ok());
-        assert!(validate(&["--verbose".into()]).is_ok());
-        assert!(validate(&["-v".into()]).is_ok());
-        assert!(validate(&["--json".into()]).is_ok());
-        assert!(validate(&["--progress".into(), "json".into()]).is_ok());
+        assert!(parse(&["--out", "a.m4a"]).is_ok());
+        assert!(parse(&["--out=a.m4a"]).is_ok());
+        assert!(parse(&["--list-tracks"]).is_ok());
+        assert!(parse(&["--all-tracks"]).is_ok());
+        assert!(parse(&["--no-clobber"]).is_ok());
+        assert!(parse(&["--force"]).is_ok());
+        assert!(parse(&["--filename-template", "{index}-{title}"]).is_ok());
+        assert!(parse(&["--proxy", "http://127.0.0.1:8080"]).is_ok());
+        assert!(parse(&["--retries", "3"]).is_ok());
+        assert!(parse(&["--timeout", "60"]).is_ok());
+        assert!(parse(&["--delay", "500"]).is_ok());
+        assert!(parse(&["--quiet"]).is_ok());
+        assert!(parse(&["-q"]).is_ok());
+        assert!(parse(&["--verbose"]).is_ok());
+        assert!(parse(&["-v"]).is_ok());
+        assert!(parse(&["--json"]).is_ok());
+        assert!(parse(&["--progress", "json"]).is_ok());
         // Inline JSON is a value, not a flag.
-        assert!(validate(&["--keys".into(), "{\"a\":1}".into()]).is_ok());
+        assert!(parse(&["--keys", "{\"a\":1}"]).is_ok());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn retry_timeout_and_delay_flags_parse() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Absent means the library defaults.
-        assert_eq!(
-            retry_from(&a(&[]), None).unwrap().attempts,
-            Retry::default().attempts
-        );
+        assert_eq!(retry_for(None, None).attempts, Retry::default().attempts);
         // `--retries N` is N retries after the first attempt.
-        assert_eq!(
-            retry_from(&a(&["--retries", "0"]), None).unwrap().attempts,
-            1
-        );
-        assert_eq!(
-            retry_from(&a(&["--retries", "5"]), None).unwrap().attempts,
-            6
-        );
-        assert!(retry_from(&a(&["--retries", "x"]), None).is_err());
+        assert_eq!(retry_for(Some(0), None).attempts, 1);
+        assert_eq!(retry_for(Some(5), None).attempts, 6);
+        assert!(parse(&["--retries", "x"]).is_err());
 
-        assert_eq!(timeout_from(&a(&[]), None).unwrap(), None);
-        assert_eq!(
-            timeout_from(&a(&["--timeout", "60"]), None).unwrap(),
-            Some(60_000)
-        );
-        assert!(timeout_from(&a(&["--timeout", "0"]), None).is_err());
-        assert!(timeout_from(&a(&["--timeout", "soon"]), None).is_err());
+        assert_eq!(timeout_ms(None, None).unwrap(), None);
+        assert_eq!(timeout_ms(Some(60), None).unwrap(), Some(60_000));
+        // Zero is rejected, whether it arrives from clap or from a config file.
+        assert!(timeout_ms(Some(0), None).is_err());
+        assert!(parse(&["--timeout", "soon"]).is_err());
+        assert!(parse(&["--timeout", "0"]).is_err());
 
-        assert_eq!(delay_from(&a(&[]), None).unwrap(), 0);
-        assert_eq!(delay_from(&a(&["--delay", "250"]), None).unwrap(), 250);
-        assert!(delay_from(&a(&["--delay", "later"]), None).is_err());
+        assert_eq!(delay_ms(None, None), 0);
+        assert_eq!(delay_ms(Some(250), None), 250);
+        assert!(parse(&["--delay", "later"]).is_err());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn quiet_and_verbose_conflict() {
-        let err = validate(&["--quiet".into(), "--verbose".into()]).unwrap_err();
-        assert!(err.contains("mutually exclusive"), "got {err}");
-        assert!(validate(&["-q".into(), "-v".into()]).is_err());
+        assert!(parse(&["--quiet", "--verbose"]).is_err());
+        assert!(parse(&["-q", "-v"]).is_err());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn no_clobber_and_force_conflict() {
-        let err = validate(&["--no-clobber".into(), "--force".into()]).unwrap_err();
-        assert!(err.contains("mutually exclusive"), "got {err}");
+        assert!(parse(&["--no-clobber", "--force"]).is_err());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_hax_conflicts_with_stream_to() {
-        assert!(
-            validate(&[
-                "--save-hax".into(),
-                "c.hax".into(),
-                "--stream-to".into(),
-                "a.m4a".into()
-            ])
-            .is_err()
-        );
-        assert!(validate(&["--save-hax=c.hax".into(), "--stream-to=a.m4a".into()]).is_err());
-        assert!(validate(&["--save-hax".into(), "c.hax".into()]).is_ok());
+        assert!(parse(&["--save-hax", "c.hax", "--stream-to", "a.m4a"]).is_err());
+        assert!(parse(&["--save-hax=c.hax", "--stream-to=a.m4a"]).is_err());
+        assert!(parse(&["--save-hax", "c.hax"]).is_ok());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn keys_only_requires_save_keys() {
-        assert!(validate(&["--keys-only".into()]).is_err());
-        assert!(validate(&["--keys-only".into(), "--save-keys".into(), "k.json".into()]).is_ok());
-        assert!(validate(&["--keys-only".into(), "--save-keys=k.json".into()]).is_ok());
+        assert!(parse(&["--keys-only"]).is_err());
+        assert!(parse(&["--keys-only", "--save-keys", "k.json"]).is_ok());
+        assert!(parse(&["--keys-only", "--save-keys=k.json"]).is_ok());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn keys_only_conflicts_with_other_modes() {
-        let base = [
-            "--keys-only".to_string(),
-            "--save-keys".to_string(),
-            "k.json".to_string(),
-        ];
         for extra in [
             ["--hax", "in.hax"],
             ["--stream-to", "a.m4a"],
             ["--keys", "k2.json"],
         ] {
-            let mut args = base.to_vec();
-            args.extend(extra.iter().map(|s| s.to_string()));
-            assert!(validate(&args).is_err(), "{extra:?}");
+            let mut args = vec!["--keys-only", "--save-keys", "k.json"];
+            args.extend(extra);
+            assert!(parse(&args).is_err(), "{extra:?}");
         }
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn all_tracks_conflicts_with_track() {
-        assert!(validate(&["--all-tracks".into(), "--track".into(), "t1".into()]).is_err());
-        assert!(validate(&["--all-tracks".into(), "--track=t1".into()]).is_err());
-        assert!(validate(&["--all-tracks".into(), "--json".into()]).is_ok());
+        assert!(parse(&["--all-tracks", "--track", "t1"]).is_err());
+        assert!(parse(&["--all-tracks", "--track=t1"]).is_err());
+        assert!(parse(&["--all-tracks", "--json"]).is_ok());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn verify_conflicts_with_keys_only_and_a_stdout_stream() {
-        let keys_only = ["--verify", "--keys-only", "--save-keys", "k.json"].map(|s| s.to_string());
-        assert!(validate(&keys_only).is_err());
-        assert!(validate(&["--verify".into(), "--stream-to".into(), "-".into()]).is_err());
-        assert!(validate(&["--verify".into(), "--stream-to".into(), "a.m4a".into()]).is_ok());
-        assert!(validate(&["--verify".into()]).is_ok());
+        assert!(parse(&["--verify", "--keys-only", "--save-keys", "k.json"]).is_err());
+        // The stdout rule depends on the value, so it is a post-parse check.
+        let to_stdout = parse(&["--verify", "--stream-to", "-"]).unwrap();
+        assert!(validate_mode(&to_stdout).is_err());
+        assert!(validate_mode(&parse(&["--verify", "--stream-to", "a.m4a"]).unwrap()).is_ok());
+        assert!(validate_mode(&parse(&["--verify"]).unwrap()).is_ok());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn filename_template_rejects_unknown_placeholders() {
-        let err = validate(&["--filename-template".into(), "{nope}".into()]).unwrap_err();
+        let err = validate_mode(&parse(&["--filename-template", "{nope}"]).unwrap()).unwrap_err();
         assert!(err.contains("nope"), "got {err}");
-        assert!(validate(&["--filename-template".into(), "{title}".into()]).is_ok());
+        assert!(validate_mode(&parse(&["--filename-template", "{title}"]).unwrap()).is_ok());
     }
 
     #[test]
@@ -2221,121 +2117,116 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn rejects_flags_missing_their_value() {
-        assert!(validate(&["--out".into()]).is_err());
+        assert!(parse(&["--out"]).is_err());
         // The value position holds another flag: almost certainly a mistake,
         // and it would otherwise write a file with that name.
-        assert!(validate(&["--out".into(), "--list-tracks".into()]).is_err());
-        assert!(validate(&["--list-tracks=x".into()]).is_err());
+        assert!(parse(&["--out", "--list-tracks"]).is_err());
+        assert!(parse(&["--list-tracks=x"]).is_err());
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn dash_is_a_valid_value() {
         // `-` means stdout/stdin, not a flag.
-        assert!(validate(&["--out".into(), "-".into()]).is_ok());
-        assert!(validate(&["--input".into(), "-".into()]).is_ok());
-        // A real flag in the value position is still rejected.
-        assert!(validate(&["--out".into(), "--list-tracks".into()]).is_err());
+        assert_eq!(parse(&["--out", "-"]).unwrap().out.as_deref(), Some("-"));
+        assert_eq!(
+            parse(&["--input", "-"]).unwrap().input.as_deref(),
+            Some("-")
+        );
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn multi_output_rejects_single_path_flags() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let one = a(&["u1"]);
-        let two = a(&["u1", "u2"]);
+        let with = |args: &[&str]| parse(args).unwrap();
         // One source, no --all-tracks: nothing to reject.
         assert_eq!(
-            multi_output_conflict(&one, false, &a(&["--out", "a.m4a"])),
+            multi_output_conflict(1, false, &with(&["--out", "a.m4a"])),
             None
         );
         // Two sources: the offending single-path flag is named.
         assert_eq!(
-            multi_output_conflict(&two, false, &a(&["--out", "a.m4a"])),
+            multi_output_conflict(2, false, &with(&["--out", "a.m4a"])),
             Some("--out")
         );
         assert_eq!(
-            multi_output_conflict(&two, false, &a(&["--stream-to=a.m4a"])),
+            multi_output_conflict(2, false, &with(&["--stream-to=a.m4a"])),
             Some("--stream-to")
         );
         // --all-tracks writes one file per track, so it needs its own paths too.
         assert_eq!(
-            multi_output_conflict(&one, true, &a(&["--out", "a.m4a"])),
+            multi_output_conflict(1, true, &with(&["--out", "a.m4a"])),
             Some("--out")
         );
         assert_eq!(
-            multi_output_conflict(&one, true, &a(&["--save-keys", "k.json"])),
+            multi_output_conflict(1, true, &with(&["--save-keys", "k.json"])),
             Some("--save-keys")
         );
         // Flags that apply to the whole run are allowed.
         assert_eq!(
-            multi_output_conflict(&two, false, &a(&["--json", "--track", "t"])),
+            multi_output_conflict(2, false, &with(&["--json", "--track", "t"])),
             None
         );
-        assert_eq!(multi_output_conflict(&one, true, &a(&["--json"])), None);
+        assert_eq!(multi_output_conflict(1, true, &with(&["--json"])), None);
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn positionals_skip_flags_and_their_values() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let url = || "https://x/u/a/b".to_string();
+        let url = "https://x/u/a/b";
 
-        assert_eq!(positionals(&a(&["https://x/u/a/b"])), vec![url()]);
+        assert_eq!(parse(&[url]).unwrap().sources, vec![url.to_string()]);
         // The value of --out must not be mistaken for the source.
         assert_eq!(
-            positionals(&a(&["--out", "a.m4a", "https://x/u/a/b"])),
-            vec![url()]
+            parse(&["--out", "a.m4a", url]).unwrap().sources,
+            vec![url.to_string()]
         );
         assert_eq!(
-            positionals(&a(&["--out=a.m4a", "https://x/u/a/b"])),
-            vec![url()]
+            parse(&["--out=a.m4a", url]).unwrap().sources,
+            vec![url.to_string()]
         );
         // Boolean flags do not consume the next argument.
         assert_eq!(
-            positionals(&a(&["--list-tracks", "https://x/u/a/b"])),
-            vec![url()]
+            parse(&["--list-tracks", url]).unwrap().sources,
+            vec![url.to_string()]
         );
         assert_eq!(
-            positionals(&a(&["--all-tracks", "https://x/u/a/b"])),
-            vec![url()]
-        );
-        // The template value is skipped like any other flag value.
-        assert_eq!(
-            positionals(&a(&["--filename-template", "{title}", "https://x/u/a/b"])),
-            vec![url()]
+            parse(&["--all-tracks", url]).unwrap().sources,
+            vec![url.to_string()]
         );
         assert_eq!(
-            positionals(&a(&["--proxy", "http://127.0.0.1:8080", "https://x/u/a/b"])),
-            vec![url()]
+            parse(&["--filename-template", "{title}", url])
+                .unwrap()
+                .sources,
+            vec![url.to_string()]
         );
         assert_eq!(
-            positionals(&a(&[
-                "--retries",
-                "4",
-                "--timeout",
-                "90",
-                "--delay",
-                "500",
-                "https://x/u/a/b"
-            ])),
-            vec![url()]
+            parse(&["--retries", "4", "--timeout", "90", "--delay", "500", url])
+                .unwrap()
+                .sources,
+            vec![url.to_string()]
         );
-        assert!(positionals(&a(&["--list-tracks"])).is_empty());
+        assert!(parse(&["--list-tracks"]).unwrap().sources.is_empty());
         // Several sources are collected in order.
         assert_eq!(
-            positionals(&a(&["https://x/u/a/b", "https://x/u/c/d"])),
-            vec![url(), "https://x/u/c/d".to_string()]
+            parse(&[url, "https://x/u/c/d"]).unwrap().sources,
+            vec![url.to_string(), "https://x/u/c/d".to_string()]
         );
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn flag_reads_both_spellings() {
-        let args = vec!["url".to_string(), "--out".into(), "a.m4a".into()];
-        assert_eq!(flag(&args, "--out").as_deref(), Some("a.m4a"));
-
-        let args = vec!["--out=b.m4a".to_string()];
-        assert_eq!(flag(&args, "--out").as_deref(), Some("b.m4a"));
-
-        assert_eq!(flag(&args, "--missing"), None);
+        assert_eq!(
+            parse(&["--out", "a.m4a"]).unwrap().out.as_deref(),
+            Some("a.m4a")
+        );
+        assert_eq!(
+            parse(&["--out=b.m4a"]).unwrap().out.as_deref(),
+            Some("b.m4a")
+        );
     }
 
     #[test]
@@ -2405,10 +2296,41 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn usage_documents_every_flag() {
-        for f in VALUE_FLAGS.iter().chain(BOOL_FLAGS) {
-            assert!(USAGE.contains(f), "USAGE does not mention {f}");
+        let help = usage();
+        for arg in Cli::command().get_arguments() {
+            if arg.is_hide_set() {
+                continue;
+            }
+            if let Some(long) = arg.get_long() {
+                let flag = format!("--{long}");
+                assert!(help.contains(&flag), "help does not mention {flag}");
+            }
         }
+        assert!(help.contains("--help"));
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn completions_and_man_page_render() {
+        let mut completions = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Bash,
+            &mut Cli::command(),
+            BIN_NAME,
+            &mut completions,
+        );
+        assert!(
+            String::from_utf8_lossy(&completions).contains(BIN_NAME),
+            "bash completions are empty"
+        );
+
+        let mut man = Vec::new();
+        write_man(&mut man).unwrap();
+        let man = String::from_utf8_lossy(&man);
+        assert!(man.contains(BIN_NAME), "man page is empty");
+        assert!(man.contains(".TH"), "man page is not roff");
     }
 
     #[test]
@@ -2479,35 +2401,22 @@ proxy = "a\\b\tc"
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn policy_flags_fall_back_to_config() {
         // The flag wins when present.
-        assert_eq!(
-            retry_from(&["--retries".into(), "5".into()], Some(1))
-                .unwrap()
-                .attempts,
-            6
-        );
+        assert_eq!(retry_for(Some(5), Some(1)).attempts, 6);
         // Otherwise the config value is used.
-        assert_eq!(retry_from(&[], Some(3)).unwrap().attempts, 4);
+        assert_eq!(retry_for(None, Some(3)).attempts, 4);
         // Without either, the built-in default.
-        assert_eq!(
-            retry_from(&[], None).unwrap().attempts,
-            Retry::default().attempts
-        );
+        assert_eq!(retry_for(None, None).attempts, Retry::default().attempts);
 
-        assert_eq!(
-            timeout_from(&["--timeout".into(), "2".into()], Some(10)).unwrap(),
-            Some(2_000)
-        );
-        assert_eq!(timeout_from(&[], Some(10)).unwrap(), Some(10_000));
-        assert!(timeout_from(&[], Some(0)).is_err());
+        assert_eq!(timeout_ms(Some(2), Some(10)).unwrap(), Some(2_000));
+        assert_eq!(timeout_ms(None, Some(10)).unwrap(), Some(10_000));
+        assert!(timeout_ms(None, Some(0)).is_err());
 
-        assert_eq!(
-            delay_from(&["--delay".into(), "5".into()], Some(250)).unwrap(),
-            5
-        );
-        assert_eq!(delay_from(&[], Some(250)).unwrap(), 250);
-        assert_eq!(delay_from(&[], None).unwrap(), 0);
+        assert_eq!(delay_ms(Some(5), Some(250)), 5);
+        assert_eq!(delay_ms(None, Some(250)), 250);
+        assert_eq!(delay_ms(None, None), 0);
     }
 
     #[test]
