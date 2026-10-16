@@ -215,14 +215,44 @@ jobs:
             bun build --no-bundle "$s" --target=bun --outfile=/dev/null
           done
 
-  # The README's install block is generated from the same table that names the
-  # release archives (`scripts/release-targets.tsv`), so a rename there cannot
+  # docs/INSTALL.md's download block is generated from the same table that names
+  # the release archives (`scripts/release-targets.tsv`), so a rename there cannot
   # leave the docs pointing at an archive that is never built, and nobody has to
   # remember to bump a version in the install commands by hand.
-  readme:
-    name: readme
+  install:
+    name: install docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Check the install block is current
         run: ./scripts/install-block.sh --check
+      # install.sh runs unread on a stranger's machine, piped into a shell, so
+      # its platform mapping is pinned here: every supported pair must resolve to
+      # the archive the table names, and an unknown platform must fail rather
+      # than guess.
+      - name: Check the installer's platform mapping
+        run: |
+          set -euo pipefail
+          for t in \
+            "Linux x86_64 linux-x86_64-static" \
+            "Linux amd64 linux-x86_64-static" \
+            "Linux aarch64 linux-arm64-static" \
+            "Linux arm64 linux-arm64-static" \
+            "Darwin x86_64 macos-x86_64" \
+            "Darwin arm64 macos-arm64" \
+            "Linux aarch64 android-arm64" \
+            "Linux x86_64 android-x86_64"; do
+            set -- $t
+            os=$1 arch=$2 slug=$3 prefix=
+            case "$slug" in android-*) prefix=/data/data/com.termux/files/usr ;; esac
+            got=$(HOTAUDIO_OS="$os" HOTAUDIO_ARCH="$arch" PREFIX="$prefix" sh scripts/install.sh --print)
+            [ "$got" = "hotaudio-download-${slug}.tar.gz" ] \
+              || { echo "::error::$os/$arch resolved to '$got', expected 'hotaudio-download-${slug}.tar.gz'"; exit 1; }
+            # The slug it picked must be one the release actually builds.
+            awk -F'\t' -v want="$slug" '$2 == want { found = 1 } END { exit !found }' scripts/release-targets.tsv \
+              || { echo "::error::the installer maps $os/$arch to '$slug', which is not in release-targets.tsv"; exit 1; }
+          done
+          if HOTAUDIO_OS=MINGW64_NT-10.0 HOTAUDIO_ARCH=x86_64 sh scripts/install.sh --print >/dev/null 2>&1; then
+            echo "::error::the installer claimed to support an unknown platform"; exit 1
+          fi
+          sh -n scripts/install.sh

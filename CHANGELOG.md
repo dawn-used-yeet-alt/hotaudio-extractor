@@ -6,6 +6,26 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`install.sh`.** A one-line installer attached to every release:
+
+  ```bash
+  curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/install.sh | sh
+  ```
+
+  It detects the platform, checks the archive against `SHA256SUMS.txt` and
+  installs to `~/.local/bin` (`$PREFIX/bin` on Termux). `--dir` overrides the
+  destination and `--print` reports which archive your machine needs.
+
+### Changed
+
+- **The README is a landing page again.** Install, a few commands and an index;
+  the per-platform download table moved to `docs/INSTALL.md`, the flag tour to
+  `docs/CLI.md`, and the failure handling to `docs/TROUBLESHOOTING.md`. The
+  generated install block follows the table into `docs/INSTALL.md`, so the
+  versionless download URLs are still checked by CI.
+
 ## [1.2.1] - 2026-10-16
 
 Packaging and docs, no code changes. Release archives are named by platform

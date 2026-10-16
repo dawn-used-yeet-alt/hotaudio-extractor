@@ -16,6 +16,15 @@ real track, and the resumable-transfer fallback. It requires no network access
 and must stay that way — anything that would need a server goes behind the
 `RangeSource` trait.
 
+The library API has runnable examples; each takes a page URL, or local files, as
+arguments:
+
+```bash
+cargo run --example download_track  -- "https://hotaudio.net/u/user/track-slug" track.m4a
+cargo run --example stream_track    -- "https://hotaudio.net/u/user/track-slug" track.m4a
+cargo run --example decrypt_offline -- audio.hax keys.json track.m4a
+```
+
 ## Workflow
 
 - `cargo clippy --all-targets` must stay at zero warnings; CI enforces it with
@@ -65,7 +74,8 @@ component that moved.
 - Release flow: bump `version` in `Cargo.toml`, move the `Unreleased` entries to
   a new dated `CHANGELOG.md` section, and tag `vX.Y.Z`.
 - Release archives are named from `scripts/release-targets.tsv`, which also
-  generates the README's install block (`scripts/install-block.sh`); CI fails if
-  the two drift, so change the table and run the script rather than editing the
-  block by hand. Slugs are permanent — the README links to
+  generates the download block in `docs/INSTALL.md` (`scripts/install-block.sh`).
+  CI fails if the two drift, so change the table and run the script rather than
+  editing the block by hand. Slugs are permanent — the docs, `install.sh` and the
+  published release notes all point at
   `releases/latest/download/<archive>`, so renaming one breaks every link to it.
