@@ -95,6 +95,12 @@ hotaudio-download "https://hotaudio.net/u/user/track-slug" --out track.m4a --no-
 # Name every track on a page by its position
 hotaudio-download "https://hotaudio.net/u/user/album" --all-tracks --filename-template '{index} - {title}'
 
+# Pick one track from a multi-track page (see --list-tracks for the ids)
+hotaudio-download "https://hotaudio.net/u/user/album" --track 2 --out track-2.m4a
+
+# Talk to a mirror, or override the listen API base
+hotaudio-download "https://mirror.example/u/user/track-slug" --api-base https://mirror.example
+
 # Through a proxy (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY are honored too)
 hotaudio-download "https://hotaudio.net/u/user/track-slug" --proxy http://127.0.0.1:8080
 
@@ -122,7 +128,15 @@ retries = 5
 timeout = 60
 ```
 
-Keys never change for a given track, so a saved keys file is all you need to download it again.
+Keys never change for a given track, so a saved keys file is all you need to download it again. `--save-keys` writes a small JSON envelope (`version`, `haxUrl`, `title`, `savedAt`, `keys`); `--keys` accepts that envelope or a bare `{ "node": "hex" }` map from an older tool. Pair it with `--save-hax` to archive the raw container and decrypt it later without touching the network at all:
+
+```bash
+# Archive the container and its keys once
+hotaudio-download "$URL" --save-hax audio.hax --save-keys keys.json --out track.m4a
+
+# Decrypt the archive offline, as many times as you like
+hotaudio-download --hax audio.hax --keys keys.json --out again.m4a
+```
 
 For scripts, the exit code says what went wrong: `0` success, `2` bad input, `3` network, `4` protocol or decryption, `5` local file error.
 
@@ -130,6 +144,14 @@ For scripts, the exit code says what went wrong: `0` success, `2` bad input, `3`
 
 This tool depends on how hotaudio.net works today, so a site update can break it. If downloads suddenly fail, check the [releases page](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases) for a newer version, or open an issue.
 [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is slower but more stable.
+
+### A download failed or the audio looks truncated
+
+Transfers resume themselves across dropped connections. With `--stream-to <file>`, the output goes to a sibling `<file>.part` and is renamed into place only once the whole download has succeeded, so a failed or interrupted run never leaves a half-written `.m4a`; a leftover `.part` is safe to delete, and a re-run starts clean. If the network is flaky, give the request more room:
+
+```bash
+hotaudio-download "$URL" --retries 5 --timeout 60
+```
 
 ## For developers
 
@@ -139,6 +161,14 @@ Build from source (needs Rust 1.85+):
 git clone https://github.com/dawn-used-yeet-alt/hotaudio-extractor
 cd hotaudio-extractor
 cargo build --release   # -> target/release/hotaudio-download
+```
+
+Runnable examples show the library API; each takes a page URL (or local files) as arguments:
+
+```bash
+cargo run --example download_track  -- "https://hotaudio.net/u/user/track-slug" track.m4a
+cargo run --example stream_track    -- "https://hotaudio.net/u/user/track-slug" track.m4a
+cargo run --example decrypt_offline -- audio.hax keys.json track.m4a
 ```
 
 Everything else lives in the docs:
