@@ -280,9 +280,58 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  # The crate also ships as a browser module. There is one wasm32 artifact rather
+  # than a per-platform matrix, and it is produced by the same script CI runs, so
+  # the published package and the tested one are the same build.
+  wasm:
+    name: wasm package
+    needs: [check, notices]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+
+      - name: Fetch third-party notices
+        uses: actions/download-artifact@v4
+        with:
+          name: notices
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-pkg
+
+      # No explicit version: the action installs the `wasm-bindgen` from
+      # Cargo.lock, which is what the build script checks the CLI against.
+      - uses: taiki-e/install-action@wasm-bindgen-cli
+
+      - name: Build the package
+        run: ./scripts/build-wasm.sh pkg
+
+      - name: Package (tar.gz)
+        run: |
+          set -euo pipefail
+          tag="${{ needs.check.outputs.tag }}"
+          stage="hotaudio-wasm-${tag}"
+          mkdir -p "dist/$stage"
+          cp -r pkg/web pkg/nodejs "dist/$stage/"
+          cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.yml "dist/$stage/"
+          tar -czf "dist/${stage}.tar.gz" -C dist "$stage"
+          rm -rf "dist/$stage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: [check, build]
+    needs: [check, build, wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

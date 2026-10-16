@@ -159,6 +159,33 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
 
+  # The other half of the crate is the browser build. This runs the exact script
+  # the release uses, so a change that breaks the `pkg/` package fails here,
+  # before a tag exists, rather than during one.
+  wasm-pkg:
+    name: wasm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # With no explicit version the action installs the `wasm-bindgen` from
+      # Cargo.lock, which is the version the build script insists on.
+      - uses: taiki-e/install-action@wasm-bindgen-cli
+      - name: Build the package
+        run: ./scripts/build-wasm.sh
+      - name: Check the package
+        run: |
+          set -euo pipefail
+          for f in web/hotaudio.js web/hotaudio.d.ts web/hotaudio_bg.wasm \
+                   nodejs/hotaudio.js nodejs/hotaudio.d.ts nodejs/hotaudio_bg.wasm; do
+            test -s "pkg/$f" || { echo "::error::missing pkg/$f"; exit 1; }
+          done
+          # The generated types have to describe the exports, not merely exist.
+          grep -q "export function downloadTrack" pkg/web/hotaudio.d.ts
+
   # `scripts/` are Bun scripts for the signer-recovery toolchain. They are
   # self-contained and need no dependencies to parse.
   scripts:

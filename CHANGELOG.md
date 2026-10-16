@@ -8,6 +8,13 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **A reproducible wasm package build.** `scripts/build-wasm.sh` builds the
+  cdylib once and runs `wasm-bindgen` for both `web` and `nodejs` into `pkg/`,
+  generated `.d.ts` types included, and checks that the CLI matches the
+  `wasm-bindgen` crate in `Cargo.lock` before building. CI runs the same script
+  and asserts the package shape, and each release publishes
+  `hotaudio-wasm-<tag>.tar.gz` alongside the native binaries.
+
 - **Downloads can be cancelled.** A `download::Cancel` token, threaded through
   `DownloadOptions::cancel` and the trailing `cancel` parameter of
   `download_streaming` / `download_cached`, is polled between segments and before

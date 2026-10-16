@@ -26,6 +26,8 @@ Windows downloads are `.zip`; everything else is `.tar.gz`. Not sure if you're o
 
 Each release also has a `SHA256SUMS.txt` if you want to verify your download.
 
+Running it in a browser instead? Each release also carries the wasm package (`hotaudio-wasm-…`); see [docs/BROWSER.md](docs/BROWSER.md).
+
 ## Use it
 
 **Windows:** unzip it (right-click → Extract All), open a terminal in that folder, then run:

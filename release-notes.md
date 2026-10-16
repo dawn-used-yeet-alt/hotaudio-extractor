@@ -19,6 +19,7 @@ Download the archive for your platform, extract it, and run `hotaudio-download`:
 | Windows | ARM64 | `hotaudio-download-<tag>-aarch64-pc-windows-msvc.zip` |
 | Android / Termux | ARM64 | `hotaudio-download-<tag>-aarch64-linux-android.tar.gz` |
 | Android / Termux | x86-64 | `hotaudio-download-<tag>-x86_64-linux-android.tar.gz` |
+| Browser / Node (wasm) | wasm32 | `hotaudio-wasm-<tag>.tar.gz` |
 
 On Unix, `chmod +x hotaudio-download` after extraction.
 
@@ -90,9 +91,13 @@ The crate is also usable as a library, and as of 1.1.0 it builds for
 callback as they decrypt, so a page can append them to a `MediaSource` and start
 playing after one round trip.
 
+The release attaches this build as `hotaudio-wasm-<tag>.tar.gz`: `web/` and
+`nodejs/` wasm-bindgen packages with `.d.ts` types. To build it yourself:
+
 ```bash
-cargo build --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/hotaudio.wasm
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli   # must match the version in Cargo.lock
+./scripts/build-wasm.sh
 ```
 
 A browser needs a same-origin proxy in front, and this project does not ship one;
