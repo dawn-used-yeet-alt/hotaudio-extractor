@@ -1,0 +1,24 @@
+[package]
+name = "hotaudio-live-tests"
+version = "0.1.0"
+edition = "2024"
+# Matches the crate under test, which is the floor for the whole tree.
+rust-version = "1.85"
+publish = false
+
+# Its own workspace, so the crate's `cargo build`, `cargo clippy --all-targets`
+# and `cargo test` never see it — `cargo test` at the repository root must stay
+# offline. Run this crate from inside `live/`.
+[workspace]
+
+[[bin]]
+name = "hotaudio-live-tests"
+path = "src/main.rs"
+
+# The crate under test, as a path dependency, so the library calls and the
+# spawned `hotaudio-download` binary are always the same source. `serde` and
+# `serde_json` are for the report; the crate already depends on both.
+[dependencies]
+hotaudio = { package = "hotaudio-rs", path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

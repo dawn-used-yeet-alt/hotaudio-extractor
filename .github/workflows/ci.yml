@@ -84,9 +84,8 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
 
-  # `scripts/` are Bun scripts for the signer-recovery toolchain. They need no
-  # dependencies to parse; `verify-live.ts` needs @noble/ciphers only to run
-  # against the live site, which CI never does.
+  # `scripts/` are Bun scripts for the signer-recovery toolchain. They are
+  # self-contained and need no dependencies to parse.
   scripts:
     name: scripts
     runs-on: ubuntu-latest

@@ -16,14 +16,6 @@ real track, and the resumable-transfer fallback. It requires no network access
 and must stay that way — anything that would need a server goes behind the
 `RangeSource` trait.
 
-Optional, for the live diagnostic in `scripts/verify-live.ts`:
-
-```bash
-bun add -d @noble/ciphers
-```
-
-The crate itself has no JavaScript dependencies; only that diagnostic needs one.
-
 ## Workflow
 
 - `cargo clippy --all-targets` must stay at zero warnings; CI enforces it with
@@ -49,14 +41,18 @@ The crate itself has no JavaScript dependencies; only that diagnostic needs one.
 
 ## When the site changes
 
-Don't guess which stage broke — run the diagnostic:
+Don't guess which stage broke — run the live acceptance suite, which names the
+failing component:
 
 ```bash
-bun scripts/verify-live.ts
+cargo build --release --bin hotaudio-download
+cargo run --release --manifest-path live/Cargo.toml -- \
+  --cli "$PWD/target/release/hotaudio-download"
 ```
 
-It names the failing stage and prints the relevant hint. Then follow
-[`docs/MAINTENANCE.md`](docs/MAINTENANCE.md). Never run it in CI.
+Then follow [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md). CI also runs the suite
+daily (`.github/workflows/live.yml`), so a red run already points at the
+component that moved.
 
 ## Commits and releases
 

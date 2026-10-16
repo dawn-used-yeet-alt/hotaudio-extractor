@@ -22,7 +22,7 @@
  * `charCode - 34`; `PROGRAM` holds that decoded form.
  *
  * After regenerating, follow `docs/MAINTENANCE.md`: update the env table, run
- * `bun scripts/verify-live.ts`, then `bun scripts/gen-golden.ts`.
+ * the live acceptance suite in `live/`, then `bun scripts/gen-golden.ts`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -189,7 +189,7 @@ try {
   console.log('Next (see docs/MAINTENANCE.md):');
   console.log('  1. Update PINNED_NOZZLE_VERSION and ENV_HASHES in src/signer/env.rs');
   console.log('     and scripts/shim.ts — they must match the new build.');
-  console.log('  2. bun scripts/verify-live.ts    # the server is the real oracle');
+  console.log('  2. run live/ (see docs/MAINTENANCE.md)  # the server is the real oracle');
   console.log('  3. bun scripts/gen-golden.ts     # only once the server accepts');
   console.log('  4. cargo test');
 } finally {

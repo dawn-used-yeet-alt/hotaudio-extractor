@@ -1,9 +1,0 @@
-{
-  "//": "Local-only tooling manifest, gitignored. The crate has no JS deps and the TypeScript package lives on the `legacy` branch; this exists solely so `bun install` can supply the two imports that scripts/verify-live.ts makes. Not a publishable package.",
-  "name": "hotaudio-extractor-scripts",
-  "private": true,
-  "devDependencies": {
-    "@noble/ciphers": "^2.4.0",
-    "@noble/curves": "^2.4.0"
-  }
-}

@@ -149,6 +149,15 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- **The live diagnostic is now a Rust acceptance suite.** `live/` is a separate
+  workspace that exercises the whole crate and the `hotaudio-download` binary
+  against the real site in one session — page fetch, page-state decrypt,
+  handshake, signer, listen, key paging, container parse, full decrypt,
+  `--verify`, the saved-keys envelope, and the offline, cached and ranged paths —
+  and writes a machine-readable report. `.github/workflows/live.yml` runs it daily
+  through Cloudflare WARP and files one deduplicated issue per broken component.
+  It replaces the TypeScript staged probe.
+
 - **One key-paging policy for both decrypt paths.** The "miss → page exactly
   this index" decision now lives inside `download::derive_or_page`, which tries
   the derivation memo before paging; `decrypt_container` and the ranged path no
@@ -163,6 +172,12 @@ All notable changes to this project are documented here. Format follows
   `5` (local filesystem); `0` still means success. Local file errors are
   reported as `Error::Io` instead of `Error::Http`, so they no longer look like
   network failures. The codes are listed in `--help`.
+
+### Removed
+
+- **`scripts/verify-live.ts` and the JavaScript dependencies it needed.**
+  `package.json` and `bun.lock` are gone and `scripts/` is dependency-free again;
+  the live diagnostic is the Rust suite in `live/`.
 
 ### Fixed
 
@@ -181,8 +196,8 @@ All notable changes to this project are documented here. Format follows
   short of the announced length was returned as success; it now compares the
   final length and resumes for the remainder within the existing retry budget,
   erroring if it never completes. The decrypted audio is also checked for an MP4
-  `ftyp` box at offset 4 before it is returned or streamed, mirroring
-  `scripts/verify-live.ts`.
+  `ftyp` box at offset 4 before it is returned or streamed, mirroring the live
+  acceptance check.
 
 - **Key paging no longer gives up after one draw.** The branch window returned
   for an index rotates in width (8/32/128), so a single draw can miss the leaves

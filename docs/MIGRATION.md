@@ -84,16 +84,16 @@ Options map as follows:
 
 The `legacy` branch had `scripts/live-probe.ts`. It is replaced by:
 
-| Script | Purpose |
+| Command | Purpose |
 | --- | --- |
-| `bun scripts/verify-live.ts` | staged live diagnostic; names the failing stage |
+| `cargo run --manifest-path live/Cargo.toml` | live acceptance suite; names the failing component |
 | `bun scripts/recapture.ts` | re-capture the signer program from a new bundle |
 | `bun scripts/gen-golden.ts` | regenerate signer parity vectors |
 | `cargo test` | offline test suite |
 
-`recapture.ts` and `verify-live.ts` depend only on `scripts/shim.ts` and
-`vendor/nozzle.js`, both vendored into this directory. They do **not** require the
-TypeScript implementation, so the Rust version can be maintained standalone.
+`recapture.ts` depends only on `scripts/shim.ts` and `vendor/nozzle.js`, both
+vendored into this directory. It does **not** require the TypeScript
+implementation, so the Rust version can be maintained standalone.
 
 ## Building
 

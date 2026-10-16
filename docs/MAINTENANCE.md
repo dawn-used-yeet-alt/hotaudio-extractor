@@ -5,13 +5,15 @@ Everything needed when the site changes, and when something breaks.
 The short version:
 
 ```bash
-bun scripts/verify-live.ts            # which stage fails?
+# Which component fails? Build the CLI first: cargo build --release --bin hotaudio-download
+cargo run --release --manifest-path live/Cargo.toml -- --cli "$PWD/target/release/hotaudio-download"
 # ... then, if the signer is stale:
 bun scripts/recapture.ts               # new bytecode.rs from the new bundle
 $EDITOR src/signer/env.rs              # PINNED_NOZZLE_VERSION + ENV_HASHES
 $EDITOR scripts/shim.ts                # same two values, for the reference sandbox
-bun scripts/verify-live.ts            # the server is the authority
-bun scripts/gen-golden.ts             # only once the server accepts
+# The server is the authority:
+cargo run --release --manifest-path live/Cargo.toml -- --cli "$PWD/target/release/hotaudio-download"
+bun scripts/gen-golden.ts              # only once the server accepts
 cargo test
 ```
 
@@ -19,36 +21,36 @@ cargo test
 
 ## Diagnosis first
 
-Never guess what broke. Run the probe:
+Never guess what broke. Run the suite:
 
 ```bash
-bun scripts/verify-live.ts                      # 9 stages, ~45s, tiny ranged reads
-bun scripts/verify-live.ts --full               # + download and decrypt everything
-bun scripts/verify-live.ts --keys keys.json     # offline stages from saved keys
-bun scripts/verify-live.ts https://host/u/a/b   # a specific page
+# Full run. --skip-heavy stops after page + handshake, --no-stream skips the
+# ranged streaming check, --url https://host/u/a/b targets a specific page.
+cargo run --release --manifest-path live/Cargo.toml -- --cli "$PWD/target/release/hotaudio-download"
 ```
 
-It prints one line per stage with timing, and the failing stage tells you what
-to look at:
+Every check is tagged with the component that owns it, and the failing component
+tells you what to look at:
 
-| Stage | Fails when | Usual cause |
+| Component | Fails when | Usual cause |
 | --- | --- | --- |
-| 1 page fetch | 403 | User-Agent was changed. Must stay `Mozilla/5.0`. |
-| 2 state decrypt | `no __ha_state` | Page layout changed. |
-| 2 state decrypt | `truncated bencode` / auth error | State key derivation changed. |
-| 3 key exchange | anything | Server key format changed. |
-| 4 signer | `unexpected signature shape` | VM opcode semantics drifted. See below. |
-| 5 listen API | **401 bad signature** | **Stale capture.** Re-run `recapture.ts`. |
-| 5 listen API | 403 | User-Agent was changed. |
-| 5 listen API | non-crypt body | Response envelope changed. |
-| 6 container probe | `not a HAX0 container` | Container magic/header changed. |
-| 7 HAX0 parse | bencode errors | Metadata keys changed. |
-| 8 key derivation | no key derivable | Tree geometry changed (segment counts). |
-| 9 sample decrypt | auth failure | Key derivation wrong, or cipher/zero-nonce changed. |
-| 10 full decrypt | paging 401 | Stale capture again. |
+| `page` | 403 | User-Agent was changed. Must stay `Mozilla/5.0`. |
+| `page-state` | `no __ha_state` | Page layout changed. |
+| `page-state` | `truncated bencode` / auth error | State key derivation changed. |
+| `handshake` | anything | Server key format changed. |
+| `signer` | `unexpected signature shape` | VM opcode semantics drifted. See below. |
+| `signer` | rejected listen despite a fresh capture | Pinned bytecode/env is stale. |
+| `listen` | **401 bad signature** | **Stale capture.** Re-run `recapture.ts`. |
+| `listen` | 403 | User-Agent was changed. |
+| `listen` | non-crypt body | Response envelope changed. |
+| `hax-url` | issued != derived | CDN layout moved. |
+| `container` | `not a HAX0 container`, bencode errors | Container magic, header or metadata keys changed. |
+| `paging` | `0 key page(s)` or 401 | Tree geometry changed, or a stale capture. |
+| `decrypt` / `verify` | auth failure, no `ftyp`, bad MP4 | Key derivation wrong, cipher/nonce changed, or a truncated output. |
 
-The probe is deliberately read-only and cheap: it uses HTTP `Range` to fetch
-16 bytes and then the header, not the whole container.
+A full run is a real end-to-end download: it fetches the container, pages every
+key, decrypts all of it, then replays the same bytes offline, cached and streamed,
+so the red component is the one that moved.
 
 ---
 
@@ -74,7 +76,7 @@ implementation, and keep working on branches where it is absent. It is a
 
 ### 1. Get the new bundle
 
-The probe prints which build it is pinned to. Fetch the current one:
+The suite's `signer` check prints which build it is pinned to. Fetch the current one:
 
 ```bash
 curl -s "https://hotaudio.net/nozzle.js?v=<new version>" -o new-nozzle.js
@@ -113,11 +115,11 @@ both. The VM tests membership of these keys against its environment object
 ### 4. Let the server decide
 
 ```bash
-bun scripts/verify-live.ts
+cargo run --release --manifest-path live/Cargo.toml -- --cli "$PWD/target/release/hotaudio-download"
 ```
 
-Stage 5 is the real oracle: the server validates the signature. Only once it
-returns 200 may you regenerate the golden vectors.
+The `listen` component is the real oracle: the server validates the signature.
+Only once it passes may you regenerate the golden vectors.
 
 ### 5. Regenerate golden vectors and test
 
@@ -134,8 +136,8 @@ cargo test
 
 The recovered program is a register machine; `src/signer/vm.rs` implements it.
 If the new build uses a different instruction set, signatures will be wrong even
-though the program was recovered correctly. Symptoms: stage 4 produces a
-malformed signature, or stage 5 returns 401 despite a fresh capture.
+though the program was recovered correctly. Symptoms: the `signer` check produces
+a malformed signature, or `listen` returns 401 despite a fresh capture.
 
 ### Differential tracing
 
@@ -180,7 +182,7 @@ Recorded here because each one cost real debugging time during the port:
 
 ## If the container format changed
 
-`src/hax.rs` holds the parser. The probe's stage 7 will report the first
+`src/hax.rs` holds the parser. The suite's `container` check reports the first
 bencode failure. Things to re-check:
 
 - magic and the three little-endian length fields
@@ -205,7 +207,7 @@ child = SHA-256(parent || (nodeIndex & 0xff))
 ```
 
 `tests/key_tree.rs` checks derivation against real branch keys and would fail
-loudly if this drifted. Stage 8 of the probe is the live equivalent.
+loudly if this drifted. The `keys` and `paging` checks are the live equivalent.
 
 ---
 
@@ -219,8 +221,8 @@ loudly if this drifted. Stage 8 of the probe is the live equivalent.
 - `tests/http_resume.rs` — resumable transfer and the `Range`-ignoring fallback
 - unit tests in `src/` — bencode, URL parsing, tree geometry, escaping
 
-Regenerate captured fixtures with `--full` runs of the probe; keep them small
-and free of copyrighted audio (key material and headers only).
+Regenerate captured fixtures with a full live run; keep them small and free of
+copyrighted audio (key material and headers only).
 
 ---
 
