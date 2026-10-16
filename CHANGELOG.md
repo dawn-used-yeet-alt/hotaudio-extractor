@@ -6,6 +6,27 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-16
+
+The command-line release. `hotaudio-download` grows from "one URL, one file" into
+a batch-capable tool: several sources or `--input`, `--all-tracks`, `--track`,
+`--output-dir` and `--filename-template`, `--json` and `--progress=json`,
+`--out -` / `--stream-to -` for piping, `--save-hax` and `--keys-only` for
+archiving, `--no-clobber`, a TOML config file, and distinct exit codes (2 bad
+input, 3 transport, 4 protocol, 5 filesystem, 130 cancelled). Parsing moved to
+`clap`, so `--help` is generated and every release also ships a man page and
+completions for bash, zsh, fish and PowerShell.
+
+Underneath: the ranged path pages keys on demand like the buffered one, so
+seeking into an arbitrary segment no longer fails intermittently; `--track` works
+for URL downloads instead of always taking the page's first track; streamed
+output is written atomically through a `.part` file; short transfers and non-MP4
+output are rejected instead of reported as success; and the browser surface
+gained cancellation, a track id, offline replay (`decryptHax` / `downloadCached`)
+and `signPayloadAt`. The TypeScript live probe is gone — the acceptance suite is
+now Rust (`live/`) and runs daily against the real site — and `cargo-deny` audits
+both target graphs, with every release archive carrying its third-party notices.
+
 ### Added
 
 - **Generated `--help`, plus a man page and shell completions.** The CLI is now
@@ -425,7 +446,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v1.0.0
 [0.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v0.1.0

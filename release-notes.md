@@ -88,6 +88,20 @@ bash, zsh, fish and PowerShell completions (`completions/`) and a man page
 (`man/hotaudio-download.1`); the binary prints the same files with
 `--completions <shell>` and `--man-page`.
 
+## Batch use and configuration
+
+Several sources can be given in one run, or one per line with `--input FILE`
+(`-` for stdin); `--all-tracks` downloads every track on a page and `--track ID`
+picks one. Defaults can come from a TOML config file
+(`$XDG_CONFIG_HOME/hotaudio/config.toml`, `--config PATH` or `$HOTAUDIO_CONFIG`),
+output can be shaped with `--output-dir` and `--filename-template`, and `--json`
+prints a machine-readable result. `--save-hax` plus `--save-keys` archive a track
+for a later fully offline decrypt, and `--keys-only` saves just the keys.
+
+Failures are distinguished by exit code: `2` bad input, `3` transport, `4`
+protocol, `5` filesystem, and `130` on Ctrl-C (`0` is success). They are listed
+in `--help`.
+
 ## Library and browser build
 
 The crate is also usable as a library, and as of 1.1.0 it builds for
