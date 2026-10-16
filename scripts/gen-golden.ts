@@ -4,8 +4,8 @@
  *
  *   bun scripts/gen-golden.ts
  *
- * Run this only AFTER `bun scripts/verify-live.ts` confirms the server accepts
- * the new capture — the server, not this script, is the authority. Golden
+ * Run this only AFTER the live acceptance suite in `live/` confirms the server
+ * accepts the new capture — the server, not this script, is the authority. Golden
  * vectors exist to pin the Rust VM against the reference JavaScript between
  * then and the next site change.
  *

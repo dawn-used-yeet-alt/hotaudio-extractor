@@ -1,0 +1,125 @@
+name: live
+
+# Daily end-to-end run against the real site: exercises the crate and the
+# `hotaudio-download` binary, then files one issue per broken component.
+# Runners are 403'd directly, so egress goes through Cloudflare WARP in proxy
+# mode. Everything is built from this checkout, never a release.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full suite (uncheck for page + handshake only)
+        type: boolean
+        default: true
+
+concurrency:
+  group: live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # `live` is a separate workspace but builds into the same `./target`.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Record the crate revision
+        id: rev
+        run: echo "rev=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install WARP
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cloudflare-warp
+
+      - name: Connect WARP in proxy mode
+        run: |
+          sudo warp-cli --accept-tos registration new || true
+          sudo warp-cli --accept-tos mode proxy || true
+          sudo warp-cli --accept-tos connect || true
+          for i in $(seq 1 20); do
+            sudo warp-cli --accept-tos status | grep -qi connected && break
+            sleep 2
+          done
+          sudo warp-cli --accept-tos status
+
+      - name: Egress identity
+        run: |
+          curl -sS --max-time 20 -x http://127.0.0.1:40000 \
+            https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|loc|warp)=' || true
+
+      # Same bar as the crate: the suite is Rust, so it is linted like one.
+      - name: Lint the suite
+        run: |
+          cargo clippy --manifest-path live/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path live/Cargo.toml --check
+
+      - name: Build the CLI and the suite
+        run: |
+          cargo build --release --locked --bin hotaudio-download \
+            --target-dir "$GITHUB_WORKSPACE/target"
+          cargo build --release --manifest-path live/Cargo.toml \
+            --target-dir "$GITHUB_WORKSPACE/target"
+
+      - name: Run the suite
+        id: suite
+        continue-on-error: true
+        env:
+          # The suite's client and the spawned CLI both pick these up, so all
+          # traffic reaches the site through WARP.
+          HTTPS_PROXY: http://127.0.0.1:40000
+          HTTP_PROXY: http://127.0.0.1:40000
+          HOTAUDIO_REV: ${{ steps.rev.outputs.rev }}
+          HOTAUDIO_LIVE_URL: ${{ vars.HOTAUDIO_LIVE_URL }}
+        run: |
+          "$GITHUB_WORKSPACE/target/release/hotaudio-live-tests" \
+            --cli "$GITHUB_WORKSPACE/target/release/hotaudio-download" \
+            --report "$RUNNER_TEMP/report.json" \
+            ${{ github.event.inputs.full == 'false' && '--skip-heavy' || '' }}
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-report
+          path: ${{ runner.temp }}/report.json
+          if-no-files-found: warn
+
+      # Deduped by title: a component that stays broken gets a comment on its
+      # existing thread instead of a new issue.
+      - name: File issues
+        if: steps.suite.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          "$GITHUB_WORKSPACE/target/release/hotaudio-live-tests" \
+            --file-existing "$RUNNER_TEMP/report.json" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Fail if the suite failed
+        if: steps.suite.outcome == 'failure'
+        run: exit 1
+
+      - name: Teardown
+        if: always()
+        run: sudo warp-cli --accept-tos disconnect || true

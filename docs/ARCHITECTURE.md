@@ -157,8 +157,8 @@ Measured against the live CDN, so as to avoid re-measuring:
   is a build profile where the assertion does not apply, not a test a human has
   to remember to ask for. Its correctness half runs in every profile and on both
   targets.
-- **Offline.** `cargo test` needs no network. Live checks are explicit,
-  manual, and separate: `scripts/verify-live.ts`.
+- **Offline.** `cargo test` needs no network. The live checks are a separate
+  workspace, `live/`, which the test build never sees.
 
 ## The browser transport
 

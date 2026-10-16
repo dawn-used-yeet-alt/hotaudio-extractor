@@ -1,10 +1,9 @@
 # Rust build output and downloaded media
 /target/
+/live/target/
+/live/Cargo.lock
 *.m4a
 *.hax
-
-# Optional, for scripts/verify-live.ts only (`bun add -d @noble/ciphers`)
-node_modules/
 
 # Local environment / scratch
 .env
