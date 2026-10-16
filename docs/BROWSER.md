@@ -95,6 +95,9 @@ const blob = new Blob(parts, { type: info.mime });
   below.
 - `trackKeys(url, trackId)` — handshake and first key branch without downloading
   audio.
+- `trackKeysWith(url, fetchImpl, rewrite, trackId)` — the same key-only save
+  through the replacement `fetch` / rewrite seam, so it works behind a proxy or
+  a native bridge too.
 - `signPayload(payload)` — the `X-Signature` for a payload right now, so a host
   can diff against the reference signer in the browser.
 - `listTracks(htmlOrUrlHtml)` — `[{ id, key, title }, …]`. Takes page HTML, so a
@@ -182,7 +185,8 @@ const info = await downloadTrackWith(
 ```
 
 The replacement must take `(url, init)` and resolve to a `Response`. The native
-bridge in most shells can be adapted in a few lines.
+bridge in most shells can be adapted in a few lines. `trackKeysWith` takes the
+same pair when only the keys are wanted.
 
 ## Troubleshooting
 
