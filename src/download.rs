@@ -15,10 +15,10 @@
 use std::collections::HashMap;
 
 use crate::crypto::{self, Error, Result};
-use crate::hax::{Hax0, KeyError, KeyTree};
+use crate::hax::{Hax0, KeyTree};
 use crate::http::Client;
 use crate::listen::{self, Handshake, ListenResponse};
-use crate::range::{self, HttpRangeSource, RangeSource};
+use crate::range::{self, HttpRangeSource};
 
 /// Progress phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,8 +271,13 @@ impl KeyPager for ListenPager<'_> {
 
 /// Derive the key for `seg_idx`, paging branches until one covers it.
 ///
-/// `keys` is the caller's merged-key map and `cache` its derivation memo; both
-/// are updated in place. New keys invalidate the memo, since a new ancestor
+/// This is the single "miss → page exactly this index" policy: both the
+/// buffered path ([`decrypt_container`]) and the ranged one
+/// ([`crate::range::decrypt_streaming`]) call it per segment.
+///
+/// The memo is consulted first, so a segment already covered by an earlier draw
+/// costs nothing. `keys` is the caller's merged-key map and `cache` its memo;
+/// both are updated in place. New keys invalidate the memo, since a new ancestor
 /// changes every key beneath it. `pages` counts listen requests actually made,
 /// misses included.
 ///
@@ -287,6 +292,9 @@ pub async fn derive_or_page(
     seg_idx: u32,
     pages: &mut u32,
 ) -> Result<[u8; 32]> {
+    if let Ok(key) = tree.derive(keys, seg_idx, cache) {
+        return Ok(key);
+    }
     for _ in 0..KEY_PAGE_ATTEMPTS {
         let extra = pager.page(seg_idx).await?;
         *pages += 1;
@@ -370,15 +378,10 @@ pub async fn decrypt_container(
     let mut pager = ListenPager::new(client, hs).with_delay_ms(opts.delay_ms);
     let mut pages = 0u32;
     for i in 0..hax.segment_count as usize {
-        let key = match tree.derive(&keys, i as u32, &mut cache) {
-            Ok(k) => k,
-            Err(KeyError::Missing { seg_idx }) => {
-                derive_or_page(
-                    &mut pager, &tree, &mut keys, &mut cache, seg_idx, &mut pages,
-                )
-                .await?
-            }
-        };
+        let key = derive_or_page(
+            &mut pager, &tree, &mut keys, &mut cache, i as u32, &mut pages,
+        )
+        .await?;
 
         let (start, end) = hax.slice_range(i);
         let slice = hax_bytes
@@ -417,10 +420,11 @@ pub async fn decrypt_container(
 /// decrypt one segment at a time, handing each decrypted fragment to
 /// `on_fragment` as it arrives.
 ///
-/// Peak memory is one segment rather than the whole container, and the first
-/// playable fragment exists after a single round trip instead of after the full
-/// transfer. Key branches are paged on demand exactly as in
-/// [`decrypt_container`].
+/// The segment loop is [`range::decrypt_streaming`], shared with the library's
+/// other ranged callers, so the "miss → page this index" policy lives in exactly
+/// one place ([`derive_or_page`]). Peak memory is one segment rather than the
+/// whole container, and the first playable fragment exists after a single round
+/// trip instead of after the full transfer.
 ///
 /// `on_fragment` is called once per segment, in order, which is what makes the
 /// browser build able to append straight to a `MediaSource`: the first call is
@@ -449,46 +453,22 @@ pub async fn download_streaming(
     let hax = range::read_header(&source).await?;
     source.set_file_length(file_length);
 
-    let tree = KeyTree::new(hax.segment_count.max(1));
     let mut keys: crypto::KeyMap = listen::keys_to_map(&initial.keys);
     if let Some(seed) = initial_keys {
         for (node, key) in seed {
             keys.entry(*node).or_insert(*key);
         }
     }
-    let mut cache: crypto::KeyMap = HashMap::new();
 
     let mut written = 0u64;
-    let mut paged = 0u32;
     let mut pager = ListenPager::new(api_client, hs).with_delay_ms(delay_ms);
-
-    for i in 0..hax.segment_count as usize {
-        let key = match tree.derive(&keys, i as u32, &mut cache) {
-            Ok(k) => k,
-            Err(KeyError::Missing { seg_idx }) => {
-                derive_or_page(
-                    &mut pager, &tree, &mut keys, &mut cache, seg_idx, &mut paged,
-                )
-                .await?
-            }
-        };
-
-        let (start, end) = hax.slice_range(i);
-        let slice = source.range(start as u64, (end - 1) as u64).await?;
-        if slice.len() != end - start {
-            return Err(Error::Protocol(format!(
-                "segment {i}: expected {} bytes, got {}",
-                end - start,
-                slice.len()
-            )));
-        }
-        let plain = crypto::open_zero(&key, &slice)?;
+    let (keys, pages) = range::decrypt_streaming(&source, &hax, &keys, &mut pager, |i, plain| {
         if i == 0 {
-            // The first fragment is the earliest point a caller has MP4 bytes;
-            // reject a non-MP4 first segment before handing it over.
-            ensure_mp4(&plain)?;
+            // The first fragment is the earliest point a caller has MP4
+            // bytes; reject a non-MP4 first segment before handing it over.
+            ensure_mp4(plain)?;
         }
-        on_fragment(&plain)?;
+        on_fragment(plain)?;
         written += plain.len() as u64;
 
         if let Some(cb) = on_progress.as_mut() {
@@ -500,7 +480,9 @@ pub async fn download_streaming(
                 });
             }
         }
-    }
+        Ok(())
+    })
+    .await?;
 
     Ok(Streamed {
         bytes: written,
@@ -509,7 +491,7 @@ pub async fn download_streaming(
         codec: hax.codec.clone(),
         hax_url: initial.url,
         keys,
-        pages: paged,
+        pages,
     })
 }
 

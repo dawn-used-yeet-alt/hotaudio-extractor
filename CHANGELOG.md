@@ -139,6 +139,15 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- **One key-paging policy for both decrypt paths.** The "miss → page exactly
+  this index" decision now lives inside `download::derive_or_page`, which tries
+  the derivation memo before paging; `decrypt_container` and the ranged path no
+  longer re-implement it. `range::decrypt_streaming` and `range::write_to_file`
+  take a `&mut impl KeyPager` and an initial key map instead of a complete one,
+  so they page on demand like the buffered path; `decrypt_streaming` returns the
+  merged keys and the page count, and `download_streaming` is now a thin wrapper
+  over it. A new `RangeSource` test exercises paging through the ranged path.
+
 - **Distinct exit codes.** Failures now exit `2` (bad input or unknown flag),
   `3` (network or transport), `4` (protocol, listen, decryption or signer) or
   `5` (local filesystem); `0` still means success. Local file errors are
