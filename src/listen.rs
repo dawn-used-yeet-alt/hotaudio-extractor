@@ -245,11 +245,33 @@ pub fn hax_url_for_key(track_key: &str) -> String {
     format!("https://cdn.hotaudio.net/a/{track_key}.hax")
 }
 
+/// The pause to take before a listen request: `Some` for a non-zero politeness
+/// delay, `None` when it is disabled.
+fn politeness_pause(delay_ms: u64) -> Option<std::time::Duration> {
+    if delay_ms == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_millis(delay_ms))
+    }
+}
+
 /// Perform one encrypted listen request.
 ///
 /// `first` is `-1` for the initial call (returns the `.hax` URL), or a segment
 /// index to page additional key branches for long tracks.
-pub async fn listen(client: &Client, hs: &Handshake, first: i64) -> Result<ListenResponse> {
+///
+/// `delay_ms` pauses before the request when non-zero. It is politeness only —
+/// batch and bulk callers use it to space listen/key-paging load — and never
+/// affects correctness (see `docs/PROTOCOL.md` §7).
+pub async fn listen(
+    client: &Client,
+    hs: &Handshake,
+    first: i64,
+    delay_ms: u64,
+) -> Result<ListenResponse> {
+    if let Some(pause) = politeness_pause(delay_ms) {
+        crate::clock::sleep(pause).await;
+    }
     // Field order matters: the server validates the signature over exactly
     // this string, so it must match the player's `JSON.stringify` order.
     let payload = format!(
@@ -383,6 +405,16 @@ mod tests {
         assert_eq!(
             extract_listen_key("https://x/u/a/b?a=1&key=a%20b").as_deref(),
             Some("a b")
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn politeness_delay_is_off_at_zero() {
+        assert_eq!(politeness_pause(0), None);
+        assert_eq!(
+            politeness_pause(500),
+            Some(std::time::Duration::from_millis(500))
         );
     }
 

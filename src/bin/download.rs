@@ -73,6 +73,8 @@ Options:
   --retries N       retry a failed request up to N times (default 2)
   --timeout SECS    per-attempt timeout for API calls (default 30); the bulk
                     container transfer keeps no timeout by design
+  --delay MS        pause before each listen/key-paging request (default 0);
+                    politeness for bulk/batch runs, never needed for correctness
   -q, --quiet       suppress the progress reporter
   -v, --verbose     report key-page counts and timing
   --json            print a JSON result object on stdout (a track array for
@@ -99,6 +101,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--proxy",
     "--retries",
     "--timeout",
+    "--delay",
     "--progress",
     "--save-hax",
     "--input",
@@ -201,6 +204,13 @@ fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let delay_ms = match delay_from(&args) {
+        Ok(delay) => delay,
+        Err(message) => {
+            eprintln!("error: {message}\n");
+            return ExitCode::FAILURE;
+        }
+    };
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let keys_only = args.iter().any(|a| a == "--keys-only");
     let all_tracks = args.iter().any(|a| a == "--all-tracks");
@@ -254,6 +264,7 @@ fn run() -> ExitCode {
         proxy,
         retry,
         api_timeout_ms,
+        delay_ms,
         list_tracks,
         keys_only,
         all_tracks,
@@ -288,6 +299,8 @@ struct Run {
     retry: Retry,
     /// Per-attempt API timeout override; `None` keeps the 30 s default.
     api_timeout_ms: Option<u64>,
+    /// Politeness pause before each listen/key-paging request; `0` disables it.
+    delay_ms: u64,
     list_tracks: bool,
     keys_only: bool,
     all_tracks: bool,
@@ -450,6 +463,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             source,
             r.api_base.as_deref(),
             r.track_id.as_deref(),
+            r.delay_ms,
         )
         .await?;
         write_saved_keys(
@@ -567,6 +581,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             &api,
             &hs,
             seed.as_ref(),
+            r.delay_ms,
             |fragment| {
                 writer
                     .write_all(fragment)
@@ -694,6 +709,7 @@ async fn fetch_online(
         api_base,
         track_id,
         capture_hax,
+        delay_ms: net.delay_ms,
     };
     if is_url(source) {
         clients.download_from_page(source, &mut opts).await
@@ -708,13 +724,16 @@ async fn fetch_online(
     }
 }
 
-/// The HTTP settings shared by every client a run builds.
+/// The per-run HTTP and politeness settings shared by the client helpers and the
+/// download pipeline.
 #[derive(Clone, Copy)]
 struct Net<'a> {
     proxy: Option<&'a str>,
     /// Per-attempt API timeout; `None` keeps [`Client::api`]'s 30 s default.
     api_timeout_ms: Option<u64>,
     retry: Retry,
+    /// Politeness pause before each listen/key-paging request; `0` disables it.
+    delay_ms: u64,
 }
 
 /// The network settings for `r`.
@@ -723,6 +742,7 @@ fn net_of(r: &Run) -> Net<'_> {
         proxy: r.proxy.as_deref(),
         api_timeout_ms: r.api_timeout_ms,
         retry: r.retry,
+        delay_ms: r.delay_ms,
     }
 }
 
@@ -752,6 +772,16 @@ fn timeout_from(args: &[String]) -> Result<Option<u64>, String> {
         return Err("--timeout must be at least 1 second".into());
     }
     Ok(Some(secs.saturating_mul(1000)))
+}
+
+/// The politeness pause from `--delay MS`.
+fn delay_from(args: &[String]) -> Result<u64, String> {
+    let Some(value) = flag(args, "--delay") else {
+        return Ok(0);
+    };
+    value
+        .parse()
+        .map_err(|_| format!("--delay needs a whole number of milliseconds, got '{value}'"))
 }
 
 /// A small-call client for `net`: `--timeout` and `--retries` applied.
@@ -1464,6 +1494,7 @@ mod tests {
         assert!(validate(&["--proxy".into(), "http://127.0.0.1:8080".into()]).is_ok());
         assert!(validate(&["--retries".into(), "3".into()]).is_ok());
         assert!(validate(&["--timeout".into(), "60".into()]).is_ok());
+        assert!(validate(&["--delay".into(), "500".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1475,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_and_timeout_flags_parse() {
+    fn retry_timeout_and_delay_flags_parse() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Absent means the library defaults.
         assert_eq!(
@@ -1494,6 +1525,10 @@ mod tests {
         );
         assert!(timeout_from(&a(&["--timeout", "0"])).is_err());
         assert!(timeout_from(&a(&["--timeout", "soon"])).is_err());
+
+        assert_eq!(delay_from(&a(&[])).unwrap(), 0);
+        assert_eq!(delay_from(&a(&["--delay", "250"])).unwrap(), 250);
+        assert!(delay_from(&a(&["--delay", "later"])).is_err());
     }
 
     #[test]
@@ -1741,6 +1776,8 @@ mod tests {
                 "4",
                 "--timeout",
                 "90",
+                "--delay",
+                "500",
                 "https://x/u/a/b"
             ])),
             vec![url()]

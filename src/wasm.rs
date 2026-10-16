@@ -104,7 +104,7 @@ pub async fn download_track_with(
 #[wasm_bindgen(js_name = trackKeys)]
 pub async fn track_keys(page_url: String) -> std::result::Result<JsValue, JsValue> {
     warn_if_not_canonical(&page_url);
-    let bundle = download::fetch_keys_only(&Client::api(), &page_url, None, None)
+    let bundle = download::fetch_keys_only(&Client::api(), &page_url, None, None, 0)
         .await
         .map_err(js_error)?;
     let title = bundle.title.clone();
@@ -177,6 +177,7 @@ async fn stream(
         client,
         &hs,
         None,
+        0,
         |fragment| {
             sink.call1(&JsValue::NULL, &Uint8Array::from(fragment))
                 .map(|_| ())
