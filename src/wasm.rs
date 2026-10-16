@@ -34,11 +34,16 @@
 //!   (phase, loaded, total) => console.log(phase, loaded + "/" + total),
 //! );
 //! ```
+//!
+//! The download entry points take an optional trailing `AbortSignal`; aborting
+//! it stops the download at the next segment or key-page boundary and rejects
+//! with an `AbortError`.
 
 use js_sys::{Function, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
+use web_sys::AbortSignal;
 
-use crate::download::{self, Phase, Progress};
+use crate::download::{self, Cancel, Phase, Progress};
 use crate::http::Client;
 use crate::listen;
 use crate::{Error, Result};
@@ -58,6 +63,11 @@ use crate::{Error, Result};
 /// CLI's `--track` accepts and `listTracks` reports; omit it for the page
 /// default. A page that does not carry the id is rejected.
 ///
+/// `signal`, if given, is an `AbortSignal`: aborting it stops the download at
+/// the next segment or key-page boundary, and the returned promise rejects with
+/// an `AbortError` (`err.name === "AbortError"`). Pass
+/// `new AbortController().signal` to make a download cancellable.
+///
 /// Resolves with `{ title, durationSecs, codec, mime, bytes, segmentCount,
 /// keyPages, haxUrl, keysJson }`, or rejects with the pipeline's message.
 ///
@@ -69,9 +79,19 @@ pub async fn download_track(
     on_fragment: Function,
     on_progress: Option<Function>,
     track_id: Option<String>,
+    signal: Option<AbortSignal>,
 ) -> std::result::Result<JsValue, JsValue> {
     warn_if_not_canonical(&page_url);
-    download_track_with(&page_url, on_fragment, on_progress, None, None, track_id).await
+    download_track_with(
+        &page_url,
+        on_fragment,
+        on_progress,
+        None,
+        None,
+        track_id,
+        signal,
+    )
+    .await
 }
 
 /// As `downloadTrack`, with an explicit `fetch` and/or URL rewrite.
@@ -82,7 +102,8 @@ pub async fn download_track(
 /// without touching the caller's code. It must return a string; returning
 /// anything else leaves the URL unchanged.
 ///
-/// `track_id` is the same optional selection `downloadTrack` takes.
+/// `track_id` is the same optional selection `downloadTrack` takes, and `signal`
+/// the same optional `AbortSignal`.
 #[wasm_bindgen(js_name = downloadTrackWith)]
 pub async fn download_track_with(
     page_url: &str,
@@ -91,14 +112,17 @@ pub async fn download_track_with(
     fetch_impl: Option<Function>,
     rewrite: Option<Function>,
     track_id: Option<String>,
+    signal: Option<AbortSignal>,
 ) -> std::result::Result<JsValue, JsValue> {
     let client = client_with(fetch_impl, rewrite);
+    let cancel = cancel_from_signal(signal.as_ref());
     stream(
         &client,
         page_url,
         &on_fragment,
         on_progress,
         track_id.as_deref(),
+        cancel,
     )
     .await
     .map_err(js_error)
@@ -166,14 +190,17 @@ pub fn decrypt_hax(hax_bytes: &[u8], keys_json: &str) -> std::result::Result<Uin
 /// The offline decrypt works on the whole container in memory, so unlike
 /// `downloadTrack` there is nothing to stream incrementally: `on_fragment` is
 /// called exactly once, with the complete MP4. `on_progress` reports
-/// `(phase, loaded, total)`. Resolves with the same fields as `downloadTrack`;
-/// `title` comes from the envelope when it carries one.
+/// `(phase, loaded, total)`. `signal`, if given, aborts the container fetch and
+/// rejects with an `AbortError`, as in `downloadTrack`. Resolves with the same
+/// fields as `downloadTrack`; `title` comes from the envelope when it carries
+/// one.
 #[wasm_bindgen(js_name = downloadCached)]
 pub async fn download_cached(
     hax_url: String,
     keys_json: String,
     on_fragment: Function,
     on_progress: Option<Function>,
+    signal: Option<AbortSignal>,
 ) -> std::result::Result<JsValue, JsValue> {
     let saved = download::parse_saved_keys(&keys_json).map_err(js_error)?;
     let title = saved.title.clone();
@@ -185,6 +212,7 @@ pub async fn download_cached(
         &saved.keys,
         Some(&mut report),
         false,
+        cancel_from_signal(signal.as_ref()),
     )
     .await
     .map_err(js_error)?;
@@ -259,7 +287,12 @@ async fn stream(
     on_fragment: &Function,
     on_progress: Option<Function>,
     track_id: Option<&str>,
+    cancel: Option<Cancel>,
 ) -> Result<JsValue> {
+    // Before the handshake, so an already-aborted signal costs no request.
+    if let Some(cancel) = &cancel {
+        cancel.check()?;
+    }
     let hs = listen::load_handshake(client, page_url, crate::HOTAUDIO_API_BASE, track_id).await?;
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
 
@@ -277,6 +310,7 @@ async fn stream(
                 .map_err(|e| Error::Protocol(format!("on_fragment threw: {e:?}")))
         },
         Some(&mut report),
+        cancel,
     )
     .await?;
 
@@ -357,6 +391,23 @@ fn set(object: &Object, key: &str, value: impl Into<JsValue>) {
     let _ = Reflect::set(object, &JsValue::from_str(key), &value.into());
 }
 
+/// Build a cancellation token from an `AbortSignal`, if one was passed.
+///
+/// The signal is polled through its `aborted` getter rather than hooked, so a
+/// host that aborts mid-download is observed at the next segment or key-page
+/// boundary — the same coarse granularity as the native `Cancel`.
+fn cancel_from_signal(signal: Option<&AbortSignal>) -> Option<Cancel> {
+    let signal = signal?.clone();
+    Some(Cancel::new(move || signal.aborted()))
+}
+
 fn js_error(e: Error) -> JsValue {
+    // A cancellation is the caller's own doing, so reject with the DOM's
+    // conventional `AbortError` name that `signal`-aware code already checks.
+    if matches!(e, Error::Cancelled) {
+        let err = js_sys::Error::new("the download was aborted");
+        err.set_name("AbortError");
+        return err.into();
+    }
     JsValue::from_str(&e.to_string())
 }

@@ -32,6 +32,11 @@ pub enum Error {
     /// The library core never reads or writes files; only the CLI constructs
     /// this, so it can give local I/O its own exit code.
     Io(String),
+    /// The caller asked the download to stop through its cancellation token.
+    ///
+    /// Not a failure: the pipeline observed a [`crate::download::Cancel`] set
+    /// and unwound between segments or key pages, leaving no partial output.
+    Cancelled,
 }
 
 impl fmt::Display for Error {
@@ -45,6 +50,7 @@ impl fmt::Display for Error {
             Error::Http(m) => write!(f, "http: {m}"),
             Error::Sign(m) => write!(f, "signer: {m}"),
             Error::Io(m) => write!(f, "io: {m}"),
+            Error::Cancelled => write!(f, "cancelled"),
         }
     }
 }

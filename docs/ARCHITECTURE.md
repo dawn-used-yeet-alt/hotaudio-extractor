@@ -123,7 +123,11 @@ support. The reassembled body is also checked against the announced
 container — and the decrypted result is checked for an MP4 `ftyp` box before it
 is returned or handed to a caller. `--verify` goes further: it walks the box
 tree and checks the output's duration against the container's `durationMs` (see
-`mp4`). Covered by `tests/http_resume.rs`.
+`mp4`). The progress hook is also the cancellation point: returning an error
+from it aborts the transfer and is never retried, because it is the caller's own
+decision rather than a transport failure — which is what lets a Ctrl-C land at
+the next chunk instead of after the whole container. Covered by
+`tests/http_resume.rs`.
 
 ### What does *not* help
 

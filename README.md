@@ -138,7 +138,7 @@ hotaudio-download "$URL" --save-hax audio.hax --save-keys keys.json --out track.
 hotaudio-download --hax audio.hax --keys keys.json --out again.m4a
 ```
 
-For scripts, the exit code says what went wrong: `0` success, `2` bad input, `3` network, `4` protocol or decryption, `5` local file error.
+For scripts, the exit code says what went wrong: `0` success, `2` bad input, `3` network, `4` protocol or decryption, `5` local file error, `130` cancelled (Ctrl-C).
 
 ## If it stops working
 

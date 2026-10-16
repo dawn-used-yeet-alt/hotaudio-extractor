@@ -116,7 +116,10 @@ pub(super) struct OpenBody {
 }
 
 impl OpenBody {
-    pub(super) async fn pump(&mut self, on_chunk: &mut dyn FnMut(&[u8])) -> Result<()> {
+    pub(super) async fn pump(
+        &mut self,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
         use std::io::Read;
         // `into_reader` is unlimited; the explicit limit keeps that true if the
         // default ever changes, and states the intent.
@@ -125,7 +128,7 @@ impl OpenBody {
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => return Ok(()),
-                Ok(n) => on_chunk(&chunk[..n]),
+                Ok(n) => on_chunk(&chunk[..n])?,
                 Err(e) => return Err(Error::Http(e.to_string())),
             }
         }

@@ -304,12 +304,15 @@ impl Client {
     /// the request restarts, so correctness does not depend on range support.
     ///
     /// `on_progress` is called with `(received, total)` as data arrives, where
-    /// `total` is `0` until a `Content-Length` is seen.
+    /// `total` is `0` until a `Content-Length` is seen. Returning an error from
+    /// it aborts the transfer: that error is propagated as-is and never retried,
+    /// since it is the caller's decision (a cancellation, say) rather than a
+    /// transport failure.
     pub async fn get_resumable(
         &self,
         url: &str,
         headers: &[(&str, &str)],
-        mut on_progress: impl FnMut(u64, u64),
+        mut on_progress: impl FnMut(u64, u64) -> Result<()>,
     ) -> Result<FullResponse> {
         let url = self.url(url);
         let mut buf: Vec<u8> = Vec::new();
@@ -384,7 +387,7 @@ impl Client {
             match body
                 .pump(&mut |chunk| {
                     buf.extend_from_slice(chunk);
-                    on_progress(buf.len() as u64, total);
+                    on_progress(buf.len() as u64, total)
                 })
                 .await
             {
@@ -404,6 +407,14 @@ impl Client {
                     break;
                 }
                 Err(err) => {
+                    // `pump` fails two ways: a transport error, always `Http`,
+                    // which is retryable; or an error handed back by
+                    // `on_progress`, which is the caller's own decision and must
+                    // not be retried — a cancellation would otherwise re-run the
+                    // whole transfer. Propagate the latter as-is.
+                    if !matches!(err, Error::Http(_)) {
+                        return Err(err);
+                    }
                     last = Some(err);
                     if attempt == attempts {
                         break;
@@ -432,7 +443,7 @@ impl Client {
                 )));
             }
         }
-        on_progress(buf.len() as u64, buf.len() as u64);
+        on_progress(buf.len() as u64, buf.len() as u64)?;
         Ok(FullResponse {
             status,
             headers: resp_headers,

@@ -228,6 +228,7 @@ async fn streams_a_large_body_through_the_resumable_path() {
         .with_fetch(rec.fetch(true).into())
         .get_resumable("https://cdn.test/a.hax", &[], move |loaded, total| {
             sink.borrow_mut().push((loaded, total));
+            Ok(())
         })
         .await
         .expect("resumable fetch");
