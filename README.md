@@ -8,13 +8,26 @@ Save audio from [hotaudio.net](https://hotaudio.net) as a playable `.m4a`. Paste
 
 ## Install
 
+Linux, macOS and Termux, one line:
+
 ```bash
 curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/install.sh | sh
 ```
 
 It picks the build for your platform and installs `hotaudio-download` to
-`~/.local/bin` (`$PREFIX/bin` on Termux). Windows, manual downloads and
-checksums are in [docs/INSTALL.md](docs/INSTALL.md).
+`~/.local/bin` (`$PREFIX/bin` on Termux).
+
+Windows (PowerShell) — x86-64 shown; use `windows-arm64` on ARM:
+
+```powershell
+Invoke-WebRequest https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-x86_64.zip -OutFile hotaudio-download-windows-x86_64.zip
+Expand-Archive hotaudio-download-windows-x86_64.zip
+.\hotaudio-download-windows-x86_64\hotaudio-download.exe "https://hotaudio.net/u/user/track-slug"
+```
+
+SmartScreen may warn about an unsigned binary: More info → Run anyway. Every
+other platform, checksums and building from source are in
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use it
 
