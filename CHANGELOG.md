@@ -14,6 +14,12 @@ All notable changes to this project are documented here. Format follows
   from a multi-track page. An id the page does not carry is rejected instead of
   silently downloading the first track.
 
+- **`trackKeysWith` for key-only saves behind a proxy.** `downloadTrackWith`
+  already accepted a replacement `fetch` and URL rewrite, but `trackKeys` used the
+  global `fetch` directly, so saving keys for a later offline fetch could not go
+  through the documented proxy or native-bridge seam. `trackKeysWith(url,
+  fetchImpl, rewrite, trackId)` closes that gap.
+
 - **`--verify` validates the decrypted output.** The always-on check only
   confirms the MP4 `ftyp` signature; `hotaudio-download --verify` additionally
   walks the box tree (`mp4::verify`), requires an `ftyp`, a `moov` and media,

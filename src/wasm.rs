@@ -92,14 +92,7 @@ pub async fn download_track_with(
     rewrite: Option<Function>,
     track_id: Option<String>,
 ) -> std::result::Result<JsValue, JsValue> {
-    let client = match fetch_impl {
-        Some(f) => Client::api().with_fetch(f.into()),
-        None => Client::api(),
-    };
-    let client = match rewrite {
-        Some(f) => client.with_url_rewrite(move |url| call_string(&f, url, url)),
-        None => client,
-    };
+    let client = client_with(fetch_impl, rewrite);
     stream(
         &client,
         page_url,
@@ -122,7 +115,23 @@ pub async fn track_keys(
     track_id: Option<String>,
 ) -> std::result::Result<JsValue, JsValue> {
     warn_if_not_canonical(&page_url);
-    let bundle = download::fetch_keys_only(&Client::api(), &page_url, None, track_id.as_deref(), 0)
+    track_keys_with(page_url, None, None, track_id).await
+}
+
+/// As `trackKeys`, with an explicit `fetch` and/or URL rewrite.
+///
+/// The same integration seam as `downloadTrackWith`: a key-only save can go
+/// through a proxy origin or a Capacitor-style native bridge. `track_id` selects
+/// a track on a multi-track page.
+#[wasm_bindgen(js_name = trackKeysWith)]
+pub async fn track_keys_with(
+    page_url: String,
+    fetch_impl: Option<Function>,
+    rewrite: Option<Function>,
+    track_id: Option<String>,
+) -> std::result::Result<JsValue, JsValue> {
+    let client = client_with(fetch_impl, rewrite);
+    let bundle = download::fetch_keys_only(&client, &page_url, None, track_id.as_deref(), 0)
         .await
         .map_err(js_error)?;
     let title = bundle.title.clone();
@@ -234,6 +243,19 @@ fn warn_if_not_canonical(page_url: &str) {
     crate::warn(&format!(
         "'{page_url}' is not a canonical share link (https://hotaudio.net/u/<user>/<track>)"
     ));
+}
+
+/// Build the client for the proxy/bridge seam shared by `downloadTrackWith` and
+/// `trackKeysWith`: a replacement `fetch`, a URL rewrite, or both.
+fn client_with(fetch_impl: Option<Function>, rewrite: Option<Function>) -> Client {
+    let client = match fetch_impl {
+        Some(f) => Client::api().with_fetch(f.into()),
+        None => Client::api(),
+    };
+    match rewrite {
+        Some(f) => client.with_url_rewrite(move |url| call_string(&f, url, url)),
+        None => client,
+    }
 }
 
 /// Call a JS function that must return a string, falling back to `fallback` if
