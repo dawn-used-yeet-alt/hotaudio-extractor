@@ -96,6 +96,15 @@ All notable changes to this project are documented here. Format follows
   parent directories are now created, so `--out a/b/track.m4a` works when `a/b`
   does not exist yet.
 
+- **Hardened filenames and `--filename-template`.** Title-derived names now drop
+  control characters and `:`, strip leading and trailing dots and spaces, escape
+  Windows reserved device names (`CON`, `NUL`, `COM1`…`LPT9`, `_`-prefixed), and
+  cap the stem at 200 bytes with a deterministic `~<hash>` suffix instead of
+  truncating. `--filename-template` shapes title-derived outputs with `{title}`,
+  `{index}` (1-based) and `{ext}`; `/` separates directories (created as needed),
+  a title can never inject one, and `--out` still wins. Unknown or unclosed
+  placeholders are rejected before any network work.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value
