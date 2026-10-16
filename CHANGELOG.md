@@ -6,6 +6,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Release archives are named by platform, not by Rust target triple.** A
+  download is now `hotaudio-download-linux-x86_64.tar.gz` instead of
+  `hotaudio-download-<tag>-x86_64-unknown-linux-gnu.tar.gz`. The archives carry
+  no version, so `releases/latest/download/<archive>` is a permanent URL and the
+  README's install commands no longer contain a tag that goes stale. The build
+  matrix and the README's install block are both generated from
+  `scripts/release-targets.tsv`, and CI fails if the two drift apart. Releases up
+  to and including v1.2.0 used the old names.
+
 ## [1.2.0] - 2026-10-16
 
 The command-line release. `hotaudio-download` grows from "one URL, one file" into

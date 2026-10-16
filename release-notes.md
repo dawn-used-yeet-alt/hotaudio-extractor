@@ -4,23 +4,25 @@ container decryption, and writes a playable `.m4a`.
 
 ## Install
 
-Download the archive for your platform, extract it, and run `hotaudio-download`:
+Download the archive for your platform from the
+[latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest),
+extract it, and run `hotaudio-download`:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
-| Linux (glibc) | x86-64 | `hotaudio-download-<tag>-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (glibc) | ARM64 | `hotaudio-download-<tag>-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux (static) | x86-64 | `hotaudio-download-<tag>-x86_64-unknown-linux-musl.tar.gz` |
-| Linux (static) | ARM64 | `hotaudio-download-<tag>-aarch64-unknown-linux-musl.tar.gz` |
-| macOS | Intel | `hotaudio-download-<tag>-x86_64-apple-darwin.tar.gz` |
-| macOS | Apple Silicon | `hotaudio-download-<tag>-aarch64-apple-darwin.tar.gz` |
-| Windows | x86-64 (MSVC) | `hotaudio-download-<tag>-x86_64-pc-windows-msvc.zip` |
-| Windows | x86-64 (MinGW) | `hotaudio-download-<tag>-x86_64-pc-windows-gnu.zip` |
-| Windows | ARM64 | `hotaudio-download-<tag>-aarch64-pc-windows-msvc.zip` |
-| Android / Termux | ARM64 | `hotaudio-download-<tag>-aarch64-linux-android.tar.gz` |
-| Android / Termux | x86-64 | `hotaudio-download-<tag>-x86_64-linux-android.tar.gz` |
-| Browser / Node (wasm) | wasm32 | `hotaudio-wasm-<tag>.tar.gz` |
-| Shell completions + man page | any | `hotaudio-completions-<tag>.tar.gz` |
+| Linux (glibc) | x86-64 | `hotaudio-download-linux-x86_64.tar.gz` |
+| Linux (glibc) | ARM64 | `hotaudio-download-linux-arm64.tar.gz` |
+| Linux (static) | x86-64 | `hotaudio-download-linux-x86_64-static.tar.gz` |
+| Linux (static) | ARM64 | `hotaudio-download-linux-arm64-static.tar.gz` |
+| macOS | Intel | `hotaudio-download-macos-x86_64.tar.gz` |
+| macOS | Apple Silicon | `hotaudio-download-macos-arm64.tar.gz` |
+| Windows | x86-64 (MSVC) | `hotaudio-download-windows-x86_64.zip` |
+| Windows | x86-64 (MinGW) | `hotaudio-download-windows-x86_64-gnu.zip` |
+| Windows | ARM64 | `hotaudio-download-windows-arm64.zip` |
+| Android / Termux | ARM64 | `hotaudio-download-android-arm64.tar.gz` |
+| Android / Termux | x86-64 | `hotaudio-download-android-x86_64.tar.gz` |
+| Browser / Node (wasm) | wasm32 | `hotaudio-wasm.tar.gz` |
+| Shell completions + man page | any | `hotaudio-completions.tar.gz` |
 
 On Unix, `chmod +x hotaudio-download` after extraction.
 
@@ -34,9 +36,9 @@ newer. No extra libraries are needed — the binary links only against bionic.
 
 ```bash
 pkg install wget
-wget https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/download/<tag>/hotaudio-download-<tag>-aarch64-linux-android.tar.gz
-tar xzf hotaudio-download-<tag>-aarch64-linux-android.tar.gz
-cd hotaudio-download-<tag>-aarch64-linux-android
+wget https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-android-arm64.tar.gz
+tar xzf hotaudio-download-android-arm64.tar.gz
+cd hotaudio-download-android-arm64
 chmod +x hotaudio-download
 ./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
 ```
@@ -109,7 +111,7 @@ The crate is also usable as a library, and as of 1.1.0 it builds for
 callback as they decrypt, so a page can append them to a `MediaSource` and start
 playing after one round trip.
 
-The release attaches this build as `hotaudio-wasm-<tag>.tar.gz`: `web/` and
+The release attaches this build as `hotaudio-wasm.tar.gz`: `web/` and
 `nodejs/` wasm-bindgen packages with `.d.ts` types. To build it yourself:
 
 ```bash

@@ -8,42 +8,96 @@ Save audio from [hotaudio.net](https://hotaudio.net) as a playable `.m4a`. Paste
 
 ## Install
 
-Grab the file for your system from the [latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest). The target name is part of the file name.
+Grab your platform's archive from the [latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest), or copy a command below. The file name says the platform, so there is nothing to look up.
 
-| System | Look for |
+<!-- install:start -->
+
+**Linux, Intel/AMD**
+
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-x86_64.tar.gz
+tar xzf hotaudio-download-linux-x86_64.tar.gz
+./hotaudio-download-linux-x86_64/hotaudio-download "https://hotaudio.net/u/user/track-slug"
+```
+
+**Linux, ARM64**
+
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-arm64.tar.gz
+tar xzf hotaudio-download-linux-arm64.tar.gz
+./hotaudio-download-linux-arm64/hotaudio-download "https://hotaudio.net/u/user/track-slug"
+```
+
+**macOS, Intel**
+
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-macos-x86_64.tar.gz
+tar xzf hotaudio-download-macos-x86_64.tar.gz
+./hotaudio-download-macos-x86_64/hotaudio-download "https://hotaudio.net/u/user/track-slug"
+```
+
+**macOS, Apple Silicon**
+
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-macos-arm64.tar.gz
+tar xzf hotaudio-download-macos-arm64.tar.gz
+./hotaudio-download-macos-arm64/hotaudio-download "https://hotaudio.net/u/user/track-slug"
+```
+
+**Windows, Intel/AMD**
+
+```powershell
+Invoke-WebRequest https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-x86_64.zip -OutFile hotaudio-download-windows-x86_64.zip
+Expand-Archive hotaudio-download-windows-x86_64.zip
+.\hotaudio-download-windows-x86_64\hotaudio-download.exe "https://hotaudio.net/u/user/track-slug"
+```
+
+**Android/Termux, most phones**
+
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-android-arm64.tar.gz
+tar xzf hotaudio-download-android-arm64.tar.gz
+./hotaudio-download-android-arm64/hotaudio-download "https://hotaudio.net/u/user/track-slug"
+```
+
+| Your system | Archive |
 | --- | --- |
-| Windows, 64-bit Intel/AMD | `x86_64-pc-windows-msvc` (or `-gnu` for MinGW) |
-| Windows, ARM64 | `aarch64-pc-windows-msvc` |
-| macOS, Apple Silicon (M1 or newer) | `aarch64-apple-darwin` |
-| macOS, Intel | `x86_64-apple-darwin` |
-| Linux, 64-bit Intel/AMD | `x86_64-unknown-linux-gnu` |
-| Linux, ARM64 (Raspberry Pi, ARM servers) | `aarch64-unknown-linux-gnu` |
-| Linux, minimal or container (static) | `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` |
-| Android (Termux), most phones | `aarch64-linux-android` |
-| Android (Termux), x86-64 | `x86_64-linux-android` |
+| Linux, Intel/AMD | [`hotaudio-download-linux-x86_64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-x86_64.tar.gz) |
+| Linux, ARM64 | [`hotaudio-download-linux-arm64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-arm64.tar.gz) |
+| Linux, static, Intel/AMD | [`hotaudio-download-linux-x86_64-static.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-x86_64-static.tar.gz) |
+| Linux, static, ARM64 | [`hotaudio-download-linux-arm64-static.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-linux-arm64-static.tar.gz) |
+| macOS, Intel | [`hotaudio-download-macos-x86_64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-macos-x86_64.tar.gz) |
+| macOS, Apple Silicon | [`hotaudio-download-macos-arm64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-macos-arm64.tar.gz) |
+| Windows, Intel/AMD | [`hotaudio-download-windows-x86_64.zip`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-x86_64.zip) |
+| Windows, ARM64 | [`hotaudio-download-windows-arm64.zip`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-arm64.zip) |
+| Windows, MinGW | [`hotaudio-download-windows-x86_64-gnu.zip`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-x86_64-gnu.zip) |
+| Android/Termux, most phones | [`hotaudio-download-android-arm64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-android-arm64.tar.gz) |
+| Android/Termux, emulators | [`hotaudio-download-android-x86_64.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-android-x86_64.tar.gz) |
+| Browser / Node (wasm) | [`hotaudio-wasm.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-wasm.tar.gz) |
+| Shell completions + man page | [`hotaudio-completions.tar.gz`](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-completions.tar.gz) |
 
-Windows downloads are `.zip`; everything else is `.tar.gz`. Not sure if you're on Intel or ARM? On Linux or macOS, run `uname -m`: `x86_64` is Intel/AMD, `aarch64` or `arm64` is ARM.
+<!-- install:end -->
 
-Each release also has a `SHA256SUMS.txt` if you want to verify your download.
+Each release also carries `SHA256SUMS.txt`; after downloading, check the file you have:
 
-Running it in a browser instead? Each release also carries the wasm package (`hotaudio-wasm-…`); see [docs/BROWSER.md](docs/BROWSER.md).
+```bash
+curl -LO https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/SHA256SUMS.txt
+sha256sum --check --ignore-missing SHA256SUMS.txt
+```
+
+Not sure if you need Intel/AMD or ARM64? On Linux or macOS, `uname -m` prints `x86_64` for Intel/AMD and `aarch64` or `arm64` for ARM. The `-static` builds need no glibc, so they are the ones for containers and minimal systems.
+
+Running it in a browser instead? Each release also carries the wasm package (`hotaudio-wasm.tar.gz`); see [docs/BROWSER.md](docs/BROWSER.md).
 
 ## Use it
 
-**Windows:** unzip it (right-click → Extract All), open a terminal in that folder, then run:
-
-```powershell
-.\hotaudio-download.exe "https://hotaudio.net/u/user/track-slug"
-```
-
-**Linux, macOS, Termux:** extract and run:
+Run it with a track link (this is the last line of your install command above):
 
 ```bash
-tar xzf hotaudio-download-v1.0.0-<target>.tar.gz
-cd hotaudio-download-v1.0.0-<target>
-chmod +x hotaudio-download
-./hotaudio-download "https://hotaudio.net/u/user/track-slug"
+hotaudio-download "https://hotaudio.net/u/user/track-slug"
 ```
+
+If it is not on your `PATH` yet, prefix it with the folder it was extracted to — `./hotaudio-download-linux-x86_64/hotaudio-download` on Linux and macOS, or `.\hotaudio-download-windows-x86_64\hotaudio-download.exe` on Windows.
 
 The track is saved in the current folder. To pick the name or location:
 

@@ -1,0 +1,30 @@
+# Release targets, tab-separated, one per line:
+#
+#   rust-target <TAB> slug <TAB> runner <TAB> native <TAB> label <TAB> featured
+#
+# `slug` names the archive (`hotaudio-download-<slug>.tar.gz`, `.zip` on
+# Windows). Slugs are load-bearing: the README points at
+# `releases/latest/download/<archive>`, which only stays a permanent URL if the
+# name never changes, so renaming a slug breaks every link to it. The archive
+# carries no version for the same reason — platform in the name, version from
+# `hotaudio-download --version`.
+#
+# `native` means the runner can execute the binary, so it also gets a smoke
+# test. `featured` puts a copy-paste block in the README; every row appears in
+# the table either way.
+#
+# This file is the single source of truth: release.yml generates its build
+# matrix from it (the `plan` job) and scripts/install-block.sh renders the
+# README install block from it, so the built archives and the documented
+# archives cannot disagree.
+x86_64-unknown-linux-gnu	linux-x86_64	ubuntu-latest	true	Linux, Intel/AMD	true
+aarch64-unknown-linux-gnu	linux-arm64	ubuntu-24.04-arm	true	Linux, ARM64	true
+x86_64-unknown-linux-musl	linux-x86_64-static	ubuntu-latest	false	Linux, static, Intel/AMD	false
+aarch64-unknown-linux-musl	linux-arm64-static	ubuntu-24.04-arm	true	Linux, static, ARM64	false
+x86_64-apple-darwin	macos-x86_64	macos-latest	false	macOS, Intel	true
+aarch64-apple-darwin	macos-arm64	macos-latest	true	macOS, Apple Silicon	true
+x86_64-pc-windows-msvc	windows-x86_64	windows-latest	true	Windows, Intel/AMD	true
+aarch64-pc-windows-msvc	windows-arm64	windows-latest	false	Windows, ARM64	false
+x86_64-pc-windows-gnu	windows-x86_64-gnu	windows-latest	false	Windows, MinGW	false
+aarch64-linux-android	android-arm64	ubuntu-latest	false	Android/Termux, most phones	true
+x86_64-linux-android	android-x86_64	ubuntu-latest	false	Android/Termux, emulators	false
