@@ -233,6 +233,16 @@ All notable changes to this project are documented here. Format follows
   `version` is not `1` instead of silently misreading it; a bare
   `{ index: hex }` map with no `version` is still accepted.
 
+### Security
+
+- **Dependencies are audited in CI, and `rustls` moved past four RUSTSEC
+  advisories.** A new `deny` job runs `cargo-deny` over the shipped native and
+  wasm target graphs (`deny.toml`), failing on advisories, non-permissive
+  licenses, banned or wildcard crates and unknown sources, and a Dependabot
+  config keeps the tree and the CI actions current. The audit flagged
+  `rustls 0.23.45` (RUSTSEC-2026-0346 through 0349), fixed in 0.23.46, which
+  `Cargo.lock` now pins.
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`
