@@ -65,9 +65,10 @@ jobs:
         run: cargo deny check
 
   # Attribution: the copyright notices and license texts of everything linked
-  # into the binaries have to travel with them. `cargo-deny` above proves the
-  # licenses are permissive; this proves the generated notice still matches the
-  # locked graph, so a dependency bump cannot silently leave it stale.
+  # into the binaries have to travel with them. The release workflow generates
+  # that notice from the tag's locked graph (see release.yml); there is nothing
+  # to keep in sync. This job only proves the generator still works on the
+  # current tree, so a broken tool fails here rather than at release time.
   licenses:
     name: licenses
     runs-on: ubuntu-latest
@@ -89,10 +90,19 @@ jobs:
       # `cargo metadata` alone does not download.
       - name: Fetch crate sources
         run: cargo fetch --locked
-      - name: Regenerate the third-party notices
-        run: cargo bundle-licenses --format yaml --output THIRD_PARTY_LICENSES.yml
-      - name: Check for drift
-        run: git diff --exit-code -- THIRD_PARTY_LICENSES.yml
+      - name: Generate the third-party notice
+        run: cargo bundle-licenses --format yaml --output "$RUNNER_TEMP/THIRD_PARTY_LICENSES.yml"
+      - name: Check the notice is complete
+        run: |
+          set -euo pipefail
+          notice="$RUNNER_TEMP/THIRD_PARTY_LICENSES.yml"
+          test -s "$notice"
+          # Spot-check a few crates that must be attributed, so a generator that
+          # silently emits nothing cannot pass.
+          for crate in ureq rustls chacha20poly1305 x25519-dalek; do
+            grep -q "package_name: ${crate}$" "$notice" \
+              || { echo "::error::$crate missing from the third-party notice"; exit 1; }
+          done
 
   # The crate ships natively on Windows and macOS. `sanitize`, the
   # `--stream-to` temp-file rename and path handling differ per platform, and
