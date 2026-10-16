@@ -41,9 +41,46 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
+  # Attribution: the copyright notices and license texts of everything linked
+  # into the binaries have to travel with them. The notice is derived from the
+  # locked dependency graph, so it is built here from the tag's `Cargo.lock` and
+  # shipped in every archive rather than committed: it cannot drift from the
+  # binaries, and the repository stays free of a generated megabyte of
+  # duplicated license text.
+  notices:
+    name: third-party notices
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      # Not carried by `install-action`, and the release asset publishes no
+      # checksum, so the digest is pinned here to make the download verifiable.
+      - name: Install cargo-bundle-licenses
+        run: |
+          set -euo pipefail
+          url=https://github.com/sstadick/cargo-bundle-licenses/releases/download/v4.2.0/cargo-bundle-licenses-linux-amd64
+          bin="$HOME/.cargo/bin/cargo-bundle-licenses"
+          curl -fsSL "$url" -o "$bin"
+          echo "4208af8db7a34b427068211e73cdd299b577245601f68c5a1c3af85e4fa4cc7c  $bin" | sha256sum -c -
+          chmod +x "$bin"
+      # The tool reads license files from the crate sources, which
+      # `cargo metadata` alone does not download.
+      - name: Fetch crate sources
+        run: cargo fetch --locked
+      - name: Generate
+        run: cargo bundle-licenses --format yaml --output THIRD_PARTY_LICENSES.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notices
+          path: THIRD_PARTY_LICENSES.yml
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.target }}
-    needs: check
+    needs: [check, notices]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -99,6 +136,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.check.outputs.tag }}
+
+      # Generated once by the `notices` job above, so every archive carries the
+      # same notice without rebuilding it per target.
+      - name: Fetch third-party notices
+        uses: actions/download-artifact@v4
+        with:
+          name: notices
 
       # rustc ships a self-contained musl linker for x86_64; the aarch64 musl
       # target needs a cross gcc on an amd64 host, which we avoid by building

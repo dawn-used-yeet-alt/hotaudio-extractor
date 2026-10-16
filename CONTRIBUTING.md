@@ -24,11 +24,10 @@ and must stay that way — anything that would need a server goes behind the
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` must be clean; CI checks it.
   Doc links must resolve, including from public items to private ones.
 - Run `cargo test` before committing. CI also builds against the MSRV (1.85).
-- A dependency change must regenerate `THIRD_PARTY_LICENSES.yml` — the
-  attribution notice bundled into release archives — with
-  `cargo bundle-licenses --format yaml --output THIRD_PARTY_LICENSES.yml`; CI
-  fails if it drifts from `Cargo.lock`. `deny.toml` is the license *policy*;
-  this file is the *notice*.
+- The third-party notice bundled into release archives is generated at release
+  time from the tag's `Cargo.lock` (`.github/workflows/release.yml`), so there
+  is nothing to regenerate when dependencies change. `deny.toml` (cargo-deny in
+  CI) is the license *policy* gate; the notice is the *attribution*.
 - Keep comments concise: document invariants, units, failure modes, and the
   reasoning behind non-obvious choices. Avoid narrating what the code already
   says, and avoid recording bug-fix history in comments — that belongs in
