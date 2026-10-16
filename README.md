@@ -98,6 +98,9 @@ hotaudio-download "https://hotaudio.net/u/user/album" --all-tracks --filename-te
 # Through a proxy (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY are honored too)
 hotaudio-download "https://hotaudio.net/u/user/track-slug" --proxy http://127.0.0.1:8080
 
+# Retry harder and give each API call a longer per-attempt timeout
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --retries 5 --timeout 60
+
 # Re-download from saved keys (no need to contact the page again)
 hotaudio-download --keys keys.json --out track.m4a
 
