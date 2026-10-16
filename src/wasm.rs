@@ -146,6 +146,73 @@ pub async fn track_keys_with(
     Ok(value.into())
 }
 
+/// Decrypt a `.hax` container you already hold, with a saved-keys envelope.
+///
+/// `keys_json` is the envelope `trackKeys` / `downloadTrack` produce, or a bare
+/// `{ index: hex }` map. Returns the decrypted MP4 as a `Uint8Array`. Pure and
+/// offline: cache the container and this replays it without the page, the
+/// listen API or any network.
+#[wasm_bindgen(js_name = decryptHax)]
+pub fn decrypt_hax(hax_bytes: &[u8], keys_json: &str) -> std::result::Result<Uint8Array, JsValue> {
+    let saved = download::parse_saved_keys(keys_json).map_err(js_error)?;
+    let (audio, _, _) =
+        download::decrypt_offline(hax_bytes, &saved.keys, None).map_err(js_error)?;
+    Ok(Uint8Array::from(audio.as_slice()))
+}
+
+/// Fetch a `.hax` container by URL and decrypt it with saved keys — no page
+/// fetch and no listen calls, for replaying a track from a saved envelope.
+///
+/// The offline decrypt works on the whole container in memory, so unlike
+/// `downloadTrack` there is nothing to stream incrementally: `on_fragment` is
+/// called exactly once, with the complete MP4. `on_progress` reports
+/// `(phase, loaded, total)`. Resolves with the same fields as `downloadTrack`;
+/// `title` comes from the envelope when it carries one.
+#[wasm_bindgen(js_name = downloadCached)]
+pub async fn download_cached(
+    hax_url: String,
+    keys_json: String,
+    on_fragment: Function,
+    on_progress: Option<Function>,
+) -> std::result::Result<JsValue, JsValue> {
+    let saved = download::parse_saved_keys(&keys_json).map_err(js_error)?;
+    let title = saved.title.clone();
+
+    let mut report = |p: Progress| report_progress(&on_progress, &p);
+    let downloaded = download::download_cached(
+        &Client::bulk(),
+        &hax_url,
+        &saved.keys,
+        Some(&mut report),
+        false,
+    )
+    .await
+    .map_err(js_error)?;
+
+    on_fragment
+        .call1(
+            &JsValue::NULL,
+            &Uint8Array::from(downloaded.audio.as_slice()),
+        )
+        .map_err(|e| js_error(Error::Protocol(format!("on_fragment threw: {e:?}"))))?;
+
+    let info = Object::new();
+    set(&info, "title", title.clone());
+    set(&info, "durationSecs", downloaded.duration);
+    set(&info, "codec", downloaded.codec);
+    set(&info, "mime", downloaded.mime);
+    set(&info, "bytes", downloaded.audio.len() as f64);
+    set(&info, "segmentCount", downloaded.segment_count as f64);
+    set(&info, "keyPages", downloaded.pages as f64);
+    set(&info, "haxUrl", downloaded.hax_url.clone());
+    set(
+        &info,
+        "keysJson",
+        download::keys_to_json(&downloaded.keys, &downloaded.hax_url, title.as_deref()),
+    );
+    Ok(info.into())
+}
+
 /// The `X-Signature` this crate would send for `payload` right now.
 ///
 /// Exposed so a host can compare against the reference signer in a browser,
@@ -185,21 +252,7 @@ async fn stream(
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
 
     let sink = on_fragment.clone();
-    let mut report = |p: Progress| {
-        if let Some(cb) = &on_progress {
-            let phase = match p.phase {
-                Phase::Resolving => "resolving",
-                Phase::Fetching => "fetching",
-                Phase::Decrypting => "decrypting",
-            };
-            let _ = cb.call3(
-                &JsValue::NULL,
-                &JsValue::from_str(phase),
-                &JsValue::from_f64(p.loaded as f64),
-                &JsValue::from_f64(p.total as f64),
-            );
-        }
-    };
+    let mut report = |p: Progress| report_progress(&on_progress, &p);
 
     let streamed = download::download_streaming(
         client,
@@ -230,6 +283,27 @@ async fn stream(
         download::keys_to_json(&streamed.keys, &streamed.hax_url, title.as_deref()),
     );
     Ok(info.into())
+}
+
+/// Forward one progress report to the JS callback, if there is one.
+fn report_progress(on_progress: &Option<Function>, p: &Progress) {
+    if let Some(cb) = on_progress {
+        let _ = cb.call3(
+            &JsValue::NULL,
+            &JsValue::from_str(phase_name(&p.phase)),
+            &JsValue::from_f64(p.loaded as f64),
+            &JsValue::from_f64(p.total as f64),
+        );
+    }
+}
+
+/// The phase name a progress report carries to JS.
+fn phase_name(phase: &Phase) -> &'static str {
+    match phase {
+        Phase::Resolving => "resolving",
+        Phase::Fetching => "fetching",
+        Phase::Decrypting => "decrypting",
+    }
 }
 
 /// Warn through `console.warn` when a page URL is not a canonical share link.

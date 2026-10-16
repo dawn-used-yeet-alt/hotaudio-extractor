@@ -314,3 +314,43 @@ fn rejects_non_mp4_output() {
     let err = decrypt_offline(&container, &keys, None).unwrap_err();
     assert!(err.to_string().contains("ftyp"), "got {err}");
 }
+
+/// The wasm `decryptHax` export is `decrypt_offline` plus a saved-keys parse:
+/// the same container, driven from a keys envelope instead of a `KeyMap`.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn wasm_decrypt_hax_round_trips() {
+    let plaintexts: Vec<Vec<u8>> = (0..6)
+        .map(|i| {
+            if i == 0 {
+                let mut p = vec![0, 0, 0, 0x20];
+                p.extend(b"ftypM4A ");
+                p.extend(vec![0xab; 20]);
+                p
+            } else {
+                vec![i as u8; 48]
+            }
+        })
+        .collect();
+    let container = build_container(&plaintexts, "mp4a.40.2", 6000, None);
+    let keys = HashMap::from([(1u32, [7u8; 32])]);
+    let envelope = hotaudio::download::keys_to_json(&keys, "https://cdn.example/t.hax", Some("t"));
+
+    let decrypted = hotaudio::wasm::decrypt_hax(&container, &envelope).expect("decrypt");
+    assert_eq!(decrypted.to_vec(), plaintexts.concat());
+}
+
+/// An envelope version `decryptHax` does not understand must reject, not guess.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn wasm_decrypt_hax_rejects_an_unknown_envelope() {
+    let container = build_container(&[vec![0, 0, 0, 0x20]], "mp4a.40.2", 1000, None);
+    let err = match hotaudio::wasm::decrypt_hax(&container, r#"{"version":2,"keys":{"1":"00"}}"#) {
+        Ok(_) => panic!("version 2 must be rejected"),
+        Err(e) => e,
+    };
+    assert!(
+        err.as_string().unwrap_or_default().contains("version"),
+        "got {err:?}"
+    );
+}
