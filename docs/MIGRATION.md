@@ -1,5 +1,11 @@
 # Migration from the TypeScript implementation
 
+> **Frozen.** This guide records the one-time port away from the TypeScript
+> implementation — the `legacy` branch and its npm package. It is kept for
+> historical reference and is no longer updated; for current behaviour see the
+> [README](../README.md), the [browser guide](BROWSER.md) and the
+> [protocol](PROTOCOL.md).
+
 The Rust crate replaces the TypeScript npm package, which is preserved on the
 `legacy` branch (`git checkout legacy`). The network protocol, container format
 and saved-keys format are unchanged; the differences are in API shape, tooling and
