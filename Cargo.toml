@@ -48,6 +48,14 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip", 
 # `nix ^0.30` and reuses the `windows-sys 0.61` already in the graph.
 ctrlc = "=3.5.0"
 
+# CLI parsing, `--help` and the generated completions and man page. Not the
+# library, and not `wasm32`: there is no argv there, and clap supports that
+# target only "best effort" (no CI), which the required green wasm build cannot
+# rest on. See the `Cli` type in `src/bin/download.rs`.
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+
 # Browser transport. `getrandom/wasm_js` is what gives `EphemeralSecret::random`
 # a CSPRNG: the `wasm32-unknown-unknown` target has no default backend.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
