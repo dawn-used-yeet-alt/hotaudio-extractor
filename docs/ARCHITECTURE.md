@@ -103,6 +103,8 @@ the tests exercise the "mirror ignores `Range`" fallback without a server.
 base, doubling, jitter, 10 s cap) for network errors and for statuses
 `{401, 408, 425, 429, 500, 502, 503, 504}`, honouring `Retry-After` on 429.
 Other statuses return immediately so the caller can surface the error body.
+These are the defaults of `http::Retry`; a caller can replace them with
+`Client::with_retries`, and the CLI exposes `--retries`/`--timeout`.
 
 `401` being retryable matters: the player refreshes once on 401 before giving
 up, so a transient signature rejection is recoverable.

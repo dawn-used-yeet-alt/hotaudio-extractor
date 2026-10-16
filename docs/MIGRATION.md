@@ -59,7 +59,7 @@ Options map as follows:
 | `fetchFn` | inject an `ureq::Agent` instead; nothing else is configurable |
 | `userAgent` | fixed at `HOTAUDIO_UA` (see below) |
 | `apiBase` | `DownloadOptions::api_base` |
-| `timeoutMs` | agent-level (`http::api_agent` vs `http::bulk_agent`) |
+| `timeoutMs` | per client: `Client::api()` (30 s) vs `Client::bulk()` (none); override with `Client::with_timeout_ms` |
 | `onProgress` | `DownloadOptions::on_progress`, a `&mut dyn FnMut(Progress)` |
 | `initialKeys` | `DownloadOptions::initial_keys` |
 | `trackId` | `DownloadOptions::track_id` |
@@ -74,7 +74,8 @@ Options map as follows:
   remains available only on the `legacy` branch (`legacy:src/stream.ts`).
 - **`HotaudioPattern` regex export.** Replaced by `is_hotaudio_url`.
 - **`fetchWithRetry` / `isRetryableStatus` as public API.** The behaviour is
-  preserved inside `http::request`; `http::is_retryable` is public.
+  preserved inside `http::request`, and the policy is now the `http::Retry`
+  value applied with `Client::with_retries`; `http::is_retryable` is still public.
 - **Configurable user agent.** Hard-coded to `Mozilla/5.0` on purpose. The
   TypeScript default was load-bearing (Cloudflare 403s Chrome UAs) and
   overriding it broke the extractor, so the option was misleading.

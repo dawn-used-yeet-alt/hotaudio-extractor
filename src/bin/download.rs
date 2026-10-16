@@ -20,7 +20,7 @@ use std::process::ExitCode;
 
 use hotaudio::crypto::{Error, KeyMap};
 use hotaudio::download::{self, DownloadOptions, Phase, Progress};
-use hotaudio::http::Client;
+use hotaudio::http::{Client, Retry};
 use hotaudio::listen;
 
 /// Program name, printed by `--version`.
@@ -70,6 +70,9 @@ Options:
   --proxy URL       send requests through an HTTP(S) proxy, e.g.
                     http://127.0.0.1:8080; ALL_PROXY/HTTPS_PROXY/HTTP_PROXY and
                     NO_PROXY are honored when this is not given
+  --retries N       retry a failed request up to N times (default 2)
+  --timeout SECS    per-attempt timeout for API calls (default 30); the bulk
+                    container transfer keeps no timeout by design
   -q, --quiet       suppress the progress reporter
   -v, --verbose     report key-page counts and timing
   --json            print a JSON result object on stdout (a track array for
@@ -94,6 +97,8 @@ const VALUE_FLAGS: &[&str] = &[
     "--track",
     "--api-base",
     "--proxy",
+    "--retries",
+    "--timeout",
     "--progress",
     "--save-hax",
     "--input",
@@ -182,6 +187,20 @@ fn run() -> ExitCode {
     let track_id = flag(&args, "--track");
     let api_base = flag(&args, "--api-base");
     let proxy = flag(&args, "--proxy");
+    let retry = match retry_from(&args) {
+        Ok(retry) => retry,
+        Err(message) => {
+            eprintln!("error: {message}\n");
+            return ExitCode::FAILURE;
+        }
+    };
+    let api_timeout_ms = match timeout_from(&args) {
+        Ok(timeout) => timeout,
+        Err(message) => {
+            eprintln!("error: {message}\n");
+            return ExitCode::FAILURE;
+        }
+    };
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let keys_only = args.iter().any(|a| a == "--keys-only");
     let all_tracks = args.iter().any(|a| a == "--all-tracks");
@@ -233,6 +252,8 @@ fn run() -> ExitCode {
         track_id,
         api_base,
         proxy,
+        retry,
+        api_timeout_ms,
         list_tracks,
         keys_only,
         all_tracks,
@@ -263,6 +284,10 @@ struct Run {
     track_id: Option<String>,
     api_base: Option<String>,
     proxy: Option<String>,
+    /// Retry policy for every client the run builds.
+    retry: Retry,
+    /// Per-attempt API timeout override; `None` keeps the 30 s default.
+    api_timeout_ms: Option<u64>,
     list_tracks: bool,
     keys_only: bool,
     all_tracks: bool,
@@ -372,7 +397,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             ));
         };
         let tracks = if is_url(source) {
-            let client = api_client(r.proxy.as_deref())?;
+            let client = api_client(net_of(&r))?;
             let resp = client.request("GET", source, &[], None).await?;
             if !resp.ok() {
                 return Err(Error::Http(format!("page returned {}", resp.status)));
@@ -419,7 +444,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                 "--keys-only needs a page URL, not a local file".into(),
             ));
         }
-        let client = api_client(r.proxy.as_deref())?;
+        let client = api_client(net_of(&r))?;
         let bundle = download::fetch_keys_only(
             &client,
             source,
@@ -453,12 +478,12 @@ async fn execute(r: Run) -> Result<(), Error> {
     if r.keys_path.is_some() && r.sources.is_empty() {
         let saved = load_keys(&r.keys_path)?;
         let (keys, envelope_url, title) = (saved.keys, saved.hax_url, saved.title);
-        let Some(url) = r.hax_url.or(envelope_url) else {
+        let Some(url) = r.hax_url.clone().or(envelope_url) else {
             return Err(Error::Protocol(
                 "keys file has no .hax URL — pass --hax-url or use online mode".into(),
             ));
         };
-        let client = bulk_client(r.proxy.as_deref())?;
+        let client = bulk_client(net_of(&r))?;
         let res = download::download_cached(
             &client,
             &url,
@@ -520,7 +545,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Streamed mode: ranged reads, one segment in memory at a time ----
     if let Some(dest) = &r.stream_to {
-        let api = api_client(r.proxy.as_deref())?;
+        let api = api_client(net_of(&r))?;
         let hs = if is_url(&source) {
             let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
             listen::load_handshake(&api, &source, api_base, r.track_id.as_deref()).await?
@@ -598,7 +623,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         &mut report,
         r.api_base.as_deref(),
         r.track_id.as_deref(),
-        r.proxy.as_deref(),
+        net_of(&r),
         r.save_hax.is_some(),
     )
     .await?;
@@ -654,11 +679,11 @@ async fn fetch_online(
     report: download::ProgressFn<'_>,
     api_base: Option<&str>,
     track_id: Option<&str>,
-    proxy: Option<&str>,
+    net: Net<'_>,
     capture_hax: bool,
 ) -> Result<download::Downloaded, Error> {
-    let api = api_client(proxy)?;
-    let bulk = bulk_client(proxy)?;
+    let api = api_client(net)?;
+    let bulk = bulk_client(net)?;
     let clients = download::Clients {
         api: &api,
         bulk: &bulk,
@@ -683,14 +708,67 @@ async fn fetch_online(
     }
 }
 
-/// A small-call client, with `--proxy` applied when given.
-fn api_client(proxy: Option<&str>) -> Result<Client, Error> {
-    apply_proxy(Client::api(), proxy)
+/// The HTTP settings shared by every client a run builds.
+#[derive(Clone, Copy)]
+struct Net<'a> {
+    proxy: Option<&'a str>,
+    /// Per-attempt API timeout; `None` keeps [`Client::api`]'s 30 s default.
+    api_timeout_ms: Option<u64>,
+    retry: Retry,
 }
 
-/// The bulk-transfer client, with `--proxy` applied when given.
-fn bulk_client(proxy: Option<&str>) -> Result<Client, Error> {
-    apply_proxy(Client::bulk(), proxy)
+/// The network settings for `r`.
+fn net_of(r: &Run) -> Net<'_> {
+    Net {
+        proxy: r.proxy.as_deref(),
+        api_timeout_ms: r.api_timeout_ms,
+        retry: r.retry,
+    }
+}
+
+/// The retry policy from `--retries N` (`N` retries after the first attempt).
+fn retry_from(args: &[String]) -> Result<Retry, String> {
+    let Some(value) = flag(args, "--retries") else {
+        return Ok(Retry::default());
+    };
+    let retries: usize = value
+        .parse()
+        .map_err(|_| format!("--retries needs a whole number, got '{value}'"))?;
+    Ok(Retry {
+        attempts: retries.saturating_add(1),
+        ..Retry::default()
+    })
+}
+
+/// The per-attempt API timeout from `--timeout SECS`.
+fn timeout_from(args: &[String]) -> Result<Option<u64>, String> {
+    let Some(value) = flag(args, "--timeout") else {
+        return Ok(None);
+    };
+    let secs: u64 = value
+        .parse()
+        .map_err(|_| format!("--timeout needs a whole number of seconds, got '{value}'"))?;
+    if secs == 0 {
+        return Err("--timeout must be at least 1 second".into());
+    }
+    Ok(Some(secs.saturating_mul(1000)))
+}
+
+/// A small-call client for `net`: `--timeout` and `--retries` applied.
+fn api_client(net: Net<'_>) -> Result<Client, Error> {
+    let client = match net.api_timeout_ms {
+        Some(ms) => Client::with_timeout_ms(Some(ms)),
+        None => Client::api(),
+    };
+    let client = apply_proxy(client, net.proxy)?;
+    Ok(client.with_retries(net.retry))
+}
+
+/// The bulk-transfer client for `net`: `--retries` and `--proxy` applied, but
+/// never `--timeout` (the container keeps its deliberate no-timeout).
+fn bulk_client(net: Net<'_>) -> Result<Client, Error> {
+    let client = apply_proxy(Client::bulk(), net.proxy)?;
+    Ok(client.with_retries(net.retry))
 }
 
 /// Apply `--proxy` to `client`; without it the transport honors the standard
@@ -736,7 +814,7 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
         ));
     };
     let html = if is_url(source) {
-        let client = api_client(r.proxy.as_deref())?;
+        let client = api_client(net_of(r))?;
         let resp = client.request("GET", source, &[], None).await?;
         if !resp.ok() {
             return Err(Error::Http(format!("page returned {}", resp.status)));
@@ -799,7 +877,7 @@ async fn batch_one(
         report,
         r.api_base.as_deref(),
         track_id,
-        r.proxy.as_deref(),
+        net_of(r),
         false,
     )
     .await?;
@@ -1384,6 +1462,8 @@ mod tests {
         assert!(validate(&["--force".into()]).is_ok());
         assert!(validate(&["--filename-template".into(), "{index}-{title}".into()]).is_ok());
         assert!(validate(&["--proxy".into(), "http://127.0.0.1:8080".into()]).is_ok());
+        assert!(validate(&["--retries".into(), "3".into()]).is_ok());
+        assert!(validate(&["--timeout".into(), "60".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1392,6 +1472,28 @@ mod tests {
         assert!(validate(&["--progress".into(), "json".into()]).is_ok());
         // Inline JSON is a value, not a flag.
         assert!(validate(&["--keys".into(), "{\"a\":1}".into()]).is_ok());
+    }
+
+    #[test]
+    fn retry_and_timeout_flags_parse() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Absent means the library defaults.
+        assert_eq!(
+            retry_from(&a(&[])).unwrap().attempts,
+            Retry::default().attempts
+        );
+        // `--retries N` is N retries after the first attempt.
+        assert_eq!(retry_from(&a(&["--retries", "0"])).unwrap().attempts, 1);
+        assert_eq!(retry_from(&a(&["--retries", "5"])).unwrap().attempts, 6);
+        assert!(retry_from(&a(&["--retries", "x"])).is_err());
+
+        assert_eq!(timeout_from(&a(&[])).unwrap(), None);
+        assert_eq!(
+            timeout_from(&a(&["--timeout", "60"])).unwrap(),
+            Some(60_000)
+        );
+        assert!(timeout_from(&a(&["--timeout", "0"])).is_err());
+        assert!(timeout_from(&a(&["--timeout", "soon"])).is_err());
     }
 
     #[test]
@@ -1631,6 +1733,16 @@ mod tests {
         );
         assert_eq!(
             positionals(&a(&["--proxy", "http://127.0.0.1:8080", "https://x/u/a/b"])),
+            vec![url()]
+        );
+        assert_eq!(
+            positionals(&a(&[
+                "--retries",
+                "4",
+                "--timeout",
+                "90",
+                "https://x/u/a/b"
+            ])),
             vec![url()]
         );
         assert!(positionals(&a(&["--list-tracks"])).is_empty());

@@ -2,7 +2,8 @@
 //!
 //! Mirrors the original's reliability policy: transient network errors and
 //! retryable statuses get up to three attempts with exponential backoff and
-//! jitter, honouring `Retry-After` on 429.
+//! jitter, honouring `Retry-After` on 429. The retry policy is [`Retry`], and a
+//! client can replace it with [`Client::with_retries`].
 //!
 //! Two clients are used. Small API calls (page, listen) go through
 //! [`Client::api`], with a 30 s per-attempt timeout, so one stalled request —
@@ -41,6 +42,54 @@ pub const BASE_DELAY_MS: u64 = 500;
 pub const MAX_DELAY_MS: u64 = 10_000;
 /// Default per-attempt timeout for small API calls.
 pub const API_TIMEOUT_MS: u64 = 30_000;
+
+/// Retry policy for a client: attempts and the backoff between them.
+///
+/// The defaults are the long-standing constants ([`ATTEMPTS`], [`BASE_DELAY_MS`],
+/// [`MAX_DELAY_MS`]); override them per client with [`Client::with_retries`].
+#[derive(Clone, Copy, Debug)]
+pub struct Retry {
+    /// Total attempts per request: the initial attempt plus retries. At least 1.
+    pub attempts: usize,
+    /// Base backoff between retries; doubled per attempt, plus jitter.
+    pub base_delay_ms: u64,
+    /// Upper bound for a single retry wait (also caps `Retry-After`).
+    pub max_delay_ms: u64,
+}
+
+impl Default for Retry {
+    fn default() -> Self {
+        Self {
+            attempts: ATTEMPTS,
+            base_delay_ms: BASE_DELAY_MS,
+            max_delay_ms: MAX_DELAY_MS,
+        }
+    }
+}
+
+impl Retry {
+    /// Backoff for `attempt` (1-based), honouring `Retry-After` on 429.
+    fn backoff(&self, attempt: usize, retry_after: Option<&str>) -> Duration {
+        if let Some(raw) = retry_after {
+            if let Ok(secs) = raw.trim().parse::<f64>() {
+                let ms = (secs * 1000.0).max(0.0);
+                if ms.is_finite() {
+                    return Duration::from_millis((ms as u64).min(self.max_delay_ms));
+                }
+            }
+        }
+        let base = self
+            .base_delay_ms
+            .saturating_mul(1u64 << (attempt.saturating_sub(1)).min(16));
+        Duration::from_millis((base + jitter()).min(self.max_delay_ms))
+    }
+
+    /// Cap a sleep so the per-attempt timeout still bounds the whole call.
+    fn remaining(&self, started_ms: f64) -> Duration {
+        let elapsed = (clock::monotonic_ms() - started_ms).max(0.0) as u64;
+        Duration::from_millis(self.max_delay_ms.saturating_sub(elapsed))
+    }
+}
 
 /// True for transient HTTP statuses worth retrying.
 pub fn is_retryable(status: u16) -> bool {
@@ -90,6 +139,7 @@ type UrlRewrite = Box<dyn Fn(&str) -> String + 'static>;
 /// way the old `ureq::Agent` was — connection pooling is the transport's job.
 pub struct Client {
     backend: backend::Transport,
+    retry: Retry,
     rewrite: Option<UrlRewrite>,
 }
 
@@ -111,8 +161,16 @@ impl Client {
     pub fn with_timeout_ms(timeout_ms: Option<u64>) -> Self {
         Self {
             backend: backend::Transport::new(timeout_ms),
+            retry: Retry::default(),
             rewrite: None,
         }
+    }
+
+    /// Replace the retry policy (attempts and backoff).
+    #[must_use]
+    pub fn with_retries(mut self, retry: Retry) -> Self {
+        self.retry = retry;
+        self
     }
 
     /// Send every request through `rewrite`, which maps a URL to the URL to
@@ -195,8 +253,9 @@ impl Client {
             body,
         };
         let mut last: Option<Error> = None;
+        let attempts = self.retry.attempts.max(1);
 
-        for attempt in 1..=ATTEMPTS {
+        for attempt in 1..=attempts {
             let started = clock::monotonic_ms();
             match self.backend.send(&req).await {
                 Ok(resp) => {
@@ -204,18 +263,26 @@ impl Client {
                         return Ok(resp);
                     }
                     last = Some(Error::Http(format!("HTTP {}", resp.status)));
-                    if attempt == ATTEMPTS {
+                    if attempt == attempts {
                         return Ok(resp);
                     }
-                    let wait = backoff(attempt, resp.header("retry-after")).min(remaining(started));
+                    let wait = self
+                        .retry
+                        .backoff(attempt, resp.header("retry-after"))
+                        .min(self.retry.remaining(started));
                     clock::sleep(wait).await;
                 }
                 Err(err) => {
                     last = Some(err);
-                    if attempt == ATTEMPTS {
+                    if attempt == attempts {
                         break;
                     }
-                    clock::sleep(backoff(attempt, None).min(remaining(started))).await;
+                    clock::sleep(
+                        self.retry
+                            .backoff(attempt, None)
+                            .min(self.retry.remaining(started)),
+                    )
+                    .await;
                 }
             }
         }
@@ -250,8 +317,9 @@ impl Client {
         let mut resp_headers: Vec<(String, String)> = Vec::new();
         let mut expected: Option<u64> = None;
         let mut last: Option<Error> = None;
+        let attempts = self.retry.attempts.max(1);
 
-        for attempt in 1..=ATTEMPTS {
+        for attempt in 1..=attempts {
             let started = clock::monotonic_ms();
             let resume_at = buf.len();
             let range = format!("bytes={resume_at}-");
@@ -270,10 +338,15 @@ impl Client {
                 Ok(pair) => pair,
                 Err(err) => {
                     last = Some(err);
-                    if attempt == ATTEMPTS {
+                    if attempt == attempts {
                         break;
                     }
-                    clock::sleep(backoff(attempt, None).min(remaining(started))).await;
+                    clock::sleep(
+                        self.retry
+                            .backoff(attempt, None)
+                            .min(self.retry.remaining(started)),
+                    )
+                    .await;
                     continue;
                 }
             };
@@ -319,18 +392,28 @@ impl Client {
                 // length is truncated, not complete: resume for the remainder
                 // rather than accept a short object.
                 Ok(()) => {
-                    if expected.is_some_and(|e| (buf.len() as u64) < e) && attempt != ATTEMPTS {
-                        clock::sleep(backoff(attempt, None).min(remaining(started))).await;
+                    if expected.is_some_and(|e| (buf.len() as u64) < e) && attempt != attempts {
+                        clock::sleep(
+                            self.retry
+                                .backoff(attempt, None)
+                                .min(self.retry.remaining(started)),
+                        )
+                        .await;
                         continue;
                     }
                     break;
                 }
                 Err(err) => {
                     last = Some(err);
-                    if attempt == ATTEMPTS {
+                    if attempt == attempts {
                         break;
                     }
-                    clock::sleep(backoff(attempt, None).min(remaining(started))).await;
+                    clock::sleep(
+                        self.retry
+                            .backoff(attempt, None)
+                            .min(self.retry.remaining(started)),
+                    )
+                    .await;
                 }
             }
         }
@@ -356,26 +439,6 @@ impl Client {
             body: buf,
         })
     }
-}
-
-/// Cap the sleep so the client's own timeout still bounds the whole call.
-fn remaining(started_ms: f64) -> Duration {
-    let elapsed = (clock::monotonic_ms() - started_ms).max(0.0) as u64;
-    Duration::from_millis(MAX_DELAY_MS.saturating_sub(elapsed))
-}
-
-/// Backoff for `attempt` (1-based), honouring `Retry-After` on 429.
-fn backoff(attempt: usize, retry_after: Option<&str>) -> Duration {
-    if let Some(raw) = retry_after {
-        if let Ok(secs) = raw.trim().parse::<f64>() {
-            let ms = (secs * 1000.0).max(0.0);
-            if ms.is_finite() {
-                return Duration::from_millis((ms as u64).min(MAX_DELAY_MS));
-            }
-        }
-    }
-    let base = BASE_DELAY_MS.saturating_mul(1u64 << (attempt - 1).min(16));
-    Duration::from_millis((base + jitter()).min(MAX_DELAY_MS))
 }
 
 /// Cheap 0..100 ms jitter, enough to de-synchronise retries without pulling in
@@ -406,11 +469,12 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn backoff_grows_and_is_capped() {
-        let first = backoff(1, None);
-        let second = backoff(2, None);
+        let retry = Retry::default();
+        let first = retry.backoff(1, None);
+        let second = retry.backoff(2, None);
         assert!(second > first, "backoff did not grow: {first:?} {second:?}");
         assert!(
-            backoff(9, None) <= Duration::from_millis(MAX_DELAY_MS),
+            retry.backoff(9, None) <= Duration::from_millis(MAX_DELAY_MS),
             "backoff escaped the cap"
         );
     }
@@ -418,13 +482,23 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn retry_after_overrides_backoff() {
-        let d = backoff(1, Some("2"));
+        let retry = Retry::default();
+        let d = retry.backoff(1, Some("2"));
         assert_eq!(d, Duration::from_millis(2_000));
         // Absurd values are clamped rather than slept through.
         assert_eq!(
-            backoff(1, Some("99999")),
+            retry.backoff(1, Some("99999")),
             Duration::from_millis(MAX_DELAY_MS)
         );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn retry_defaults_match_the_constants() {
+        let retry = Retry::default();
+        assert_eq!(retry.attempts, ATTEMPTS);
+        assert_eq!(retry.base_delay_ms, BASE_DELAY_MS);
+        assert_eq!(retry.max_delay_ms, MAX_DELAY_MS);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

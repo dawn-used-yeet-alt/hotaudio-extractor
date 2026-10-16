@@ -112,6 +112,14 @@ All notable changes to this project are documented here. Format follows
   (SOCKS needs a `ureq` feature that is off), is an error. On `wasm32` the
   browser's `fetch` owns proxying, so `Client::with_proxy` is a documented no-op.
 
+- **Configurable retry and timeout policy.** `http::Retry` (attempts, backoff
+  base and cap) is the policy as one value, applied with
+  `Client::with_retries`; the old `ATTEMPTS`/`BASE_DELAY_MS`/`MAX_DELAY_MS` are
+  now just its defaults. `hotaudio-download` gains `--retries N` (retries after
+  the first attempt, default 2) and `--timeout SECS` (per-attempt API timeout,
+  default 30). The bulk container transfer keeps its deliberate no-timeout;
+  `--retries` still applies to it.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value
