@@ -208,7 +208,7 @@ jobs:
           stage="hotaudio-download-${tag}-${{ matrix.target }}"
           mkdir -p "$stage" dist
           cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
-          cp README.md LICENSE CHANGELOG.md "$stage/"
+          cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.yml "$stage/"
           # Note the libc in the filename: the musl build is not interchangeable
           # with the gnu one, and both are published under this target triple.
           tar -czf "dist/${stage}.tar.gz" "$stage"
@@ -224,7 +224,7 @@ jobs:
           $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
           New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
           Copy-Item $exe $stage
-          Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+          Copy-Item README.md, LICENSE, CHANGELOG.md, THIRD_PARTY_LICENSES.yml $stage
           Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
           Remove-Item -Recurse -Force $stage
 

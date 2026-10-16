@@ -193,3 +193,8 @@ Everything else lives in the docs:
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The crate statically links dependencies under their own permissive licenses
+(MIT, Apache-2.0, ISC, BSD and others). Their notices are bundled for the
+release archives in [THIRD_PARTY_LICENSES.yml](THIRD_PARTY_LICENSES.yml), which
+is generated from `Cargo.lock` and checked in CI.
