@@ -8,6 +8,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **`--verify` validates the decrypted output.** The always-on check only
+  confirms the MP4 `ftyp` signature; `hotaudio-download --verify` additionally
+  walks the box tree (`mp4::verify`), requires an `ftyp`, a `moov` and media,
+  sums the fragment sample durations, and compares the result with the
+  container's `durationMs`, failing loudly on a mismatch. `--stream-to PATH`
+  verifies the file before promoting it, so a bad decrypt is never left at the
+  destination; `--verify` is not available with `--stream-to -`. The library
+  entry point is `download::verify_output`, and `Downloaded` / `Streamed` now
+  carry `duration_ms`.
+
 - **Runnable `examples/`.** `download_track`, `stream_track` and
   `decrypt_offline` show the library API for the buffered, streamed and offline
   paths, and the README now covers `--track`, `--api-base`, the saved-keys
