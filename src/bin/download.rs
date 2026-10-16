@@ -60,6 +60,9 @@ Options:
                     fetching the container or decrypting
   --save-hax PATH   write the raw .hax container here for a later offline decrypt
                     (buffered modes only; not with --stream-to)
+  --verify          after decrypting, walk the MP4 boxes and check the output's
+                    duration against the container; fails loudly on a mismatch
+                    (needs a file destination, not --stream-to -)
   --no-clobber      fail instead of replacing an existing output file (audio,
                     keys or .hax); parent directories are still created
   --force           replace existing output files (the default)
@@ -154,6 +157,7 @@ const BOOL_FLAGS: &[&str] = &[
     "--all-tracks",
     "--no-clobber",
     "--force",
+    "--verify",
 ];
 
 /// Process exit codes, so a script can tell failure classes apart without
@@ -278,6 +282,7 @@ fn run() -> ExitCode {
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let json = args.iter().any(|a| a == "--json");
+    let verify = args.iter().any(|a| a == "--verify");
     let progress_json = match flag(&args, "--progress").as_deref() {
         None | Some("text") => false,
         Some("json") => true,
@@ -330,6 +335,7 @@ fn run() -> ExitCode {
         verbose,
         json,
         progress_json,
+        verify,
     })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -369,6 +375,8 @@ struct Run {
     verbose: bool,
     json: bool,
     progress_json: bool,
+    /// `--verify`: walk the decrypted MP4 and check its duration.
+    verify: bool,
 }
 
 async fn execute(r: Run) -> Result<(), Error> {
@@ -426,6 +434,9 @@ async fn execute(r: Run) -> Result<(), Error> {
             write_file(path, &bytes, clobber)?;
         }
         let (audio, segments, _) = download::decrypt_offline(&bytes, &keys, Some(&mut report))?;
+        if r.verify {
+            verify_or_report(std::io::Cursor::new(&audio), hax.duration_ms)?;
+        }
         if r.verbose {
             eprintln!(
                 "verbose: {segments} segments in {:.1}s",
@@ -570,6 +581,9 @@ async fn execute(r: Run) -> Result<(), Error> {
             r.save_hax.is_some(),
         )
         .await?;
+        if r.verify {
+            verify_or_report(std::io::Cursor::new(&res.audio), res.duration_ms)?;
+        }
         if let Some(path) = &r.save_hax {
             if let Some(bytes) = &res.hax_bytes {
                 write_file(path, bytes, clobber)?;
@@ -665,6 +679,14 @@ async fn execute(r: Run) -> Result<(), Error> {
         writer.flush().map_err(|e| Error::Io(e.to_string()))?;
         // Close the file before promoting it: Windows will not move an open file.
         drop(writer);
+        if r.verify {
+            let pending = sink.pending_path().ok_or_else(|| {
+                Error::Protocol("--verify cannot check a stream written to stdout".into())
+            })?;
+            let file = std::fs::File::open(pending)
+                .map_err(|e| Error::Io(format!("cannot read {pending}: {e}")))?;
+            verify_or_report(file, res.duration_ms)?;
+        }
         sink.commit()?;
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
@@ -718,6 +740,9 @@ async fn execute(r: Run) -> Result<(), Error> {
     )
     .await?;
 
+    if r.verify {
+        verify_or_report(std::io::Cursor::new(&res.audio), res.duration_ms)?;
+    }
     if let Some(path) = &r.save_hax {
         if let Some(bytes) = &res.hax_bytes {
             write_file(path, bytes, clobber)?;
@@ -998,6 +1023,9 @@ async fn batch_one(
         false,
     )
     .await?;
+    if r.verify {
+        verify_or_report(std::io::Cursor::new(&res.audio), res.duration_ms)?;
+    }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     let out = default_output(
         r.filename_template.as_deref(),
@@ -1198,6 +1226,14 @@ fn validate(args: &[String]) -> Result<(), String> {
     }
     if has_flag(args, "--all-tracks") && has_flag(args, "--track") {
         return Err("--all-tracks downloads every track; drop --track".into());
+    }
+    if has_flag(args, "--verify") {
+        if has_flag(args, "--keys-only") {
+            return Err("--verify checks decrypted audio; it conflicts with --keys-only".into());
+        }
+        if flag(args, "--stream-to").as_deref() == Some("-") {
+            return Err("--verify cannot check a stream written to stdout; write to a file".into());
+        }
     }
     let template = flag(args, "--filename-template").unwrap_or_default();
     if let Some(message) = template_error(&template) {
@@ -1544,6 +1580,25 @@ fn write_file(path: &str, bytes: &[u8], clobber: Clobber) -> Result<(), Error> {
     out.flush().map_err(|e| Error::Io(e.to_string()))
 }
 
+/// Run `--verify` over decrypted audio and report the result on stderr.
+///
+/// Takes a reader rather than bytes so `--stream-to` can check the file it just
+/// wrote without loading it back into memory.
+fn verify_or_report(reader: impl std::io::Read, expected_ms: u64) -> Result<(), Error> {
+    let info = download::verify_output(reader, expected_ms)?;
+    match info.duration_ms {
+        Some(ms) => eprintln!(
+            "verified: {} boxes, {ms} ms (container {expected_ms} ms)",
+            info.boxes
+        ),
+        None => eprintln!(
+            "verified: {} boxes, duration not carried in the headers",
+            info.boxes
+        ),
+    }
+    Ok(())
+}
+
 /// A writer for `path`, or stdout when `path` is `-`.
 ///
 /// `-` lets the audio be piped (`--out - | ffplay -`). Progress and the result
@@ -1621,6 +1676,12 @@ impl StreamSink {
         }
         self.committed = true;
         Ok(())
+    }
+
+    /// The temp file's path before [`StreamSink::commit`], so `--verify` can
+    /// inspect the output that is about to be promoted; `None` for stdout.
+    fn pending_path(&self) -> Option<&str> {
+        self.temp.as_deref()
     }
 }
 
@@ -1940,6 +2001,15 @@ mod tests {
         assert!(validate(&["--all-tracks".into(), "--track".into(), "t1".into()]).is_err());
         assert!(validate(&["--all-tracks".into(), "--track=t1".into()]).is_err());
         assert!(validate(&["--all-tracks".into(), "--json".into()]).is_ok());
+    }
+
+    #[test]
+    fn verify_conflicts_with_keys_only_and_a_stdout_stream() {
+        let keys_only = ["--verify", "--keys-only", "--save-keys", "k.json"].map(|s| s.to_string());
+        assert!(validate(&keys_only).is_err());
+        assert!(validate(&["--verify".into(), "--stream-to".into(), "-".into()]).is_err());
+        assert!(validate(&["--verify".into(), "--stream-to".into(), "a.m4a".into()]).is_ok());
+        assert!(validate(&["--verify".into()]).is_ok());
     }
 
     #[test]

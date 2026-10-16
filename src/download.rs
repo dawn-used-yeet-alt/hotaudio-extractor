@@ -18,6 +18,7 @@ use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyTree};
 use crate::http::Client;
 use crate::listen::{self, Handshake, ListenResponse};
+use crate::mp4;
 use crate::range::{self, HttpRangeSource};
 
 /// Progress phase.
@@ -67,6 +68,8 @@ pub struct Downloaded {
     pub title: Option<String>,
     /// Duration in seconds.
     pub duration: f64,
+    /// Container-declared duration in milliseconds, for `--verify`.
+    pub duration_ms: u64,
     pub mime: &'static str,
     /// Container codec string (e.g. `mp4a.40.2`).
     pub codec: String,
@@ -348,6 +351,36 @@ fn ensure_mp4(audio: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// How far the decrypted audio's duration may differ from the container's
+/// `durationMs` under `--verify`, in milliseconds.
+///
+/// Both are approximations of the same track but rounded differently, and the
+/// last packet can fall short by a frame. This is comfortably larger than that
+/// and far smaller than a wrong-key decrypt, which is off by orders of magnitude.
+pub const VERIFY_TOLERANCE_MS: u64 = 500;
+
+/// Deeply verify a decrypted track: walk its MP4 boxes and, when the headers
+/// carry a duration, check that against the container's `duration_ms`.
+///
+/// This is the `--verify` check. The always-on `ensure_mp4` only confirms the
+/// `ftyp` signature; this also catches a truncated file and a duration that
+/// disagrees with [`Hax0::duration_ms`]. `reader` is taken by value so the
+/// streamed path can verify the file it just wrote without re-loading it.
+pub fn verify_output(reader: impl std::io::Read, expected_ms: u64) -> Result<mp4::Info> {
+    let info = mp4::verify(reader)?;
+    if let Some(actual_ms) = info.duration_ms {
+        let tolerance = (expected_ms / 100).max(VERIFY_TOLERANCE_MS);
+        let difference = actual_ms.abs_diff(expected_ms);
+        if difference > tolerance {
+            return Err(Error::Protocol(format!(
+                "decrypted audio lasts {actual_ms} ms but the container declares \
+                 {expected_ms} ms (tolerance {tolerance} ms)"
+            )));
+        }
+    }
+    Ok(info)
+}
+
 /// Decrypt a container, paging key branches as needed.
 ///
 /// `client` is used for key paging (small, latency-bound calls); the container
@@ -406,6 +439,7 @@ pub async fn decrypt_container(
         audio,
         title: Some(hs.track.title.clone()).filter(|t| !t.is_empty()),
         duration: hax.duration_ms as f64 / 1000.0,
+        duration_ms: hax.duration_ms,
         mime: "audio/mp4",
         hax_url: initial.url.clone(),
         keys,
@@ -488,6 +522,7 @@ pub async fn download_streaming(
         bytes: written,
         segment_count: hax.segment_count,
         duration: hax.duration_ms as f64 / 1000.0,
+        duration_ms: hax.duration_ms,
         codec: hax.codec.clone(),
         hax_url: initial.url,
         keys,
@@ -502,6 +537,8 @@ pub struct Streamed {
     pub bytes: u64,
     pub segment_count: u32,
     pub duration: f64,
+    /// Container-declared duration in milliseconds, for `--verify`.
+    pub duration_ms: u64,
     pub codec: String,
     pub hax_url: String,
     /// Merged branch keys, for `--save-keys`.
@@ -568,6 +605,7 @@ pub async fn download_cached(
         audio,
         title: None,
         duration,
+        duration_ms: hax.duration_ms,
         mime: "audio/mp4",
         codec: hax.codec,
         hax_url: hax_url.to_string(),
@@ -892,5 +930,73 @@ mod tests {
             hax_url_disagreement("https://cdn.example.net/a/abc.hax", "abc").as_deref(),
             Some("https://cdn.hotaudio.net/a/abc.hax")
         );
+    }
+
+    /// A minimal fragmented MP4 whose one fragment sums to `ms` milliseconds at
+    /// 48 kHz, for the `--verify` tests.
+    fn fragmented_mp4(ms: u32) -> Vec<u8> {
+        fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut out = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(body);
+            out
+        }
+        let timescale = 48_000u32;
+        let ticks = timescale * ms / 1000;
+        // `mvhd`/`mdhd`: FullBox header, creation, modification, timescale, duration.
+        let timescale_box = |kind: &[u8; 4]| {
+            let mut body = vec![0u8; 4];
+            body.extend_from_slice(&0u32.to_be_bytes());
+            body.extend_from_slice(&0u32.to_be_bytes());
+            body.extend_from_slice(&timescale.to_be_bytes());
+            body.extend_from_slice(&ticks.to_be_bytes());
+            bx(kind, &body)
+        };
+        let moov = bx(
+            b"moov",
+            &[
+                timescale_box(b"mvhd"),
+                bx(b"trak", &bx(b"mdia", &timescale_box(b"mdhd"))),
+            ]
+            .concat(),
+        );
+        let mut tfhd = vec![0u8, 0, 0, 0x08]; // flags: default_sample_duration
+        tfhd.extend_from_slice(&1u32.to_be_bytes());
+        tfhd.extend_from_slice(&ticks.to_be_bytes());
+        let trun = bx(b"trun", &[0u8, 0, 0, 0, 0, 0, 0, 1]); // one sample
+        let moof = bx(b"moof", &bx(b"traf", &[bx(b"tfhd", &tfhd), trun].concat()));
+        [
+            bx(b"ftyp", b"isom\x00\x00\x02\x00iso2"),
+            moov,
+            moof,
+            bx(b"mdat", &[0u8; 8]),
+        ]
+        .concat()
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn verify_accepts_an_output_matching_the_container() {
+        let file = fragmented_mp4(60_000);
+        let info = verify_output(std::io::Cursor::new(&file), 60_000).unwrap();
+        assert!(info.fragmented);
+        assert_eq!(info.duration_ms, Some(60_000));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn verify_rejects_an_output_of_the_wrong_duration() {
+        let file = fragmented_mp4(1_000);
+        let err = verify_output(std::io::Cursor::new(&file), 60_000).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("1000 ms"), "got {msg}");
+        assert!(msg.contains("60000 ms"), "got {msg}");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn verify_rejects_a_non_mp4() {
+        let err = verify_output(std::io::Cursor::new(b"not an mp4".to_vec()), 0).unwrap_err();
+        assert!(err.to_string().contains("ftyp"), "got {err}");
     }
 }

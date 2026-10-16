@@ -121,7 +121,9 @@ discarded and the request to restart, so correctness never depends on range
 support. The reassembled body is also checked against the announced
 `Content-Length` — a body cut short is an error, not a silently corrupt
 container — and the decrypted result is checked for an MP4 `ftyp` box before it
-is returned or handed to a caller. Covered by `tests/http_resume.rs`.
+is returned or handed to a caller. `--verify` goes further: it walks the box
+tree and checks the output's duration against the container's `durationMs` (see
+`mp4`). Covered by `tests/http_resume.rs`.
 
 ### What does *not* help
 

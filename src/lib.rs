@@ -77,6 +77,7 @@ pub mod download;
 pub mod hax;
 pub mod http;
 pub mod listen;
+pub mod mp4;
 pub mod range;
 pub mod signer;
 #[cfg(target_arch = "wasm32")]

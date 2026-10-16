@@ -153,6 +153,16 @@ Transfers resume themselves across dropped connections. With `--stream-to <file>
 hotaudio-download "$URL" --retries 5 --timeout 60
 ```
 
+To be sure the decrypted bytes are what the container says they are, `--verify`
+walks the MP4 box tree and checks the audio's duration against the container's,
+failing loudly on a mismatch. With `--stream-to`, the check runs on the `.part`
+file before it is renamed into place, so a bad decrypt never lands at the
+destination:
+
+```bash
+hotaudio-download "$URL" --verify
+```
+
 ## For developers
 
 Build from source (needs Rust 1.85+):
