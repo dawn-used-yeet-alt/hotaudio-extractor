@@ -98,6 +98,12 @@ const blob = new Blob(parts, { type: info.mime });
 - `trackKeysWith(url, fetchImpl, rewrite, trackId)` — the same key-only save
   through the replacement `fetch` / rewrite seam, so it works behind a proxy or
   a native bridge too.
+- `decryptHax(haxBytes, keysJson)` — decrypt a `.hax` you already hold with a
+  saved-keys envelope, entirely offline. Returns the MP4 as a `Uint8Array`.
+- `downloadCached(haxUrl, keysJson, onFragment, onProgress)` — fetch a `.hax` by
+  URL and decrypt it with saved keys, with no page handshake and no listen
+  calls. The offline decrypt is buffered, so `onFragment` fires once with the
+  whole MP4.
 - `signPayload(payload)` — the `X-Signature` for a payload right now, so a host
   can diff against the reference signer in the browser.
 - `listTracks(htmlOrUrlHtml)` — `[{ id, key, title }, …]`. Takes page HTML, so a
@@ -115,6 +121,23 @@ const info = await downloadTrack(url, onFragment, onProgress, tracks[1].id);
 
 An id the page does not carry is rejected with `track <id> not on page` rather
 than silently falling back to the first track.
+
+### Replaying a saved track offline
+
+`trackKeys` — or `downloadTrack`'s `keysJson` — saves everything a later replay
+needs. With that envelope, replaying skips the page and the listen API:
+
+```js
+const envelope = JSON.parse(storedKeysJson);
+await downloadCached(envelope.haxUrl, storedKeysJson, onFragment, onProgress);
+```
+
+If the host already has the `.hax` bytes — because it saved them along the way —
+`decryptHax` skips the fetch as well:
+
+```js
+const mp4 = decryptHax(cachedHaxBytes, storedKeysJson); // Uint8Array
+```
 
 ## A proxy is required — this crate does not ship one
 

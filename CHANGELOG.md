@@ -20,6 +20,13 @@ All notable changes to this project are documented here. Format follows
   through the documented proxy or native-bridge seam. `trackKeysWith(url,
   fetchImpl, rewrite, trackId)` closes that gap.
 
+- **Offline replay in the browser.** `decryptHax(haxBytes, keysJson)` decrypts a
+  `.hax` you already hold with a saved-keys envelope, and
+  `downloadCached(haxUrl, keysJson, onFragment, onProgress)` fetches one by URL
+  and decrypts it. Neither fetches the page nor calls the listen API, so a saved
+  envelope is enough to replay a track. The offline decrypt is buffered, so
+  `onFragment` fires once with the whole MP4.
+
 - **`--verify` validates the decrypted output.** The always-on check only
   confirms the MP4 `ftyp` signature; `hotaudio-download --verify` additionally
   walks the box tree (`mp4::verify`), requires an `ftyp`, a `moov` and media,
