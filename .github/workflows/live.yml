@@ -6,6 +6,8 @@ name: live
 # mode. Everything is built from this checkout, never a release.
 
 on:
+  push:
+    branches: [live-acceptance-suite]
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
