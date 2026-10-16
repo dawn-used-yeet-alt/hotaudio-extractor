@@ -90,7 +90,7 @@ const blob = new Blob(parts, { type: info.mime });
 
 ## Other exports
 
-- `downloadTrackWith(url, onFragment, onProgress, fetchImpl, rewrite, trackId)` —
+- `downloadTrackWith(url, onFragment, onProgress, fetchImpl, rewrite, trackId, signal)` —
   a replacement `fetch` and/or a URL rewrite. This is the integration seam; see
   below.
 - `trackKeys(url, trackId)` — handshake and first key branch without downloading
@@ -100,10 +100,10 @@ const blob = new Blob(parts, { type: info.mime });
   a native bridge too.
 - `decryptHax(haxBytes, keysJson)` — decrypt a `.hax` you already hold with a
   saved-keys envelope, entirely offline. Returns the MP4 as a `Uint8Array`.
-- `downloadCached(haxUrl, keysJson, onFragment, onProgress)` — fetch a `.hax` by
-  URL and decrypt it with saved keys, with no page handshake and no listen
-  calls. The offline decrypt is buffered, so `onFragment` fires once with the
-  whole MP4.
+- `downloadCached(haxUrl, keysJson, onFragment, onProgress, signal)` — fetch a
+  `.hax` by URL and decrypt it with saved keys, with no page handshake and no
+  listen calls. The offline decrypt is buffered, so `onFragment` fires once with
+  the whole MP4.
 - `signPayload(payload)` — the `X-Signature` for a payload right now, so a host
   can diff against the reference signer in the browser.
 - `signPayloadAt(payload, timestampSecs)` — the same signature at a pinned Unix
@@ -113,8 +113,9 @@ const blob = new Blob(parts, { type: info.mime });
 
 ### Selecting a track
 
-`downloadTrack`, `downloadTrackWith` and `trackKeys` take an optional trailing
-`trackId`. Omit it (or pass `null`/`undefined`) for the page's default track.
+`downloadTrack`, `downloadTrackWith` and `trackKeys` take an optional `trackId`
+(the last argument for `trackKeys`; followed only by `signal` elsewhere). Omit it
+(or pass `null`/`undefined`) for the page's default track.
 
 ```js
 const tracks = listTracks(pageHtml);
@@ -139,6 +140,26 @@ If the host already has the `.hax` bytes — because it saved them along the way
 
 ```js
 const mp4 = decryptHax(cachedHaxBytes, storedKeysJson); // Uint8Array
+```
+
+### Cancelling a download
+
+`downloadTrack`, `downloadTrackWith` and `downloadCached` take a trailing
+`AbortSignal`. Aborting it stops the download at the next segment or key-page
+boundary — no fragment is torn mid-write — and rejects with an `AbortError`,
+which is what `signal`-aware callers already treat as a deliberate cancel:
+
+```js
+const controller = new AbortController();
+const info = await downloadTrack(
+  url, onFragment, onProgress, trackId, controller.signal,
+).catch((err) => {
+  if (err.name === "AbortError") return null; // the user navigated away
+  throw err;
+});
+
+// elsewhere, e.g. on route change:
+controller.abort();
 ```
 
 ## A proxy is required — this crate does not ship one

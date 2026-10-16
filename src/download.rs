@@ -13,6 +13,7 @@
 //! caller.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyTree};
@@ -43,6 +44,47 @@ pub type ProgressFn<'a> = &'a mut dyn FnMut(Progress);
 /// A progress reporter that can be threaded through the pipeline.
 pub type ProgressSink<'a> = Option<ProgressFn<'a>>;
 
+/// A cooperative cancellation token for a download.
+///
+/// A cheap, cloneable handle over a `bool` the caller flips from wherever it
+/// likes — a signal-handler thread in the CLI, an `AbortSignal` in the browser.
+/// The pipeline polls it between segments and before each key-page request and
+/// unwinds with [`Error::Cancelled`] when it reads `true`.
+///
+/// The check is coarse by design: no segment is interrupted mid-fetch or
+/// mid-decrypt, so a cancelled run leaves a consistent partial state rather than
+/// a torn one. The CLI's temp-file sink relies on that — it discards the
+/// in-progress file on drop, so a Ctrl-C never leaves a corrupt `.m4a`.
+#[derive(Clone)]
+pub struct Cancel(Rc<dyn Fn() -> bool>);
+
+impl Cancel {
+    /// Build a token that is cancelled whenever `is_cancelled` returns `true`.
+    ///
+    /// Backed by `Rc` rather than `Arc`, so the token is not `Send`/`Sync`. That
+    /// is deliberate: the browser backs it with an `AbortSignal`, which is not
+    /// `Send`, and the pipeline is single-threaded on both targets. The native
+    /// Ctrl-C flag is a `static` the handler thread writes and the polling
+    /// closure reads — the token itself never crosses a thread.
+    pub fn new(is_cancelled: impl Fn() -> bool + 'static) -> Self {
+        Self(Rc::new(is_cancelled))
+    }
+
+    /// Whether the caller has asked the download to stop.
+    pub fn is_cancelled(&self) -> bool {
+        (self.0)()
+    }
+
+    /// [`Error::Cancelled`] if the caller has asked to stop, else `Ok(())`.
+    pub fn check(&self) -> Result<()> {
+        if self.is_cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Options for a download.
 #[derive(Default)]
 pub struct DownloadOptions<'a> {
@@ -59,6 +101,9 @@ pub struct DownloadOptions<'a> {
     /// `0` (the default) disables it. It only spaces load for bulk/batch use and
     /// never affects correctness.
     pub delay_ms: u64,
+    /// Cooperative cancellation, observed between segments and key pages.
+    /// `None` (the default) runs to completion.
+    pub cancel: Option<Cancel>,
 }
 
 /// The decrypted track plus everything needed to reuse it.
@@ -135,6 +180,9 @@ impl<'a> Clients<'a> {
         hs: &Handshake,
         opts: &mut DownloadOptions<'_>,
     ) -> Result<Downloaded> {
+        if let Some(cancel) = &opts.cancel {
+            cancel.check()?;
+        }
         let initial = listen::listen(self.api, hs, -1, opts.delay_ms).await?;
         if initial.url.is_empty() {
             return Err(Error::Listen("listen API returned no .hax url".into()));
@@ -181,13 +229,25 @@ pub async fn fetch_container(
     url: &str,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Vec<u8>> {
+    if let Some(cancel) = &opts.cancel {
+        cancel.check()?;
+    }
     // Resumable: a dropped transfer continues from the last byte rather than
     // restarting, which matters on slow or lossy paths.
+    //
+    // The progress hook doubles as the cancellation point: the transfer is the
+    // longest single step in the buffered path, so aborting it mid-stream — the
+    // next chunk after the token is set — is what makes Ctrl-C feel immediate
+    // rather than waiting out a whole 15-25 MB download.
+    let cancel = opts.cancel.clone();
     let resp = client
         .get_resumable(
             url,
             &[("User-Agent", crate::HOTAUDIO_UA)],
             |loaded, total| {
+                if let Some(cancel) = &cancel {
+                    cancel.check()?;
+                }
                 if let Some(cb) = opts.on_progress.as_mut() {
                     cb(Progress {
                         phase: Phase::Fetching,
@@ -195,6 +255,7 @@ pub async fn fetch_container(
                         total,
                     });
                 }
+                Ok(())
             },
         )
         .await?;
@@ -242,6 +303,7 @@ pub struct ListenPager<'a> {
     client: &'a Client,
     hs: &'a Handshake,
     delay_ms: u64,
+    cancel: Option<Cancel>,
 }
 
 impl<'a> ListenPager<'a> {
@@ -251,6 +313,7 @@ impl<'a> ListenPager<'a> {
             client,
             hs,
             delay_ms: 0,
+            cancel: None,
         }
     }
 
@@ -260,10 +323,21 @@ impl<'a> ListenPager<'a> {
         self.delay_ms = delay_ms;
         self
     }
+
+    /// Refuse to make a page request once `cancel` is set, so a cancelled
+    /// download does not spend a listen round trip it will not use.
+    #[must_use]
+    pub fn with_cancel(mut self, cancel: Option<Cancel>) -> Self {
+        self.cancel = cancel;
+        self
+    }
 }
 
 impl KeyPager for ListenPager<'_> {
     async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
+        if let Some(cancel) = &self.cancel {
+            cancel.check()?;
+        }
         Ok(
             listen::listen(self.client, self.hs, idx as i64, self.delay_ms)
                 .await?
@@ -408,9 +482,17 @@ pub async fn decrypt_container(
     let mut audio: Vec<u8> =
         Vec::with_capacity((hax.file_length.saturating_sub(hax.header_length)) as usize + 64);
 
-    let mut pager = ListenPager::new(client, hs).with_delay_ms(opts.delay_ms);
+    let mut pager = ListenPager::new(client, hs)
+        .with_delay_ms(opts.delay_ms)
+        .with_cancel(opts.cancel.clone());
     let mut pages = 0u32;
     for i in 0..hax.segment_count as usize {
+        // Between segments: a page request has its own check, but a segment
+        // already covered by the memo never pages, so this is the only place a
+        // cancel is seen on that path.
+        if let Some(cancel) = &opts.cancel {
+            cancel.check()?;
+        }
         let key = derive_or_page(
             &mut pager, &tree, &mut keys, &mut cache, i as u32, &mut pages,
         )
@@ -466,7 +548,9 @@ pub async fn decrypt_container(
 /// an error aborts the download.
 ///
 /// `delay_ms` pauses before each listen/key-paging request, as in
-/// [`DownloadOptions::delay_ms`].
+/// [`DownloadOptions::delay_ms`]. `cancel`, when set, is polled before the
+/// first listen call, before each key-page request and between segments, so a
+/// cancelled run stops at the next segment boundary.
 pub async fn download_streaming(
     api_client: &Client,
     hs: &Handshake,
@@ -474,7 +558,11 @@ pub async fn download_streaming(
     delay_ms: u64,
     mut on_fragment: impl FnMut(&[u8]) -> Result<()>,
     mut on_progress: Option<ProgressFn<'_>>,
+    cancel: Option<Cancel>,
 ) -> Result<Streamed> {
+    if let Some(cancel) = &cancel {
+        cancel.check()?;
+    }
     let initial = listen::listen(api_client, hs, -1, delay_ms).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
@@ -495,8 +583,15 @@ pub async fn download_streaming(
     }
 
     let mut written = 0u64;
-    let mut pager = ListenPager::new(api_client, hs).with_delay_ms(delay_ms);
+    let mut pager = ListenPager::new(api_client, hs)
+        .with_delay_ms(delay_ms)
+        .with_cancel(cancel.clone());
     let (keys, pages) = range::decrypt_streaming(&source, &hax, &keys, &mut pager, |i, plain| {
+        // Between segments: the page-request check inside the pager covers the
+        // paging path, this one covers a segment whose key is already memoised.
+        if let Some(cancel) = &cancel {
+            cancel.check()?;
+        }
         if i == 0 {
             // The first fragment is the earliest point a caller has MP4
             // bytes; reject a non-MP4 first segment before handing it over.
@@ -590,17 +685,24 @@ pub fn decrypt_offline(
 /// can report one result format regardless of how the keys arrived. `pages` is
 /// zero: the offline decrypt never pages key branches. When `capture_hax` is
 /// set, the raw container is kept on [`Downloaded::hax_bytes`] for archiving.
+/// `on_progress` reports the container fetch and then the decrypt; `cancel`
+/// aborts the fetch mid-transfer.
 pub async fn download_cached(
     client: &Client,
     hax_url: &str,
     all_keys: &crypto::KeyMap,
     on_progress: Option<ProgressFn<'_>>,
     capture_hax: bool,
+    cancel: Option<Cancel>,
 ) -> Result<Downloaded> {
-    let mut opts = DownloadOptions::default();
+    let mut opts = DownloadOptions {
+        on_progress,
+        cancel,
+        ..DownloadOptions::default()
+    };
     let hax_bytes = fetch_container(client, hax_url, &mut opts).await?;
     let hax = Hax0::parse(&hax_bytes)?;
-    let (audio, segment_count, duration) = decrypt_offline(&hax_bytes, all_keys, on_progress)?;
+    let (audio, segment_count, duration) = decrypt_offline(&hax_bytes, all_keys, opts.on_progress)?;
     Ok(Downloaded {
         audio,
         title: None,
@@ -999,4 +1101,61 @@ mod tests {
         let err = verify_output(std::io::Cursor::new(b"not an mp4".to_vec()), 0).unwrap_err();
         assert!(err.to_string().contains("ftyp"), "got {err}");
     }
+
+    /// A minimal handshake, enough to reach the pre-network cancellation checks.
+    fn handshake() -> Handshake {
+        Handshake {
+            state: listen::PageState {
+                pid: "p".into(),
+                tick: "t".into(),
+                key: "0".repeat(64),
+                tracks: HashMap::new(),
+                order: Vec::new(),
+            },
+            tid: "1".into(),
+            track: listen::Track {
+                key: "a".repeat(64),
+                title: "Track".into(),
+            },
+            client_pub_hex: String::new(),
+            secret: [0u8; 32],
+            api_base: crate::HOTAUDIO_API_BASE.to_string(),
+            listen_key: None,
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn cancel_reads_the_current_value_not_a_snapshot() {
+        let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        let cancel = {
+            let flag = flag.clone();
+            Cancel::new(move || flag.get())
+        };
+        assert!(!cancel.is_cancelled());
+        flag.set(true);
+        assert!(matches!(cancel.check(), Err(Error::Cancelled)));
+    }
+
+    // A token set before the run must stop it at the first check, before the
+    // handshake's initial listen request — the reason this expects no network.
+    async_test!(a_cancelled_stream_stops_before_any_request {
+        let client = Client::api();
+        let hs = handshake();
+        let cancel = Cancel::new(|| true);
+        let err = download_streaming(&client, &hs, None, 0, |_| Ok(()), None, Some(cancel))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "got {err:?}");
+    });
+
+    // The pager's own check is what keeps a cancelled run from spending a listen
+    // round trip on a branch it will never use.
+    async_test!(a_cancelled_pager_refuses_to_make_a_request {
+        let client = Client::api();
+        let hs = handshake();
+        let mut pager = ListenPager::new(&client, &hs).with_cancel(Some(Cancel::new(|| true)));
+        let err = pager.page(0).await.unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "got {err:?}");
+    });
 }

@@ -114,7 +114,7 @@ fn resumes_after_a_mid_body_disconnect() {
         &client(),
         &format!("http://{addr}/x"),
         &[],
-        |_, _| {},
+        |_, _| Ok(()),
     ))
     .expect("resumable fetch should recover");
     server.join().expect("server thread");
@@ -171,7 +171,7 @@ fn discards_the_partial_buffer_when_the_server_ignores_range() {
         &client(),
         &format!("http://{addr}/y"),
         &[],
-        |_, _| {},
+        |_, _| Ok(()),
     ))
     .expect("fetch should recover");
     server.join().expect("server thread");
@@ -210,6 +210,7 @@ fn reports_progress_monotonically() {
         block_on(
             client().get_resumable(&format!("http://{addr}/z"), &[], move |loaded, total| {
                 sink.lock().expect("lock").push((loaded, total));
+                Ok(())
             }),
         )
         .expect("fetch");
@@ -270,7 +271,7 @@ fn errors_when_the_body_is_shorter_than_content_length() {
         &client(),
         &format!("http://{addr}/short"),
         &[],
-        |_, _| {},
+        |_, _| Ok(()),
     ));
     server.join().expect("server thread");
 

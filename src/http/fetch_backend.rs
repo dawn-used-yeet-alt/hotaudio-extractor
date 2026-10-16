@@ -182,7 +182,10 @@ pub(super) struct OpenBody {
 }
 
 impl OpenBody {
-    pub(super) async fn pump(&mut self, on_chunk: &mut dyn FnMut(&[u8])) -> Result<()> {
+    pub(super) async fn pump(
+        &mut self,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
         // `read` resolves with `{ value, done }`; a rejected promise is a dropped
         // transfer, which is the case the parent's resume policy exists for.
         loop {
@@ -203,7 +206,7 @@ impl OpenBody {
             if chunk.length() == 0 {
                 continue;
             }
-            on_chunk(&chunk.to_vec());
+            on_chunk(&chunk.to_vec())?;
         }
     }
 }

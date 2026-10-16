@@ -97,7 +97,7 @@ The user agent is fixed at Mozilla/5.0 and is not configurable: the site returns
 Exit status:
   0 success; 1 unclassified failure; 2 bad input or unknown flag; 3 network or
   transport failure; 4 protocol, listen, decryption or signer failure; 5 local
-  filesystem failure.
+  filesystem failure; 130 cancelled (Ctrl-C).
 
 Config file:
   A flat TOML file of 'key = value' lines. Recognised keys: output_dir,
@@ -172,6 +172,8 @@ mod code {
     pub const PROTOCOL: u8 = 4;
     /// A local filesystem failure.
     pub const IO: u8 = 5;
+    /// The run was cancelled (Ctrl-C). `128 + SIGINT`, the shell convention.
+    pub const CANCELLED: u8 = 130;
 }
 
 /// The exit code for a pipeline failure, by [`Error`] class.
@@ -179,6 +181,7 @@ fn exit_code(e: &Error) -> u8 {
     match e {
         Error::Http(_) => code::NETWORK,
         Error::Io(_) => code::IO,
+        Error::Cancelled => code::CANCELLED,
         Error::Auth
         | Error::Decode(_)
         | Error::State(_)
@@ -186,6 +189,33 @@ fn exit_code(e: &Error) -> u8 {
         | Error::Protocol(_)
         | Error::Sign(_) => code::PROTOCOL,
     }
+}
+
+/// Set by the Ctrl-C handler and polled by the pipeline between segments.
+#[cfg(not(target_arch = "wasm32"))]
+static CTRL_C: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Install the Ctrl-C handler and return the token the pipeline polls.
+///
+/// Best-effort: where signals are unavailable the handler fails to install and
+/// the run is simply not cancellable, which is better than refusing to start.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_ctrlc() -> download::Cancel {
+    if let Err(e) = ctrlc::set_handler(|| {
+        // The first press asks the pipeline to stop at the next segment or key
+        // page. A second press — or one during a transfer that stalls before any
+        // boundary — exits immediately, so the user is never stuck; it can leave
+        // the `.part` temp file behind, which is the price of a hard quit.
+        if CTRL_C.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+    }) {
+        eprintln!(
+            "warning: cannot install the Ctrl-C handler ({e}); \
+             the download will not be cancellable"
+        );
+    }
+    download::Cancel::new(|| CTRL_C.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 fn main() -> ExitCode {
@@ -336,10 +366,15 @@ fn run() -> ExitCode {
         json,
         progress_json,
         verify,
+        cancel: install_ctrlc(),
     })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            if matches!(e, Error::Cancelled) {
+                eprintln!("cancelled");
+            } else {
+                eprintln!("error: {e}");
+            }
             ExitCode::from(exit_code(&e))
         }
     }
@@ -377,6 +412,9 @@ struct Run {
     progress_json: bool,
     /// `--verify`: walk the decrypted MP4 and check its duration.
     verify: bool,
+    /// Set when the user interrupts the run, so the pipeline can stop between
+    /// segments and the temp-file sink can discard its partial output.
+    cancel: download::Cancel,
 }
 
 async fn execute(r: Run) -> Result<(), Error> {
@@ -579,6 +617,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             &keys,
             Some(&mut report),
             r.save_hax.is_some(),
+            Some(r.cancel.clone()),
         )
         .await?;
         if r.verify {
@@ -674,6 +713,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                     .map_err(|e| Error::Io(e.to_string()))
             },
             Some(&mut report),
+            Some(r.cancel.clone()),
         )
         .await?;
         writer.flush().map_err(|e| Error::Io(e.to_string()))?;
@@ -730,12 +770,11 @@ async fn execute(r: Run) -> Result<(), Error> {
     }
 
     let res = fetch_online(
+        &r,
         &source,
         seed,
         &mut report,
-        r.api_base.as_deref(),
         r.track_id.as_deref(),
-        net_of(&r),
         r.save_hax.is_some(),
     )
     .await?;
@@ -791,17 +830,18 @@ async fn execute(r: Run) -> Result<(), Error> {
 
 /// Download one online source — a page URL or a local HTML file — and decrypt it.
 ///
-/// Shared by single-source and batch modes. `initial_keys` seeds a resume; the
-/// HTML branch recovers the handshake from a saved page.
+/// Shared by single-source and batch modes. `r` supplies the API base, delay and
+/// cancellation; `initial_keys` seeds a resume, the HTML branch recovers the
+/// handshake from a saved page, and `track_id` narrows a multi-track page.
 async fn fetch_online(
+    r: &Run,
     source: &str,
     initial_keys: Option<KeyMap>,
     report: download::ProgressFn<'_>,
-    api_base: Option<&str>,
     track_id: Option<&str>,
-    net: Net<'_>,
     capture_hax: bool,
 ) -> Result<download::Downloaded, Error> {
+    let net = net_of(r);
     let api = api_client(net)?;
     let bulk = bulk_client(net)?;
     let clients = download::Clients {
@@ -811,17 +851,18 @@ async fn fetch_online(
     let mut opts = DownloadOptions {
         initial_keys,
         on_progress: Some(report),
-        api_base,
+        api_base: r.api_base.as_deref(),
         track_id,
         capture_hax,
         delay_ms: net.delay_ms,
+        cancel: Some(r.cancel.clone()),
     };
     if is_url(source) {
         clients.download_from_page(source, &mut opts).await
     } else {
         let html = std::fs::read_to_string(source)
             .map_err(|e| Error::Io(format!("cannot read {source}: {e}")))?;
-        let base = api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
+        let base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
         let mut hs = listen::handshake_from_html(&html, base, track_id)?
             .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
         hs.listen_key = listen::extract_listen_key(source);
@@ -931,6 +972,11 @@ async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Erro
     let mut failures = 0usize;
     for (i, source) in r.sources.iter().enumerate() {
         if let Err(e) = batch_one(r, source, &mut *report, &mut written, None, i + 1).await {
+            // A cancel applies to the whole run, not one item: stop instead of
+            // working down the remaining sources.
+            if matches!(e, Error::Cancelled) {
+                return Err(e);
+            }
             eprintln!("error: {source}: {e}");
             failures += 1;
         }
@@ -986,6 +1032,11 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
         )
         .await
         {
+            // As in [`run_batch`]: a cancel ends the run, it is not a per-track
+            // failure to continue past.
+            if matches!(e, Error::Cancelled) {
+                return Err(e);
+            }
             eprintln!("error: {source} track {id}: {e}");
             failures += 1;
         }
@@ -1013,16 +1064,7 @@ async fn batch_one(
     index: usize,
 ) -> Result<(), Error> {
     let started = hotaudio::clock::monotonic_ms();
-    let res = fetch_online(
-        source,
-        None,
-        report,
-        r.api_base.as_deref(),
-        track_id,
-        net_of(r),
-        false,
-    )
-    .await?;
+    let res = fetch_online(r, source, None, report, track_id, false).await?;
     if r.verify {
         verify_or_report(std::io::Cursor::new(&res.audio), res.duration_ms)?;
     }
@@ -2433,6 +2475,7 @@ proxy = "a\\b\tc"
         assert_eq!(exit_code(&Error::State("x".into())), code::PROTOCOL);
         assert_eq!(exit_code(&Error::Decode("hex")), code::PROTOCOL);
         assert_eq!(exit_code(&Error::Auth), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::Cancelled), code::CANCELLED);
     }
 
     #[test]

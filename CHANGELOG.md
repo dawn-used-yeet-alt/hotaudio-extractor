@@ -8,6 +8,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **Downloads can be cancelled.** A `download::Cancel` token, threaded through
+  `DownloadOptions::cancel` and the trailing `cancel` parameter of
+  `download_streaming` / `download_cached`, is polled between segments and before
+  each key page; a cancelled run unwinds with `Error::Cancelled` and no partial
+  output. The wasm exports take a trailing `AbortSignal` and reject with an
+  `AbortError`, so a page can abort `downloadTrack` when the user navigates away,
+  and the buffered bulk transfer aborts mid-stream rather than after the whole
+  container. The CLI installs a Ctrl-C handler, stops between segments, discards
+  the streamed temp file, and exits `130`.
+
 - **The wasm exports can select a track.** `downloadTrack`, `downloadTrackWith`
   and `trackKeys` take an optional trailing `trackId`, mirroring the CLI's
   `--track`; omit it for the page default, or pair it with `listTracks` to pick

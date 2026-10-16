@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| hotaudio::Error::Io(e.to_string()))
         },
         Some(&mut report),
+        None,
     ))?;
 
     sink.flush()?;
