@@ -6,6 +6,16 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-16
+
+Packaging and docs, no code changes. Release archives are named by platform
+(`hotaudio-download-linux-x86_64.tar.gz`) instead of by Rust target triple and
+carry no version, so `releases/latest/download/<archive>` is a permanent URL and
+the README's install commands no longer contain a tag that goes stale. The
+install section is rebuilt around those copy-paste commands and is now generated
+from `scripts/release-targets.tsv` — the same table the build matrix comes from —
+with CI failing if the two drift apart.
+
 ### Changed
 
 - **Release archives are named by platform, not by Rust target triple.** A
@@ -457,7 +467,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/tag/v1.0.0
