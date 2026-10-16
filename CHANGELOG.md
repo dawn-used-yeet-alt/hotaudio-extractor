@@ -243,6 +243,13 @@ All notable changes to this project are documented here. Format follows
   `rustls 0.23.45` (RUSTSEC-2026-0346 through 0349), fixed in 0.23.46, which
   `Cargo.lock` now pins.
 
+- **Release archives now carry their third-party notices.** Every dependency's
+  copyright and license text is bundled into `THIRD_PARTY_LICENSES.yml`
+  (generated from `Cargo.lock`) and staged into each archive next to `LICENSE`;
+  CI regenerates it and fails if it drifts. This meets the attribution terms of
+  the MIT, Apache-2.0, ISC, BSD and other permissive licenses the binaries link,
+  which the `cargo-deny` policy check alone did not.
+
 ## [1.1.0] - 2026-10-12
 
 The browser build. One implementation, two transports: the pipeline is `async`

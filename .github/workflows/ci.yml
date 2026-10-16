@@ -64,6 +64,36 @@ jobs:
       - name: Check advisories, licenses, bans and sources
         run: cargo deny check
 
+  # Attribution: the copyright notices and license texts of everything linked
+  # into the binaries have to travel with them. `cargo-deny` above proves the
+  # licenses are permissive; this proves the generated notice still matches the
+  # locked graph, so a dependency bump cannot silently leave it stale.
+  licenses:
+    name: licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Not carried by `install-action`, and the release asset publishes no
+      # checksum, so the digest is pinned here to make the download verifiable.
+      - name: Install cargo-bundle-licenses
+        run: |
+          set -euo pipefail
+          url=https://github.com/sstadick/cargo-bundle-licenses/releases/download/v4.2.0/cargo-bundle-licenses-linux-amd64
+          bin="$HOME/.cargo/bin/cargo-bundle-licenses"
+          curl -fsSL "$url" -o "$bin"
+          echo "4208af8db7a34b427068211e73cdd299b577245601f68c5a1c3af85e4fa4cc7c  $bin" | sha256sum -c -
+          chmod +x "$bin"
+      # The tool reads license files from the crate sources, which
+      # `cargo metadata` alone does not download.
+      - name: Fetch crate sources
+        run: cargo fetch --locked
+      - name: Regenerate the third-party notices
+        run: cargo bundle-licenses --format yaml --output THIRD_PARTY_LICENSES.yml
+      - name: Check for drift
+        run: git diff --exit-code -- THIRD_PARTY_LICENSES.yml
+
   # The crate ships natively on Windows and macOS. `sanitize`, the
   # `--stream-to` temp-file rename and path handling differ per platform, and
   # the ubuntu-only gates above cannot see a bug that only appears there. Run
