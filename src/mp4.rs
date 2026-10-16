@@ -76,7 +76,7 @@ pub fn verify(mut reader: impl Read) -> Result<Info> {
             n => Some(u64::from(n - 8)),
         };
 
-        match kind {
+        match &kind {
             b"moov" => {
                 saw_moov = true;
                 let body = read_box_body(&mut reader, payload_len, &kind)?;
@@ -240,7 +240,7 @@ fn read_moov(
     movie_duration_ms: &mut Option<u64>,
 ) -> Result<()> {
     for (kind, range) in children(body)? {
-        match kind {
+        match &kind {
             b"mvhd" => {
                 if let Some((timescale, duration)) = timescale_and_duration(&body[range]) {
                     if let Some(ms) = to_ms(duration, timescale).filter(|ms| *ms > 0) {
