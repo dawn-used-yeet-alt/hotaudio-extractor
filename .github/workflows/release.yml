@@ -25,7 +25,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
       - id: resolve
@@ -52,7 +52,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
@@ -133,7 +133,7 @@ jobs:
     steps:
       # Always build the tagged source, never the current default branch: a
       # manual re-run of an existing tag must reproduce that tag's binaries.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
 
@@ -288,7 +288,7 @@ jobs:
     needs: [check, notices]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
 
@@ -339,7 +339,7 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
