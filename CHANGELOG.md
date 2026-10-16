@@ -8,6 +8,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **Runnable `examples/`.** `download_track`, `stream_track` and
+  `decrypt_offline` show the library API for the buffered, streamed and offline
+  paths, and the README now covers `--track`, `--api-base`, the saved-keys
+  envelope round-trip and what to do about a failed or truncated download.
+
 - **A CLI config file.** `hotaudio-download` reads defaults from a flat TOML
   file (`$XDG_CONFIG_HOME/hotaudio/config.toml`, or `--config PATH`, or
   `$HOTAUDIO_CONFIG`). Recognised keys: `output_dir`, `filename_template`,
