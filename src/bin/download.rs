@@ -1855,25 +1855,31 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Absent means the library defaults.
         assert_eq!(
-            retry_from(&a(&[])).unwrap().attempts,
+            retry_from(&a(&[]), None).unwrap().attempts,
             Retry::default().attempts
         );
         // `--retries N` is N retries after the first attempt.
-        assert_eq!(retry_from(&a(&["--retries", "0"])).unwrap().attempts, 1);
-        assert_eq!(retry_from(&a(&["--retries", "5"])).unwrap().attempts, 6);
-        assert!(retry_from(&a(&["--retries", "x"])).is_err());
-
-        assert_eq!(timeout_from(&a(&[])).unwrap(), None);
         assert_eq!(
-            timeout_from(&a(&["--timeout", "60"])).unwrap(),
+            retry_from(&a(&["--retries", "0"]), None).unwrap().attempts,
+            1
+        );
+        assert_eq!(
+            retry_from(&a(&["--retries", "5"]), None).unwrap().attempts,
+            6
+        );
+        assert!(retry_from(&a(&["--retries", "x"]), None).is_err());
+
+        assert_eq!(timeout_from(&a(&[]), None).unwrap(), None);
+        assert_eq!(
+            timeout_from(&a(&["--timeout", "60"]), None).unwrap(),
             Some(60_000)
         );
-        assert!(timeout_from(&a(&["--timeout", "0"])).is_err());
-        assert!(timeout_from(&a(&["--timeout", "soon"])).is_err());
+        assert!(timeout_from(&a(&["--timeout", "0"]), None).is_err());
+        assert!(timeout_from(&a(&["--timeout", "soon"]), None).is_err());
 
-        assert_eq!(delay_from(&a(&[])).unwrap(), 0);
-        assert_eq!(delay_from(&a(&["--delay", "250"])).unwrap(), 250);
-        assert!(delay_from(&a(&["--delay", "later"])).is_err());
+        assert_eq!(delay_from(&a(&[]), None).unwrap(), 0);
+        assert_eq!(delay_from(&a(&["--delay", "250"]), None).unwrap(), 250);
+        assert!(delay_from(&a(&["--delay", "later"]), None).is_err());
     }
 
     #[test]
