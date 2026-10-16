@@ -42,6 +42,10 @@ available with --all-tracks.
 Options:
   --out PATH        write the decrypted audio here ('-' writes to stdout)
                     (default: the track title, sanitised, as .m4a)
+  --filename-template PATTERN
+                    name title-derived outputs from PATTERN: {title}, {index}
+                    (1-based) and {ext} are substituted, and '/' separates
+                    directories. An explicit --out or --stream-to wins
   --input FILE      read one source per line from FILE ('-' is stdin); blank
                     lines are skipped
   --stream-to PATH  stream segments to PATH instead of buffering: peak memory of
@@ -89,6 +93,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--progress",
     "--save-hax",
     "--input",
+    "--filename-template",
 ];
 
 /// Flags that name a single output or source, so they cannot be combined with
@@ -163,6 +168,7 @@ fn run() -> ExitCode {
     }
 
     let out = flag(&args, "--out");
+    let filename_template = flag(&args, "--filename-template");
     let stream_to = flag(&args, "--stream-to");
     let save_keys = flag(&args, "--save-keys");
     let save_hax = flag(&args, "--save-hax");
@@ -212,6 +218,7 @@ fn run() -> ExitCode {
     match hotaudio::block_on(execute(Run {
         sources,
         out,
+        filename_template,
         stream_to,
         save_keys,
         save_hax,
@@ -240,6 +247,7 @@ fn run() -> ExitCode {
 struct Run {
     sources: Vec<String>,
     out: Option<String>,
+    filename_template: Option<String>,
     stream_to: Option<String>,
     save_keys: Option<String>,
     save_hax: Option<String>,
@@ -278,6 +286,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     let quiet = r.quiet;
     let progress_json = r.progress_json;
     let clobber = r.clobber;
+    let template = r.filename_template.clone();
     let mut report = move |p: Progress| {
         if quiet {
             return;
@@ -321,7 +330,9 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
         write_saved_keys(&r.save_keys, "", title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| stem(hax_path));
-        let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
+        let out = r
+            .out
+            .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
         write_file(&out, &audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, "", Some(&title));
@@ -463,7 +474,9 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
         write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
-        let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
+        let out = r
+            .out
+            .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
         write_file(&out, &res.audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, &url, Some(&title));
@@ -589,7 +602,9 @@ async fn execute(r: Run) -> Result<(), Error> {
     }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys, clobber)?;
-    let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
+    let out = r
+        .out
+        .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
     write_file(&out, &res.audio, clobber)?;
     if r.verbose {
         eprintln!(
@@ -666,8 +681,8 @@ async fn fetch_online(
 async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Error> {
     let mut written: HashSet<String> = HashSet::new();
     let mut failures = 0usize;
-    for source in &r.sources {
-        if let Err(e) = batch_one(r, source, &mut *report, &mut written, None).await {
+    for (i, source) in r.sources.iter().enumerate() {
+        if let Err(e) = batch_one(r, source, &mut *report, &mut written, None, i + 1).await {
             eprintln!("error: {source}: {e}");
             failures += 1;
         }
@@ -712,8 +727,17 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
 
     let mut written: HashSet<String> = HashSet::new();
     let mut failures = 0usize;
-    for id in &ids {
-        if let Err(e) = batch_one(r, source, &mut *report, &mut written, Some(id.as_str())).await {
+    for (i, id) in ids.iter().enumerate() {
+        if let Err(e) = batch_one(
+            r,
+            source,
+            &mut *report,
+            &mut written,
+            Some(id.as_str()),
+            i + 1,
+        )
+        .await
+        {
             eprintln!("error: {source} track {id}: {e}");
             failures += 1;
         }
@@ -738,11 +762,12 @@ async fn batch_one(
     report: download::ProgressFn<'_>,
     written: &mut HashSet<String>,
     track_id: Option<&str>,
+    index: usize,
 ) -> Result<(), Error> {
     let started = hotaudio::clock::monotonic_ms();
     let res = fetch_online(source, None, report, r.api_base.as_deref(), track_id, false).await?;
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
-    let out = format!("{}.m4a", sanitize(&title));
+    let out = derived_name(r.filename_template.as_deref(), &title, index);
     if !written.insert(out.clone()) {
         return Err(Error::State(format!(
             "output {out} was already written by an earlier source; rename it and retry"
@@ -936,6 +961,10 @@ fn validate(args: &[String]) -> Result<(), String> {
     }
     if has_flag(args, "--all-tracks") && has_flag(args, "--track") {
         return Err("--all-tracks downloads every track; drop --track".into());
+    }
+    let template = flag(args, "--filename-template").unwrap_or_default();
+    if let Some(message) = template_error(&template) {
+        return Err(message);
     }
     let mut i = 0;
     while i < args.len() {
@@ -1145,18 +1174,148 @@ fn print_result(dest: &str, line: &str) {
     }
 }
 
-/// Strip characters that are illegal in filenames.
+/// Windows device names that are unusable as file names, extension or not.
+const RESERVED_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Longest stem [`sanitize`] emits, before an extension. Leaves room under the
+/// common 255-byte filename limit for `.m4a` and the truncation suffix.
+const MAX_STEM: usize = 200;
+
+/// Placeholders accepted by `--filename-template`.
+const TEMPLATE_FIELDS: &[&str] = &["title", "index", "ext"];
+
+/// Turn a title into a safe, single path component.
+///
+/// Removes characters that are illegal on Windows, macOS or Linux and all
+/// control characters; drops leading/trailing dots and spaces (which Windows
+/// forbids and which would hide the file on Unix); escapes Windows reserved
+/// device names; and caps the length with a deterministic `~<hash>` suffix so
+/// two long titles do not collapse to one name.
 fn sanitize(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .filter(|c| !matches!(c, '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|' | ':')
+        })
         .collect();
-    let trimmed = cleaned.trim();
-    if trimmed.is_empty() {
-        "hotaudio-track".to_string()
+    let trimmed = cleaned.trim_matches(['.', ' ']);
+    let base = if trimmed.is_empty() {
+        "hotaudio-track"
     } else {
-        trimmed.to_string()
+        trimmed
+    };
+    // A reserved name is unusable even with an extension (`CON.m4a`), so prefix.
+    let base = if is_reserved(base) {
+        format!("_{base}")
+    } else {
+        base.to_string()
+    };
+    cap_length(&base)
+}
+
+/// Whether `name` is a Windows reserved device name, ignoring any extension.
+fn is_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+    RESERVED_NAMES.contains(&stem.as_str())
+}
+
+/// Cap `stem` to [`MAX_STEM`] bytes, appending `~<8 hex>` of the original when
+/// it has to be cut. The suffix keeps the mapping deterministic and collision-
+/// resistant instead of silently truncating.
+fn cap_length(stem: &str) -> String {
+    if stem.len() <= MAX_STEM {
+        return stem.to_string();
     }
+    // "~" + 8 hex chars of headroom.
+    let keep = MAX_STEM - 9;
+    let hash = hotaudio::crypto::hex_encode(&hotaudio::crypto::sha256(stem.as_bytes()));
+    format!("{}~{}", truncate_bytes(stem, keep), &hash[..8])
+}
+
+/// The longest prefix of `s` within `max` bytes, cut on a char boundary.
+fn truncate_bytes(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Reject a `--filename-template` with an unknown or unclosed placeholder, so a
+/// typo fails before any network work.
+fn template_error(template: &str) -> Option<String> {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return Some(format!("unclosed '{{' in --filename-template: {template}"));
+        };
+        let name = &after[..close];
+        if !TEMPLATE_FIELDS.contains(&name) {
+            return Some(format!(
+                "unknown placeholder {{{name}}} in --filename-template \
+                 (known: {{title}}, {{index}}, {{ext}})"
+            ));
+        }
+        rest = &after[close + 1..];
+    }
+    None
+}
+
+/// Expand a template validated by [`template_error`]. `{title}` is sanitised
+/// here, before the result is split into path components, so a title can never
+/// introduce a directory. Unknown placeholders cannot reach here and are kept
+/// verbatim if they somehow do.
+fn expand_template(template: &str, title: &str, index: usize) -> String {
+    let mut out = String::with_capacity(template.len() + title.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(after);
+            return out;
+        };
+        match &after[..close] {
+            "title" => out.push_str(&sanitize(title)),
+            "index" => out.push_str(&index.to_string()),
+            "ext" => out.push_str("m4a"),
+            other => {
+                out.push('{');
+                out.push_str(other);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The output path for a title-derived download.
+///
+/// `--out` is handled by the caller; this only names the file when no path was
+/// given. With a template, each `/`-separated component is sanitised (so a
+/// title cannot inject a path) and the last gets the `.m4a` extension; without
+/// one, the sanitised title is used. `index` is 1-based.
+fn derived_name(template: Option<&str>, title: &str, index: usize) -> String {
+    let Some(template) = template else {
+        return format!("{}.m4a", sanitize(title));
+    };
+    let expanded = expand_template(template, title, index);
+    let mut parts: Vec<String> = expanded.split('/').map(sanitize).collect();
+    // `split` always yields at least one item, so `parts` is non-empty.
+    let last = parts.len() - 1;
+    if !parts[last].ends_with(".m4a") {
+        parts[last].push_str(".m4a");
+    }
+    parts.join("/")
 }
 
 /// Filename stem from a path, without its extension.
@@ -1186,6 +1345,7 @@ mod tests {
         assert!(validate(&["--all-tracks".into()]).is_ok());
         assert!(validate(&["--no-clobber".into()]).is_ok());
         assert!(validate(&["--force".into()]).is_ok());
+        assert!(validate(&["--filename-template".into(), "{index}-{title}".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1254,6 +1414,13 @@ mod tests {
         assert!(validate(&["--all-tracks".into(), "--track".into(), "t1".into()]).is_err());
         assert!(validate(&["--all-tracks".into(), "--track=t1".into()]).is_err());
         assert!(validate(&["--all-tracks".into(), "--json".into()]).is_ok());
+    }
+
+    #[test]
+    fn filename_template_rejects_unknown_placeholders() {
+        let err = validate(&["--filename-template".into(), "{nope}".into()]).unwrap_err();
+        assert!(err.contains("nope"), "got {err}");
+        assert!(validate(&["--filename-template".into(), "{title}".into()]).is_ok());
     }
 
     #[test]
@@ -1419,6 +1586,11 @@ mod tests {
             positionals(&a(&["--all-tracks", "https://x/u/a/b"])),
             vec![url()]
         );
+        // The template value is skipped like any other flag value.
+        assert_eq!(
+            positionals(&a(&["--filename-template", "{title}", "https://x/u/a/b"])),
+            vec![url()]
+        );
         assert!(positionals(&a(&["--list-tracks"])).is_empty());
         // Several sources are collected in order.
         assert_eq!(
@@ -1443,6 +1615,58 @@ mod tests {
         assert_eq!(sanitize("a/b*c"), "abc");
         assert_eq!(sanitize("   "), "hotaudio-track");
         assert_eq!(sanitize("Track One"), "Track One");
+    }
+
+    #[test]
+    fn sanitize_strips_control_and_edge_characters() {
+        assert_eq!(sanitize("a\u{0}b\u{1f}c"), "abc");
+        assert_eq!(sanitize("a:b|c"), "abc");
+        assert_eq!(sanitize("...hidden"), "hidden");
+        assert_eq!(sanitize("trailing. "), "trailing");
+        assert_eq!(sanitize("... "), "hotaudio-track");
+    }
+
+    #[test]
+    fn sanitize_escapes_reserved_names() {
+        assert_eq!(sanitize("con"), "_con");
+        assert_eq!(sanitize("NUL.m4a"), "_NUL.m4a");
+        assert_eq!(sanitize("com9"), "_com9");
+        // A longer name that merely starts with a reserved one is fine.
+        assert_eq!(sanitize("console"), "console");
+    }
+
+    #[test]
+    fn sanitize_caps_long_names_deterministically() {
+        let long = "a".repeat(400);
+        let once = sanitize(&long);
+        assert!(once.len() <= MAX_STEM, "len {}", once.len());
+        assert_eq!(once, sanitize(&long));
+        assert!(once.contains('~'));
+        // Different long inputs do not collapse to the same name.
+        let other = format!("{}b", "a".repeat(399));
+        assert_ne!(sanitize(&other), once);
+    }
+
+    #[test]
+    fn template_rejects_unknown_and_unclosed_placeholders() {
+        assert!(template_error("{index} - {title}.{ext}").is_none());
+        assert!(template_error("plain").is_none());
+        assert!(template_error("{nope}").is_some());
+        assert!(template_error("{title").is_some());
+    }
+
+    #[test]
+    fn derived_name_expands_placeholders() {
+        assert_eq!(derived_name(None, "Track One", 1), "Track One.m4a");
+        assert_eq!(
+            derived_name(Some("{index} - {title}"), "Song", 2),
+            "2 - Song.m4a"
+        );
+        assert_eq!(derived_name(Some("{ext}/{index}"), "x", 3), "m4a/3.m4a");
+        // An explicit extension is not doubled.
+        assert_eq!(derived_name(Some("{title}.m4a"), "Song", 1), "Song.m4a");
+        // A title cannot inject a directory separator.
+        assert_eq!(derived_name(Some("{title}"), "a/b", 1), "ab.m4a");
     }
 
     #[test]
