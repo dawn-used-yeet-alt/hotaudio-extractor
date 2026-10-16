@@ -27,6 +27,11 @@ All notable changes to this project are documented here. Format follows
   envelope is enough to replay a track. The offline decrypt is buffered, so
   `onFragment` fires once with the whole MP4.
 
+- **`signPayloadAt` pins the clock.** The browser export `signPayload` always
+  stamped the current time; `signPayloadAt(payload, timestampSecs)` reproduces
+  the signer at an explicit Unix time, so a host can diff against the golden
+  vectors deterministically.
+
 - **`--verify` validates the decrypted output.** The always-on check only
   confirms the MP4 `ftyp` signature; `hotaudio-download --verify` additionally
   walks the box tree (`mp4::verify`), requires an `ftyp`, a `moov` and media,

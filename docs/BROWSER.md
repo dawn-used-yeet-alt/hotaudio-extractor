@@ -106,6 +106,8 @@ const blob = new Blob(parts, { type: info.mime });
   whole MP4.
 - `signPayload(payload)` — the `X-Signature` for a payload right now, so a host
   can diff against the reference signer in the browser.
+- `signPayloadAt(payload, timestampSecs)` — the same signature at a pinned Unix
+  time, for reproducing a golden vector deterministically.
 - `listTracks(htmlOrUrlHtml)` — `[{ id, key, title }, …]`. Takes page HTML, so a
   host that already fetched the page need not fetch it twice.
 
