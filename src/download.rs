@@ -18,7 +18,7 @@ use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyTree};
 use crate::http::Client;
 use crate::listen::{self, Handshake, ListenResponse};
-use crate::range::{self, HttpRangeSource, RangeSource};
+use crate::range::{self, HttpRangeSource};
 
 /// Progress phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
