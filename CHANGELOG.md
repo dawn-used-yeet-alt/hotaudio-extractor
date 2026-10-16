@@ -6,6 +6,11 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-16
+
+Docs and packaging, no code changes. Installing is now one line, and the README
+is a landing page again.
+
 ### Added
 
 - **`install.sh`.** A one-line installer attached to every release:
@@ -487,7 +492,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.0.0...v1.1.0
