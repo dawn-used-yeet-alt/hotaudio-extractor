@@ -54,6 +54,10 @@ use crate::{Error, Result};
 /// `on_progress`, if given, is called with `(phase, loaded, total)` where phase
 /// is `"resolving"`, `"fetching"` or `"decrypting"`.
 ///
+/// `track_id`, if given, selects a track on a multi-track page, the same id the
+/// CLI's `--track` accepts and `listTracks` reports; omit it for the page
+/// default. A page that does not carry the id is rejected.
+///
 /// Resolves with `{ title, durationSecs, codec, mime, bytes, segmentCount,
 /// keyPages, haxUrl, keysJson }`, or rejects with the pipeline's message.
 ///
@@ -64,9 +68,10 @@ pub async fn download_track(
     page_url: String,
     on_fragment: Function,
     on_progress: Option<Function>,
+    track_id: Option<String>,
 ) -> std::result::Result<JsValue, JsValue> {
     warn_if_not_canonical(&page_url);
-    download_track_with(&page_url, on_fragment, on_progress, None, None).await
+    download_track_with(&page_url, on_fragment, on_progress, None, None, track_id).await
 }
 
 /// As `downloadTrack`, with an explicit `fetch` and/or URL rewrite.
@@ -76,6 +81,8 @@ pub async fn download_track(
 /// fetch, which is how a proxy deployment points the client at its own origin
 /// without touching the caller's code. It must return a string; returning
 /// anything else leaves the URL unchanged.
+///
+/// `track_id` is the same optional selection `downloadTrack` takes.
 #[wasm_bindgen(js_name = downloadTrackWith)]
 pub async fn download_track_with(
     page_url: &str,
@@ -83,6 +90,7 @@ pub async fn download_track_with(
     on_progress: Option<Function>,
     fetch_impl: Option<Function>,
     rewrite: Option<Function>,
+    track_id: Option<String>,
 ) -> std::result::Result<JsValue, JsValue> {
     let client = match fetch_impl {
         Some(f) => Client::api().with_fetch(f.into()),
@@ -92,7 +100,7 @@ pub async fn download_track_with(
         Some(f) => client.with_url_rewrite(move |url| call_string(&f, url, url)),
         None => client,
     };
-    stream(&client, page_url, &on_fragment, on_progress)
+    stream(&client, page_url, &on_fragment, on_progress, track_id.as_deref())
         .await
         .map_err(js_error)
 }
@@ -100,11 +108,15 @@ pub async fn download_track_with(
 /// The handshake, the first key branch and the `.hax` URL, without any audio.
 ///
 /// Cheaper than `downloadTrack` when the point is to save keys for a later
-/// offline fetch. Resolves with `{ title, haxUrl, keysJson }`.
+/// offline fetch. `track_id` selects a track on a multi-track page, as in
+/// `downloadTrack`. Resolves with `{ title, haxUrl, keysJson }`.
 #[wasm_bindgen(js_name = trackKeys)]
-pub async fn track_keys(page_url: String) -> std::result::Result<JsValue, JsValue> {
+pub async fn track_keys(
+    page_url: String,
+    track_id: Option<String>,
+) -> std::result::Result<JsValue, JsValue> {
     warn_if_not_canonical(&page_url);
-    let bundle = download::fetch_keys_only(&Client::api(), &page_url, None, None, 0)
+    let bundle = download::fetch_keys_only(&Client::api(), &page_url, None, track_id.as_deref(), 0)
         .await
         .map_err(js_error)?;
     let title = bundle.title.clone();
@@ -152,8 +164,9 @@ async fn stream(
     page_url: &str,
     on_fragment: &Function,
     on_progress: Option<Function>,
+    track_id: Option<&str>,
 ) -> Result<JsValue> {
-    let hs = listen::load_handshake(client, page_url, crate::HOTAUDIO_API_BASE, None).await?;
+    let hs = listen::load_handshake(client, page_url, crate::HOTAUDIO_API_BASE, track_id).await?;
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
 
     let sink = on_fragment.clone();

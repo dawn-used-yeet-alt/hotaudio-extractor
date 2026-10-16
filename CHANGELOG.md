@@ -8,6 +8,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **The wasm exports can select a track.** `downloadTrack`, `downloadTrackWith`
+  and `trackKeys` take an optional trailing `trackId`, mirroring the CLI's
+  `--track`; omit it for the page default, or pair it with `listTracks` to pick
+  from a multi-track page. An id the page does not carry is rejected instead of
+  silently downloading the first track.
+
 - **`--verify` validates the decrypted output.** The always-on check only
   confirms the MP4 `ftyp` signature; `hotaudio-download --verify` additionally
   walks the box tree (`mp4::verify`), requires an `ftyp`, a `moov` and media,
