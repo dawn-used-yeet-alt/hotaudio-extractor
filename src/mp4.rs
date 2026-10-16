@@ -222,13 +222,13 @@ fn box_at(body: &[u8], pos: usize) -> Result<([u8; 4], std::ops::Range<usize>)> 
 }
 
 /// Every box directly inside a complete container body, in order.
-fn children(body: &[u8]) -> Result<Vec<([u8; 4], std::ops::Range<usize>)>> {
+fn children(body: &[u8]) -> Result<Vec<([u8; 4], &[u8])>> {
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < body.len() {
         let (kind, range) = box_at(body, pos)?;
         pos = range.end;
-        out.push((kind, range));
+        out.push((kind, &body[range]));
     }
     Ok(out)
 }
@@ -239,25 +239,23 @@ fn read_moov(
     media_timescale: &mut Option<u64>,
     movie_duration_ms: &mut Option<u64>,
 ) -> Result<()> {
-    for (kind, range) in children(body)? {
+    for (kind, child) in children(body)? {
         match &kind {
             b"mvhd" => {
-                if let Some((timescale, duration)) = timescale_and_duration(&body[range]) {
+                if let Some((timescale, duration)) = timescale_and_duration(child) {
                     if let Some(ms) = to_ms(duration, timescale).filter(|ms| *ms > 0) {
                         *movie_duration_ms = Some(ms);
                     }
                 }
             }
             b"trak" => {
-                for (mdia, r) in children(&body[range])? {
+                for (mdia, mdia_body) in children(child)? {
                     if &mdia != b"mdia" {
                         continue;
                     }
-                    for (mdhd, r2) in children(&body[range][r])? {
+                    for (mdhd, mdhd_body) in children(mdia_body)? {
                         if &mdhd == b"mdhd" {
-                            if let Some((timescale, _)) =
-                                timescale_and_duration(&body[range][r][r2])
-                            {
+                            if let Some((timescale, _)) = timescale_and_duration(mdhd_body) {
                                 if timescale > 0 {
                                     *media_timescale = Some(timescale);
                                 }
@@ -301,22 +299,21 @@ fn to_ms(ticks: u64, timescale: u64) -> Option<u64> {
 /// Sum the sample durations of every `trun` in a `moof`, in media ticks.
 fn fragment_ticks_of(moof: &[u8]) -> Result<u64> {
     let mut total = 0u64;
-    for (kind, range) in children(moof)? {
+    for (kind, traf) in children(moof)? {
         if &kind != b"traf" {
             continue;
         }
-        let traf = &moof[range];
         // The fragment header's default applies to any `trun` that does not
         // carry per-sample durations.
         let mut default_duration = None;
-        for (kind, r) in children(traf)? {
+        for (kind, body) in children(traf)? {
             if &kind == b"tfhd" {
-                default_duration = tfhd_default_duration(&traf[r]);
+                default_duration = tfhd_default_duration(body);
             }
         }
-        for (kind, r) in children(traf)? {
+        for (kind, body) in children(traf)? {
             if &kind == b"trun" {
-                total = total.saturating_add(trun_ticks(&traf[r], default_duration)?);
+                total = total.saturating_add(trun_ticks(body, default_duration)?);
             }
         }
     }
