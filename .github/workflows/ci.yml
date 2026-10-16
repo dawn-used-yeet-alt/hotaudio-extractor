@@ -256,3 +256,18 @@ jobs:
             echo "::error::the installer claimed to support an unknown platform"; exit 1
           fi
           sh -n scripts/install.sh
+      # Windows has no shell script to parse, so the README spells its download
+      # out by hand. Pin that too: every archive the README names must be one the
+      # table builds.
+      - name: Check the README names real archives
+        run: |
+          set -euo pipefail
+          slugs=$(awk -F'\t' '!/^#/ && NF { print $2 }' scripts/release-targets.tsv)
+          for name in $(grep -ohE 'hotaudio-download-[a-z0-9_.-]+\.(tar\.gz|zip)' README.md | sort -u); do
+            slug=${name#hotaudio-download-}
+            slug=${slug%.tar.gz}
+            slug=${slug%.zip}
+            printf '%s\n' "$slugs" | grep -qx "$slug" \
+              || { echo "::error::README names $name, which is not in release-targets.tsv"; exit 1; }
+          done
+          echo "README archive names are current"

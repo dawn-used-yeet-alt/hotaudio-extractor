@@ -6,6 +6,15 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Windows instructions are in the README.** `install.sh` is POSIX, so the
+  README now carries a PowerShell download/unpack/run block; a CI step pins the
+  archive it names against `scripts/release-targets.tsv`.
+- **The release page is a release page again.** `release-notes.md` had grown
+  into a near-copy of the README; it is now a short header — install one-liner,
+  one usage example, links — above GitHub's generated changelog.
+
 ## [1.2.2] - 2026-10-16
 
 Docs and packaging, no code changes. Installing is now one line, and the README
