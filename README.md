@@ -55,6 +55,12 @@ To see every track on a page:
 hotaudio-download "https://hotaudio.net/u/user/track-slug" --list-tracks
 ```
 
+To download every track on a page, each to its own file:
+
+```bash
+hotaudio-download "https://hotaudio.net/u/user/album" --all-tracks
+```
+
 ### Run it from anywhere
 
 Put the binary on your `PATH` and you can call `hotaudio-download` from any folder.

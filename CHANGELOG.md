@@ -81,6 +81,14 @@ All notable changes to this project are documented here. Format follows
   that sanitise to the same filename make the later source fail instead of
   silently overwriting the earlier one.
 
+- **`--all-tracks`, download every track on one page.** Track ids come from
+  `listen::list_tracks` and are fetched in page order, each with its own
+  handshake and its own title-derived file. It continues past a failing track
+  and exits non-zero if any failed. It takes exactly one source and conflicts
+  with `--track`; like several sources, it rejects the single-path flags
+  (`--out`, `--stream-to`, `--save-keys`, `--save-hax`, `--keys`, `--hax`,
+  `--keys-only`, `--list-tracks`), since each track needs its own path.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value

@@ -36,7 +36,8 @@ Usage:
 
 Several sources may be given; they are processed in order and the run exits
 non-zero if any fails. Flags that name one path (--out, --stream-to, --save-keys,
---save-hax, --keys-only, --list-tracks) require a single source.
+--save-hax, --keys-only, --list-tracks) require a single source and are not
+available with --all-tracks.
 
 Options:
   --out PATH        write the decrypted audio here ('-' writes to stdout)
@@ -57,6 +58,7 @@ Options:
   --hax PATH        decrypt this local .hax container (fully offline)
   --hax-url URL     container URL for cached mode, when the envelope has none
   --track ID        select a track by id on a multi-track page
+  --all-tracks      download every track on the page, sequentially
   --api-base URL    override the listen API base (default: https://hotaudio.net)
   -q, --quiet       suppress the progress reporter
   -v, --verbose     report key-page counts and timing
@@ -112,6 +114,7 @@ const BOOL_FLAGS: &[&str] = &[
     "-v",
     "--json",
     "--keys-only",
+    "--all-tracks",
 ];
 
 fn main() -> ExitCode {
@@ -165,6 +168,7 @@ fn run() -> ExitCode {
     let api_base = flag(&args, "--api-base");
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let keys_only = args.iter().any(|a| a == "--keys-only");
+    let all_tracks = args.iter().any(|a| a == "--all-tracks");
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let json = args.iter().any(|a| a == "--json");
@@ -184,8 +188,14 @@ fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Some(name) = multi_source_conflict(&sources, &args) {
-        eprintln!("error: {name} cannot be used with multiple sources; each needs its own path\n");
+    if all_tracks && sources.len() != 1 {
+        eprintln!("error: --all-tracks needs exactly one page URL or HTML file\n");
+        return ExitCode::FAILURE;
+    }
+    if let Some(name) = multi_output_conflict(&sources, all_tracks, &args) {
+        eprintln!(
+            "error: {name} names one path; it cannot be used with several sources or --all-tracks\n"
+        );
         return ExitCode::FAILURE;
     }
 
@@ -202,6 +212,7 @@ fn run() -> ExitCode {
         api_base,
         list_tracks,
         keys_only,
+        all_tracks,
         quiet,
         verbose,
         json,
@@ -228,6 +239,7 @@ struct Run {
     api_base: Option<String>,
     list_tracks: bool,
     keys_only: bool,
+    all_tracks: bool,
     quiet: bool,
     verbose: bool,
     json: bool,
@@ -269,6 +281,11 @@ async fn execute(r: Run) -> Result<(), Error> {
     // the plain download path is reachable here.
     if r.sources.len() >= 2 {
         return run_batch(&r, &mut report).await;
+    }
+
+    // ---- Every track on one page, each to its own title-derived file ----
+    if r.all_tracks {
+        return run_all_tracks(&r, &mut report).await;
     }
 
     // ---- Offline: local .hax + saved keys, no network ----
@@ -630,7 +647,7 @@ async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Erro
     let mut written: HashSet<String> = HashSet::new();
     let mut failures = 0usize;
     for source in &r.sources {
-        if let Err(e) = batch_one(r, source, &mut *report, &mut written).await {
+        if let Err(e) = batch_one(r, source, &mut *report, &mut written, None).await {
             eprintln!("error: {source}: {e}");
             failures += 1;
         }
@@ -644,26 +661,66 @@ async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Erro
     Ok(())
 }
 
-/// One source in a batch: download it and write its title-derived file.
+/// Download every track on one page, in page order, continuing past failures.
 ///
-/// Tracking written paths turns a title collision into a clear per-source error
+/// Track ids come from `listen::list_tracks`; each is fetched with its own
+/// handshake. Downloads stay sequential, since the server serialises per track
+/// (`docs/PROTOCOL.md` §7).
+async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Error> {
+    let Some(source) = r.sources.first() else {
+        return Err(Error::Protocol(
+            "--all-tracks needs a page URL or HTML file".into(),
+        ));
+    };
+    let html = if is_url(source) {
+        let client = Client::api();
+        let resp = client.request("GET", source, &[], None).await?;
+        if !resp.ok() {
+            return Err(Error::Http(format!("page returned {}", resp.status)));
+        }
+        resp.text()
+    } else {
+        std::fs::read_to_string(source)
+            .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?
+    };
+    let Some(tracks) = listen::list_tracks(&html).filter(|t| !t.is_empty()) else {
+        return Err(Error::State(
+            "no tracks found (missing or undecryptable page state)".into(),
+        ));
+    };
+    let ids: Vec<String> = tracks.iter().map(|(id, _, _)| id.clone()).collect();
+
+    let mut written: HashSet<String> = HashSet::new();
+    let mut failures = 0usize;
+    for id in &ids {
+        if let Err(e) = batch_one(r, source, &mut *report, &mut written, Some(id.as_str())).await {
+            eprintln!("error: {source} track {id}: {e}");
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        return Err(Error::Http(format!(
+            "{failures} of {} tracks failed",
+            ids.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Download one item of a batch — a source, optionally narrowed to a track — and
+/// write its title-derived file.
+///
+/// Tracking written paths turns a title collision into a clear per-item error
 /// instead of a silent overwrite.
 async fn batch_one(
     r: &Run,
     source: &str,
     report: download::ProgressFn<'_>,
     written: &mut HashSet<String>,
+    track_id: Option<&str>,
 ) -> Result<(), Error> {
     let started = hotaudio::clock::monotonic_ms();
-    let res = fetch_online(
-        source,
-        None,
-        report,
-        r.api_base.as_deref(),
-        r.track_id.as_deref(),
-        false,
-    )
-    .await?;
+    let res = fetch_online(source, None, report, r.api_base.as_deref(), track_id, false).await?;
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     let out = format!("{}.m4a", sanitize(&title));
     if !written.insert(out.clone()) {
@@ -815,9 +872,15 @@ fn single_source_flag(args: &[String]) -> Option<&'static str> {
         .find(|f| has_flag(args, f))
 }
 
-/// The single-path flag that rules out a multi-source run, if any.
-fn multi_source_conflict(sources: &[String], args: &[String]) -> Option<&'static str> {
-    if sources.len() < 2 {
+/// The single-path flag that rules out a multi-output run, if any.
+///
+/// A run is multi-output when it has several sources or is `--all-tracks`.
+fn multi_output_conflict(
+    sources: &[String],
+    all_tracks: bool,
+    args: &[String],
+) -> Option<&'static str> {
+    if sources.len() < 2 && !all_tracks {
         return None;
     }
     single_source_flag(args)
@@ -847,6 +910,9 @@ fn validate(args: &[String]) -> Result<(), String> {
                     .into(),
             );
         }
+    }
+    if has_flag(args, "--all-tracks") && has_flag(args, "--track") {
+        return Err("--all-tracks downloads every track; drop --track".into());
     }
     let mut i = 0;
     while i < args.len() {
@@ -1054,6 +1120,7 @@ mod tests {
         assert!(validate(&["--out".into(), "a.m4a".into()]).is_ok());
         assert!(validate(&["--out=a.m4a".into()]).is_ok());
         assert!(validate(&["--list-tracks".into()]).is_ok());
+        assert!(validate(&["--all-tracks".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1109,6 +1176,13 @@ mod tests {
             args.extend(extra.iter().map(|s| s.to_string()));
             assert!(validate(&args).is_err(), "{extra:?}");
         }
+    }
+
+    #[test]
+    fn all_tracks_conflicts_with_track() {
+        assert!(validate(&["--all-tracks".into(), "--track".into(), "t1".into()]).is_err());
+        assert!(validate(&["--all-tracks".into(), "--track=t1".into()]).is_err());
+        assert!(validate(&["--all-tracks".into(), "--json".into()]).is_ok());
     }
 
     #[test]
@@ -1189,26 +1263,39 @@ mod tests {
     }
 
     #[test]
-    fn multi_source_rejects_single_path_flags() {
+    fn multi_output_rejects_single_path_flags() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let one = a(&["u1"]);
         let two = a(&["u1", "u2"]);
-        // One source: nothing to reject.
-        assert_eq!(multi_source_conflict(&one, &a(&["--out", "a.m4a"])), None);
+        // One source, no --all-tracks: nothing to reject.
+        assert_eq!(
+            multi_output_conflict(&one, false, &a(&["--out", "a.m4a"])),
+            None
+        );
         // Two sources: the offending single-path flag is named.
         assert_eq!(
-            multi_source_conflict(&two, &a(&["--out", "a.m4a"])),
+            multi_output_conflict(&two, false, &a(&["--out", "a.m4a"])),
             Some("--out")
         );
         assert_eq!(
-            multi_source_conflict(&two, &a(&["--stream-to=a.m4a"])),
+            multi_output_conflict(&two, false, &a(&["--stream-to=a.m4a"])),
             Some("--stream-to")
+        );
+        // --all-tracks writes one file per track, so it needs its own paths too.
+        assert_eq!(
+            multi_output_conflict(&one, true, &a(&["--out", "a.m4a"])),
+            Some("--out")
+        );
+        assert_eq!(
+            multi_output_conflict(&one, true, &a(&["--save-keys", "k.json"])),
+            Some("--save-keys")
         );
         // Flags that apply to the whole run are allowed.
         assert_eq!(
-            multi_source_conflict(&two, &a(&["--json", "--track", "t"])),
+            multi_output_conflict(&two, false, &a(&["--json", "--track", "t"])),
             None
         );
+        assert_eq!(multi_output_conflict(&one, true, &a(&["--json"])), None);
     }
 
     #[test]
@@ -1229,6 +1316,10 @@ mod tests {
         // Boolean flags do not consume the next argument.
         assert_eq!(
             positionals(&a(&["--list-tracks", "https://x/u/a/b"])),
+            vec![url()]
+        );
+        assert_eq!(
+            positionals(&a(&["--all-tracks", "https://x/u/a/b"])),
             vec![url()]
         );
         assert!(positionals(&a(&["--list-tracks"])).is_empty());
