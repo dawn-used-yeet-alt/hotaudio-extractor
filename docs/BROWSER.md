@@ -11,12 +11,28 @@ Only the transport differs. See
 
 ## Build
 
+`scripts/build-wasm.sh` produces the JavaScript package: `pkg/web` for a page,
+`pkg/nodejs` for Node, each with `wasm-bindgen`'s generated `.d.ts` types.
+
 ```bash
-cargo build --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/hotaudio.wasm
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version <the version in Cargo.lock>
+./scripts/build-wasm.sh
 ```
 
-`--target nodejs` also works if you are running under Node rather than a page.
+The `wasm-bindgen` CLI and the `wasm-bindgen` crate in `Cargo.lock` are
+version-locked, so the script checks that they match and prints the exact
+`cargo install` line otherwise. This is the same path CI and the release take,
+so a broken package fails before a tag rather than during one. Release archives
+carry the prebuilt package as `hotaudio-wasm-<tag>.tar.gz`.
+
+By hand — the same two steps, if you would rather not use the script:
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir pkg/web target/wasm32-unknown-unknown/release/hotaudio.wasm
+wasm-bindgen --target nodejs --out-dir pkg/nodejs target/wasm32-unknown-unknown/release/hotaudio.wasm
+```
 
 ## Play
 
@@ -25,7 +41,7 @@ round trip instead of after the whole container, and neither side ever holds mor
 than one segment.
 
 ```js
-import init, { downloadTrack } from "./pkg/hotaudio.js";
+import init, { downloadTrack } from "./pkg/web/hotaudio.js";
 await init();
 
 const media = new MediaSource();
