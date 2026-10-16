@@ -100,9 +100,15 @@ pub async fn download_track_with(
         Some(f) => client.with_url_rewrite(move |url| call_string(&f, url, url)),
         None => client,
     };
-    stream(&client, page_url, &on_fragment, on_progress, track_id.as_deref())
-        .await
-        .map_err(js_error)
+    stream(
+        &client,
+        page_url,
+        &on_fragment,
+        on_progress,
+        track_id.as_deref(),
+    )
+    .await
+    .map_err(js_error)
 }
 
 /// The handshake, the first key branch and the `.hax` URL, without any audio.
