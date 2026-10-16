@@ -8,6 +8,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **A CLI config file.** `hotaudio-download` reads defaults from a flat TOML
+  file (`$XDG_CONFIG_HOME/hotaudio/config.toml`, or `--config PATH`, or
+  `$HOTAUDIO_CONFIG`). Recognised keys: `output_dir`, `filename_template`,
+  `api_base`, `proxy`, `retries`, `timeout` (seconds) and `delay`
+  (milliseconds); command-line flags always win, and a missing default file is
+  not an error. `--output-dir DIR` is new as well, so title-derived outputs can
+  go to a directory from the command line too.
+
 - **`download::Clients`**, a split-client entry point (`Clients { api, bulk }`)
   whose `download_from_page` / `download_with_handshake` methods run the full
   pipeline with small API calls on one client and the bulk container transfer on
@@ -123,6 +131,14 @@ All notable changes to this project are documented here. Format follows
 - **Politeness delay.** `--delay MS` (or `download::DownloadOptions::delay_ms`)
   pauses before each listen/key-paging request, defaulting to 0. It only spaces
   load for bulk/batch runs; correctness never depends on it.
+
+### Changed
+
+- **Distinct exit codes.** Failures now exit `2` (bad input or unknown flag),
+  `3` (network or transport), `4` (protocol, listen, decryption or signer) or
+  `5` (local filesystem); `0` still means success. Local file errors are
+  reported as `Error::Io` instead of `Error::Http`, so they no longer look like
+  network failures. The codes are listed in `--help`.
 
 ### Fixed
 

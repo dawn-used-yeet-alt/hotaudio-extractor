@@ -109,9 +109,22 @@ hotaudio-download --keys keys.json --out track.m4a
 
 # Decrypt a local .hax file offline
 hotaudio-download --hax audio.hax --keys keys.json --out track.m4a
+
+# Send title-derived outputs to a directory
+hotaudio-download "https://hotaudio.net/u/user/album" --all-tracks --output-dir ~/Music
+```
+
+Defaults can live in `~/.config/hotaudio/config.toml` (or a path given with `--config`); command-line flags still win:
+
+```toml
+output_dir = "/home/you/Music"
+retries = 5
+timeout = 60
 ```
 
 Keys never change for a given track, so a saved keys file is all you need to download it again.
+
+For scripts, the exit code says what went wrong: `0` success, `2` bad input, `3` network, `4` protocol or decryption, `5` local file error.
 
 ## If it stops working
 
