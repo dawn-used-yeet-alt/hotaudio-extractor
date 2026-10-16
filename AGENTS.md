@@ -55,7 +55,8 @@ cargo run --release --manifest-path live/Cargo.toml -- \
 - `src/http/` — `Client` + shared policy, one transport per target
 - `src/clock.rs` — clocks and sleeping, per target
 - `src/wasm.rs` — the `wasm-bindgen` surface, `wasm32` only
-- `scripts/` — signer-recovery tooling; `vendor/nozzle.js` — the pinned player bundle
+- `scripts/` — signer-recovery tooling and `build-wasm.sh`, the wasm packager;
+  `vendor/nozzle.js` — the pinned player bundle
 - `live/` — the live acceptance suite (its own workspace)
 - `docs/` — architecture, protocol, maintenance, migration, browser
 
@@ -69,8 +70,10 @@ cargo run --release --manifest-path live/Cargo.toml -- \
 - `live/` is its own workspace, and it is deliberately unlocked (no committed
   `Cargo.lock`) so the suite always resolves against the crate's current
   dependencies.
-- No JavaScript dependencies. `scripts/` are self-contained Bun scripts and there
-  is no `package.json`. The only JS-facing code is the `wasm32`-gated
+- No JavaScript dependencies. `scripts/*.ts` are self-contained Bun scripts, the
+  `scripts/build-wasm.sh` packager is a shell script, and there is no
+  `package.json` at the root (the one in the generated `pkg/` is `wasm-bindgen`'s
+  own output). The only JS-facing code is the `wasm32`-gated
   `wasm-bindgen`/`web-sys` binding layer, which is Rust.
 
 **One implementation, two targets.**

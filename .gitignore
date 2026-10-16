@@ -5,6 +5,9 @@
 *.m4a
 *.hax
 
+# Generated wasm package (scripts/build-wasm.sh)
+/pkg/
+
 # Local environment / scratch
 .env
 .env.local
