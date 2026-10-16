@@ -1127,10 +1127,13 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn cancel_reads_the_current_value_not_a_snapshot() {
-        let flag = std::sync::atomic::AtomicBool::new(false);
-        let cancel = Cancel::new(|| flag.load(std::sync::atomic::Ordering::SeqCst));
+        let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        let cancel = {
+            let flag = flag.clone();
+            Cancel::new(move || flag.get())
+        };
         assert!(!cancel.is_cancelled());
-        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        flag.set(true);
         assert!(matches!(cancel.check(), Err(Error::Cancelled)));
     }
 
