@@ -24,7 +24,7 @@ The `wasm-bindgen` CLI and the `wasm-bindgen` crate in `Cargo.lock` are
 version-locked, so the script checks that they match and prints the exact
 `cargo install` line otherwise. This is the same path CI and the release take,
 so a broken package fails before a tag rather than during one. Release archives
-carry the prebuilt package as `hotaudio-wasm-<tag>.tar.gz`.
+carry the prebuilt package as `hotaudio-wasm.tar.gz`.
 
 By hand — the same two steps, if you would rather not use the script:
 

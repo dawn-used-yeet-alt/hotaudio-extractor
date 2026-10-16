@@ -214,3 +214,15 @@ jobs:
           for s in scripts/*.ts; do
             bun build --no-bundle "$s" --target=bun --outfile=/dev/null
           done
+
+  # The README's install block is generated from the same table that names the
+  # release archives (`scripts/release-targets.tsv`), so a rename there cannot
+  # leave the docs pointing at an archive that is never built, and nobody has to
+  # remember to bump a version in the install commands by hand.
+  readme:
+    name: readme
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the install block is current
+        run: ./scripts/install-block.sh --check

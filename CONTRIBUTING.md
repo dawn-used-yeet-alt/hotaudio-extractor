@@ -64,3 +64,8 @@ component that moved.
 - Update `CHANGELOG.md` under `Unreleased` for user-visible changes.
 - Release flow: bump `version` in `Cargo.toml`, move the `Unreleased` entries to
   a new dated `CHANGELOG.md` section, and tag `vX.Y.Z`.
+- Release archives are named from `scripts/release-targets.tsv`, which also
+  generates the README's install block (`scripts/install-block.sh`); CI fails if
+  the two drift, so change the table and run the script rather than editing the
+  block by hand. Slugs are permanent — the README links to
+  `releases/latest/download/<archive>`, so renaming one breaks every link to it.

@@ -41,6 +41,37 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
+  # The build matrix and the README's download table are both generated from
+  # `scripts/release-targets.tsv`, so an archive that gets built is always one
+  # the docs name, and the docs never name one that is not built.
+  plan:
+    name: plan targets
+    needs: check
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix=$(jq -R -s -c '
+            split("\n")
+            | map(select(length > 0 and (startswith("#") | not)))
+            | map(split("\t"))
+            | {include: map({
+                target: .[0], slug: .[1], os: .[2],
+                native: (.[3] == "true"),
+                label: .[4], featured: (.[5] == "true")
+              })}
+          ' scripts/release-targets.tsv)
+          echo "$matrix"
+          test "$(echo "$matrix" | jq '.include | length')" -gt 0
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   # Attribution: the copyright notices and license texts of everything linked
   # into the binaries have to travel with them. The notice is derived from the
   # locked dependency graph, so it is built here from the tag's `Cargo.lock` and
@@ -79,57 +110,16 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: ${{ matrix.target }}
-    needs: [check, notices]
+    name: ${{ matrix.slug }}
+    needs: [check, notices, plan]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # --- Linux, glibc ---
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            native: true
-          # Built on a native ARM runner rather than cross-compiled: the arm64
-          # apt suites 404 on the amd64 runners, and a native build is
-          # smoke-testable.
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            native: true
-          # --- Linux, musl: statically linked, for containers and minimal hosts ---
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            native: false
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-            native: true
-          # --- macOS ---
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            native: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            native: false
-          # --- Windows ---
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            native: true
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            native: false
-          - target: x86_64-pc-windows-gnu
-            os: windows-latest
-            native: false
-          # --- Android / Termux ---
-          # Tier 2 targets: prebuilt std exists, so only the NDK is needed.
-          # These link against bionic, which is what Termux runs on.
-          - target: aarch64-linux-android
-            os: ubuntu-latest
-            native: false
-          - target: x86_64-linux-android
-            os: ubuntu-latest
-            native: false
-
+      # One row per target — the Rust triple, the archive slug, the runner, and
+      # whether that runner can execute the result — lives in
+      # `scripts/release-targets.tsv`, so it cannot drift from the README's
+      # download table.
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       # Always build the tagged source, never the current default branch: a
       # manual re-run of an existing tag must reproduce that tag's binaries.
@@ -248,13 +238,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ needs.check.outputs.tag }}"
-          stage="hotaudio-download-${tag}-${{ matrix.target }}"
+          stage="hotaudio-download-${{ matrix.slug }}"
           mkdir -p "$stage" dist
           cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
           cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.yml "$stage/"
-          # Note the libc in the filename: the musl build is not interchangeable
-          # with the gnu one, and both are published under this target triple.
           tar -czf "dist/${stage}.tar.gz" "$stage"
           rm -rf "$stage"
 
@@ -263,8 +250,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ needs.check.outputs.tag }}'
-          $stage = "hotaudio-download-$tag-${{ matrix.target }}"
+          $stage = "hotaudio-download-${{ matrix.slug }}"
           $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
           New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
           Copy-Item $exe $stage
@@ -274,7 +260,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.target }}
+          name: ${{ matrix.slug }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -315,8 +301,7 @@ jobs:
       - name: Package (tar.gz)
         run: |
           set -euo pipefail
-          tag="${{ needs.check.outputs.tag }}"
-          stage="hotaudio-wasm-${tag}"
+          stage="hotaudio-wasm"
           mkdir -p "dist/$stage"
           cp -r pkg/web pkg/nodejs "dist/$stage/"
           cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.yml "dist/$stage/"
@@ -350,8 +335,7 @@ jobs:
       - name: Generate
         run: |
           set -euo pipefail
-          tag="${{ needs.check.outputs.tag }}"
-          stage="hotaudio-completions-${tag}"
+          stage="hotaudio-completions"
           mkdir -p "dist/$stage/completions" "dist/$stage/man"
           cargo build --release --locked
           exe=target/release/hotaudio-download
@@ -399,3 +383,38 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/SHA256SUMS.txt
+
+  # The README's install commands point at
+  # `releases/latest/download/<archive>`, so they are written once and stay
+  # valid: a release normally leaves them untouched. This job regenerates the
+  # block from the same table the build matrix comes from and commits it if it
+  # drifted, so the published page and the repository cannot disagree. CI checks
+  # the block on every push, so a non-empty diff here means the release itself
+  # renamed something.
+  readme:
+    name: sync README
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The default branch, not the tag: the archives already carry the README
+      # as it was at the tag, and this is about the copy people read on GitHub.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Regenerate the install block
+        run: ./scripts/install-block.sh --write
+      - name: Commit if it changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- README.md; then
+            echo "README install block is already current"
+            exit 0
+          fi
+          git diff --stat -- README.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "docs: sync the README install block"
+          git pull --rebase origin main
+          git push origin HEAD:main
