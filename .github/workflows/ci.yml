@@ -40,13 +40,32 @@ jobs:
         run: cargo doc --locked --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Test
-        run: cargo test --locked
       # The decrypt path is the crate's performance claim, and the wasm
       # transport work could have pushed a copy or an await into it without any
-      # test failing. The timing assertion only exists in optimised builds.
+      # test failing. The timing assertion only exists in optimised builds, and
+      # its floor is calibrated for the CI runner, so it stays on the reference
+      # platform rather than in the cross-platform test matrix below.
       - name: Perf guard
         run: cargo test --release --locked --test perf_guard
+
+  # The crate ships natively on Windows and macOS. `sanitize`, the
+  # `--stream-to` temp-file rename and path handling differ per platform, and
+  # the ubuntu-only gates above cannot see a bug that only appears there. Run
+  # the offline suite on every shipped desktop target; the MSRV, fmt, clippy
+  # and doc gates stay single-platform because they are host-independent.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked
 
   # The browser build is the same pipeline over the `fetch` transport, so it is
   # held to the same bar: clippy-clean, and the same tests actually executed in
