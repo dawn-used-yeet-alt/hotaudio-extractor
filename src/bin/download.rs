@@ -52,6 +52,9 @@ Options:
                     fetching the container or decrypting
   --save-hax PATH   write the raw .hax container here for a later offline decrypt
                     (buffered modes only; not with --stream-to)
+  --no-clobber      fail instead of replacing an existing output file (audio,
+                    keys or .hax); parent directories are still created
+  --force           replace existing output files (the default)
   --keys PATH       saved-keys envelope to resume from; accepts a file path or
                     inline JSON. In online mode, seeds the key map so an
                     interrupted download refetches only what is missing
@@ -115,6 +118,8 @@ const BOOL_FLAGS: &[&str] = &[
     "--json",
     "--keys-only",
     "--all-tracks",
+    "--no-clobber",
+    "--force",
 ];
 
 fn main() -> ExitCode {
@@ -169,6 +174,11 @@ fn run() -> ExitCode {
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
     let keys_only = args.iter().any(|a| a == "--keys-only");
     let all_tracks = args.iter().any(|a| a == "--all-tracks");
+    let clobber = if args.iter().any(|a| a == "--no-clobber") {
+        Clobber::Refuse
+    } else {
+        Clobber::Replace
+    };
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     let json = args.iter().any(|a| a == "--json");
@@ -213,6 +223,7 @@ fn run() -> ExitCode {
         list_tracks,
         keys_only,
         all_tracks,
+        clobber,
         quiet,
         verbose,
         json,
@@ -240,6 +251,7 @@ struct Run {
     list_tracks: bool,
     keys_only: bool,
     all_tracks: bool,
+    clobber: Clobber,
     quiet: bool,
     verbose: bool,
     json: bool,
@@ -265,6 +277,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     // format, so it does not borrow `r`; `--quiet` wins over `--progress=json`.
     let quiet = r.quiet;
     let progress_json = r.progress_json;
+    let clobber = r.clobber;
     let mut report = move |p: Progress| {
         if quiet {
             return;
@@ -297,7 +310,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             .map_err(|e| Error::Http(format!("cannot read {hax_path}: {e}")))?;
         let hax = hotaudio::hax::Hax0::parse(&bytes)?;
         if let Some(path) = &r.save_hax {
-            write_file(path, &bytes)?;
+            write_file(path, &bytes, clobber)?;
         }
         let (audio, segments, _) = download::decrypt_offline(&bytes, &keys, Some(&mut report))?;
         if r.verbose {
@@ -306,10 +319,10 @@ async fn execute(r: Run) -> Result<(), Error> {
                 secs_since(started_ms)
             );
         }
-        write_saved_keys(&r.save_keys, "", title.as_deref(), &keys)?;
+        write_saved_keys(&r.save_keys, "", title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| stem(hax_path));
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
-        write_file(&out, &audio)?;
+        write_file(&out, &audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, "", Some(&title));
             DownloadInfo {
@@ -401,6 +414,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             &bundle.hax_url,
             bundle.title.as_deref(),
             &bundle.keys,
+            clobber,
         )?;
         if r.json {
             let keys_json =
@@ -437,7 +451,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         .await?;
         if let Some(path) = &r.save_hax {
             if let Some(bytes) = &res.hax_bytes {
-                write_file(path, bytes)?;
+                write_file(path, bytes, clobber)?;
             }
         }
         if r.verbose {
@@ -447,10 +461,10 @@ async fn execute(r: Run) -> Result<(), Error> {
                 secs_since(started_ms)
             );
         }
-        write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys)?;
+        write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
-        write_file(&out, &res.audio)?;
+        write_file(&out, &res.audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, &url, Some(&title));
             DownloadInfo {
@@ -502,7 +516,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             hs
         };
 
-        let mut writer = std::io::BufWriter::with_capacity(1 << 20, open_output(dest)?);
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, open_output(dest, clobber)?);
 
         let res = download::download_streaming(
             &api,
@@ -519,7 +533,13 @@ async fn execute(r: Run) -> Result<(), Error> {
         writer.flush().map_err(|e| Error::Http(e.to_string()))?;
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
-        write_saved_keys(&r.save_keys, &res.hax_url, title.as_deref(), &res.keys)?;
+        write_saved_keys(
+            &r.save_keys,
+            &res.hax_url,
+            title.as_deref(),
+            &res.keys,
+            clobber,
+        )?;
         eprintln!(
             "streamed {} bytes across {} segments ({} page(s)) to {}",
             res.bytes, res.segment_count, res.pages, dest
@@ -564,13 +584,13 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     if let Some(path) = &r.save_hax {
         if let Some(bytes) = &res.hax_bytes {
-            write_file(path, bytes)?;
+            write_file(path, bytes, clobber)?;
         }
     }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
-    write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys)?;
+    write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys, clobber)?;
     let out = r.out.unwrap_or_else(|| format!("{}.m4a", sanitize(&title)));
-    write_file(&out, &res.audio)?;
+    write_file(&out, &res.audio, clobber)?;
     if r.verbose {
         eprintln!(
             "verbose: {} segments, {} key page(s) in {:.1}s",
@@ -728,7 +748,7 @@ async fn batch_one(
             "output {out} was already written by an earlier source; rename it and retry"
         )));
     }
-    write_file(&out, &res.audio)?;
+    write_file(&out, &res.audio, r.clobber)?;
     if r.verbose {
         eprintln!(
             "verbose: {} segments, {} key page(s) in {:.1}s",
@@ -895,6 +915,9 @@ fn validate(args: &[String]) -> Result<(), String> {
     if quiet && verbose {
         return Err("--quiet and --verbose are mutually exclusive".into());
     }
+    if has_flag(args, "--no-clobber") && has_flag(args, "--force") {
+        return Err("--no-clobber and --force are mutually exclusive".into());
+    }
     if has_flag(args, "--save-hax") && has_flag(args, "--stream-to") {
         return Err(
             "--save-hax needs the buffered container; it is not available with --stream-to".into(),
@@ -1042,17 +1065,55 @@ fn write_saved_keys(
     hax_url: &str,
     title: Option<&str>,
     keys: &HashMap<u32, [u8; 32]>,
+    clobber: Clobber,
 ) -> Result<(), Error> {
     let Some(path) = path else { return Ok(()) };
+    check_clobber(path, clobber)?;
+    ensure_parent(path)?;
     let json = download::keys_to_json(keys, hax_url, title);
     std::fs::write(path, json).map_err(|e| Error::Http(format!("cannot write {path}: {e}")))?;
     eprintln!("Keys saved to {path}");
     Ok(())
 }
 
+/// Whether an existing output file may be replaced.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Clobber {
+    /// Replace it (the default).
+    Replace,
+    /// Fail rather than touch it (`--no-clobber`).
+    Refuse,
+}
+
+/// Fail under `--no-clobber` when `path` already exists.
+///
+/// `-` is stdout, which is never an existing file to protect.
+fn check_clobber(path: &str, clobber: Clobber) -> Result<(), Error> {
+    if clobber == Clobber::Refuse && path != "-" && std::path::Path::new(path).exists() {
+        return Err(Error::State(format!(
+            "{path} already exists; refusing to overwrite (--no-clobber)"
+        )));
+    }
+    Ok(())
+}
+
+/// Create `path`'s parent directory if it is missing, so `--out a/b/x.m4a`
+/// works even when `a/b` does not exist.
+fn ensure_parent(path: &str) -> Result<(), Error> {
+    let Some(parent) = std::path::Path::new(path).parent() else {
+        return Ok(());
+    };
+    // A bare filename (`track.m4a`) and stdout (`-`) have an empty parent.
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Http(format!("cannot create {}: {e}", parent.display())))?;
+    }
+    Ok(())
+}
+
 /// Write bytes to `path`, or to stdout when `path` is `-`.
-fn write_file(path: &str, bytes: &[u8]) -> Result<(), Error> {
-    let mut out = open_output(path)?;
+fn write_file(path: &str, bytes: &[u8], clobber: Clobber) -> Result<(), Error> {
+    let mut out = open_output(path, clobber)?;
     out.write_all(bytes)
         .map_err(|e| Error::Http(e.to_string()))?;
     out.flush().map_err(|e| Error::Http(e.to_string()))
@@ -1062,11 +1123,13 @@ fn write_file(path: &str, bytes: &[u8]) -> Result<(), Error> {
 ///
 /// `-` lets the audio be piped (`--out - | ffplay -`). Progress and the result
 /// line stay on stderr in that case (see [`print_result`]) so the stream is
-/// never corrupted.
-fn open_output(path: &str) -> Result<Box<dyn Write>, Error> {
+/// never corrupted. Missing parent directories are created.
+fn open_output(path: &str, clobber: Clobber) -> Result<Box<dyn Write>, Error> {
     if path == "-" {
         return Ok(Box::new(std::io::stdout()));
     }
+    check_clobber(path, clobber)?;
+    ensure_parent(path)?;
     let file = std::fs::File::create(path)
         .map_err(|e| Error::Http(format!("cannot create {path}: {e}")))?;
     Ok(Box::new(file))
@@ -1121,6 +1184,8 @@ mod tests {
         assert!(validate(&["--out=a.m4a".into()]).is_ok());
         assert!(validate(&["--list-tracks".into()]).is_ok());
         assert!(validate(&["--all-tracks".into()]).is_ok());
+        assert!(validate(&["--no-clobber".into()]).is_ok());
+        assert!(validate(&["--force".into()]).is_ok());
         assert!(validate(&["--quiet".into()]).is_ok());
         assert!(validate(&["-q".into()]).is_ok());
         assert!(validate(&["--verbose".into()]).is_ok());
@@ -1136,6 +1201,12 @@ mod tests {
         let err = validate(&["--quiet".into(), "--verbose".into()]).unwrap_err();
         assert!(err.contains("mutually exclusive"), "got {err}");
         assert!(validate(&["-q".into(), "-v".into()]).is_err());
+    }
+
+    #[test]
+    fn no_clobber_and_force_conflict() {
+        let err = validate(&["--no-clobber".into(), "--force".into()]).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "got {err}");
     }
 
     #[test]
@@ -1239,9 +1310,35 @@ mod tests {
     #[test]
     fn open_output_selects_stdout_for_dash() {
         // `-` must not touch the filesystem.
-        assert!(open_output("-").is_ok());
-        // Any other path is opened for writing, so a bad directory errors.
-        assert!(open_output("/no/such/dir/out.m4a").is_err());
+        assert!(open_output("-", Clobber::Replace).is_ok());
+        assert!(open_output("-", Clobber::Refuse).is_ok());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_output_creates_missing_parents() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("hotaudio-parents-{pid}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("a/b/track.m4a");
+        assert!(open_output(file.to_str().unwrap(), Clobber::Replace).is_ok());
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn no_clobber_refuses_an_existing_file() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("hotaudio-clobber-{pid}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("track.m4a");
+        std::fs::write(&file, b"old").unwrap();
+        let path = file.to_str().unwrap();
+
+        assert!(open_output(path, Clobber::Refuse).is_err());
+        assert!(open_output(path, Clobber::Replace).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

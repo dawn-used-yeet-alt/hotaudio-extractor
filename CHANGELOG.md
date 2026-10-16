@@ -89,6 +89,13 @@ All notable changes to this project are documented here. Format follows
   (`--out`, `--stream-to`, `--save-keys`, `--save-hax`, `--keys`, `--hax`,
   `--keys-only`, `--list-tracks`), since each track needs its own path.
 
+- **`--no-clobber` and `--force`.** An existing output file is still replaced by
+  default; `--no-clobber` makes it an error instead, for the decrypted audio, the
+  saved-keys envelope and the `.hax` container alike, and `--force` is the
+  explicit spelling of the default (the two are mutually exclusive). Missing
+  parent directories are now created, so `--out a/b/track.m4a` works when `a/b`
+  does not exist yet.
+
 ### Fixed
 
 - **A literal `-` is accepted as a flag value.** Validation rejected any value

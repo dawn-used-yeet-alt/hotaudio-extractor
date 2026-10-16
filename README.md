@@ -89,6 +89,9 @@ hotaudio-download "https://hotaudio.net/u/user/track-slug" --stream-to track.m4a
 # Save the track's keys for later
 hotaudio-download "https://hotaudio.net/u/user/track-slug" --save-keys keys.json
 
+# Never overwrite an existing file (fails instead)
+hotaudio-download "https://hotaudio.net/u/user/track-slug" --out track.m4a --no-clobber
+
 # Re-download from saved keys (no need to contact the page again)
 hotaudio-download --keys keys.json --out track.m4a
 
