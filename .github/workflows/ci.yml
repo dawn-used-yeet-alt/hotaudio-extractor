@@ -48,6 +48,22 @@ jobs:
       - name: Perf guard
         run: cargo test --release --locked --test perf_guard
 
+  # Supply-chain gate over the same target set that ships (`deny.toml`):
+  # advisories, license expressions, banned crates and allowed sources. Unlike
+  # `cargo test` this needs network — it fetches the RustSec advisory database.
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Prebuilt binary, so cargo-deny's own tree is not compiled here. Pinned
+      # because `deny.toml` is tied to a cargo-deny schema version.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check advisories, licenses, bans and sources
+        run: cargo deny check
+
   # The crate ships natively on Windows and macOS. `sanitize`, the
   # `--stream-to` temp-file rename and path handling differ per platform, and
   # the ubuntu-only gates above cannot see a bug that only appears there. Run

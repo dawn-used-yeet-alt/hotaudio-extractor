@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # The lockfile is committed and CI builds with `--locked`, so a dependency
+  # bump must move `Cargo.lock` in the same PR, which Dependabot does. It covers
+  # the whole tree — RustCrypto, ureq/rustls and ring, plus the wasm-gated
+  # crates — for the single package at the repo root.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Keep the CI actions current. `live/` is its own workspace and is
+  # deliberately unlocked, so it is left to resolve against the crate's current
+  # dependencies rather than tracked here.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,0 +1,55 @@
+[graph]
+# The crate is one implementation over two transports: a native binary for the
+# three desktop targets and a wasm module. Resolve them all so a target-specific
+# dependency (`ureq`/`rustls` behind `cfg(not(target_arch = "wasm32"))`,
+# `wasm-bindgen`/`getrandom` behind `cfg(target_arch = "wasm32")`) is audited
+# rather than just the host's half of the tree.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+# Nothing is ignored today. An entry here needs a reason and an issue link.
+ignore = []
+
+[licenses]
+# Permissive only. This is exactly the union the tree declares: MIT and
+# Apache-2.0 cover almost everything, BSD/ISC/Zlib/0BSD/Unlicense come from the
+# HTTP and crypto crates, Unicode-3.0 is an `icu` transitive, and
+# CDLA-Permissive-2.0 is a webpki/rustls data crate.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+# Deny rather than warn: a new duplicate must be acknowledged with a `skip`
+# entry and a reason, the same way clippy and rustdoc are held at `-D warnings`.
+multiple-versions = "deny"
+wildcards = "deny"
+# The two duplicate versions in the tree are upstream splits, not pins we
+# control. Skipping them keeps the check green so a *new* duplicate fails CI.
+skip = [
+    # `ring` 0.17 is still on getrandom 0.2; x25519-dalek and the wasm CSPRNG
+    # have moved to 0.4.
+    { crate = "getrandom@0.2.17", reason = "ring 0.17 has not updated to getrandom 0.4" },
+    # curve25519-dalek's proc macro is on syn 2; wasm-bindgen's and serde's are
+    # on syn 3. Both are compile-time only.
+    { crate = "syn@2.0.119", reason = "curve25519-dalek-derive is pinned to syn 2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
