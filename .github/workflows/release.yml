@@ -41,9 +41,9 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-  # The build matrix and the README's download table are both generated from
-  # `scripts/release-targets.tsv`, so an archive that gets built is always one
-  # the docs name, and the docs never name one that is not built.
+  # The build matrix and the download table in `docs/INSTALL.md` are both
+  # generated from `scripts/release-targets.tsv`, so an archive that gets built
+  # is always one the docs name, and the docs never name one that is not built.
   plan:
     name: plan targets
     needs: check
@@ -117,8 +117,8 @@ jobs:
       fail-fast: false
       # One row per target — the Rust triple, the archive slug, the runner, and
       # whether that runner can execute the result — lives in
-      # `scripts/release-targets.tsv`, so it cannot drift from the README's
-      # download table.
+      # `scripts/release-targets.tsv`, so it cannot drift from the download table
+      # in `docs/INSTALL.md`.
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       # Always build the tagged source, never the current default branch: a
@@ -358,10 +358,20 @@ jobs:
     needs: [check, build, wasm, completions]
     runs-on: ubuntu-latest
     steps:
+      # The installer is served from the release itself
+      # (`/releases/latest/download/install.sh`), so it is published as an asset
+      # rather than built per target.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Add the installer
+        run: cp scripts/install.sh artifacts/install.sh
 
       # One place for checksums, so the .sha256 files cover every archive and
       # no per-platform shell differences can skew them.
@@ -369,7 +379,7 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt
+          sha256sum ./*.tar.gz ./*.zip ./install.sh > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@v3
@@ -382,24 +392,25 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
+            artifacts/install.sh
             artifacts/SHA256SUMS.txt
 
-  # The README's install commands point at
+  # The install commands in docs/INSTALL.md point at
   # `releases/latest/download/<archive>`, so they are written once and stay
   # valid: a release normally leaves them untouched. This job regenerates the
   # block from the same table the build matrix comes from and commits it if it
   # drifted, so the published page and the repository cannot disagree. CI checks
   # the block on every push, so a non-empty diff here means the release itself
   # renamed something.
-  readme:
-    name: sync README
+  install-docs:
+    name: sync install docs
     needs: [check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # The default branch, not the tag: the archives already carry the README
-      # as it was at the tag, and this is about the copy people read on GitHub.
+      # The default branch, not the tag: the archives already carry the docs as
+      # they were at the tag, and this is about the copy people read on GitHub.
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -408,13 +419,13 @@ jobs:
       - name: Commit if it changed
         run: |
           set -euo pipefail
-          if git diff --quiet -- README.md; then
-            echo "README install block is already current"
+          if git diff --quiet -- docs/INSTALL.md; then
+            echo "docs/INSTALL.md install block is already current"
             exit 0
           fi
-          git diff --stat -- README.md
+          git diff --stat -- docs/INSTALL.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "docs: sync the README install block"
+          git commit -am "docs: sync the install block"
           git pull --rebase origin main
           git push origin HEAD:main

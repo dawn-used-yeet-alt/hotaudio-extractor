@@ -4,9 +4,16 @@ container decryption, and writes a playable `.m4a`.
 
 ## Install
 
-Download the archive for your platform from the
-[latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest),
-extract it, and run `hotaudio-download`:
+Linux, macOS and Termux, in one line:
+
+```bash
+curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/install.sh | sh
+```
+
+It picks the build for your platform and installs `hotaudio-download` to
+`~/.local/bin` (`$PREFIX/bin` on Termux).
+
+Prefer to do it by hand? Every archive is attached to this release:
 
 | Platform | Architecture | Archive |
 | --- | --- | --- |
@@ -26,31 +33,25 @@ extract it, and run `hotaudio-download`:
 
 On Unix, `chmod +x hotaudio-download` after extraction.
 
-The musl builds are statically linked, so they run on minimal hosts and inside
-scratch containers with no glibc. The glibc builds need glibc 2.17 or newer.
+The `-static` builds are statically linked, so they run on minimal hosts and
+inside scratch containers with no glibc. The other Linux builds need glibc 2.17
+or newer.
 
 ## Termux (Android)
 
 The `*-linux-android` builds run directly in Termux, on API 24 (Android 7) or
 newer. No extra libraries are needed — the binary links only against bionic.
+`install.sh` detects Termux and installs into `$PREFIX/bin`. Pick
+`android-arm64` on almost all devices; use `android-x86_64` only on emulators
+and Chromebooks. If you get `cannot execute binary file`, your device
+architecture is different from the one you downloaded.
+
+`install.sh` verifies its archive against the attached `SHA256SUMS.txt` before
+installing. To check a manual download, `--ignore-missing` skips the archives you
+did not fetch:
 
 ```bash
-pkg install wget
-wget https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-android-arm64.tar.gz
-tar xzf hotaudio-download-android-arm64.tar.gz
-cd hotaudio-download-android-arm64
-chmod +x hotaudio-download
-./hotaudio-download https://hotaudio.net/u/user/track-slug --out track.m4a
-```
-
-Pick `aarch64-linux-android` on almost all devices; use `x86_64-linux-android`
-only on emulators and Chromebooks. If you get `cannot execute binary file`, your
-device architecture is different from the one you downloaded.
-
-Verify a download against the attached `SHA256SUMS.txt`:
-
-```bash
-sha256sum --check SHA256SUMS.txt
+sha256sum --check --ignore-missing SHA256SUMS.txt
 ```
 
 Building from source instead:
