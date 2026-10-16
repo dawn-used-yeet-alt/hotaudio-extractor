@@ -27,6 +27,11 @@ pub enum Error {
     Http(String),
     /// Signing failed.
     Sign(String),
+    /// A local filesystem operation failed.
+    ///
+    /// The library core never reads or writes files; only the CLI constructs
+    /// this, so it can give local I/O its own exit code.
+    Io(String),
 }
 
 impl fmt::Display for Error {
@@ -39,6 +44,7 @@ impl fmt::Display for Error {
             Error::Protocol(m) => write!(f, "protocol: {m}"),
             Error::Http(m) => write!(f, "http: {m}"),
             Error::Sign(m) => write!(f, "signer: {m}"),
+            Error::Io(m) => write!(f, "io: {m}"),
         }
     }
 }

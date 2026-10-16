@@ -46,6 +46,10 @@ Options:
                     name title-derived outputs from PATTERN: {title}, {index}
                     (1-based) and {ext} are substituted, and '/' separates
                     directories. An explicit --out or --stream-to wins
+  --output-dir DIR  write title-derived outputs under DIR (default: the current
+                    directory); an explicit --out or --stream-to wins
+  --config PATH     read defaults from PATH instead of
+                    $XDG_CONFIG_HOME/hotaudio/config.toml; CLI flags win
   --input FILE      read one source per line from FILE ('-' is stdin); blank
                     lines are skipped
   --stream-to PATH  stream segments to PATH instead of buffering: peak memory of
@@ -85,7 +89,18 @@ Options:
   -V, --version     print the version and exit
 
 The user agent is fixed at Mozilla/5.0 and is not configurable: the site returns
-403 for Chrome user agents on the track page and the listen endpoint.";
+403 for Chrome user agents on the track page and the listen endpoint.
+
+Exit status:
+  0 success; 1 unclassified failure; 2 bad input or unknown flag; 3 network or
+  transport failure; 4 protocol, listen, decryption or signer failure; 5 local
+  filesystem failure.
+
+Config file:
+  A flat TOML file of 'key = value' lines. Recognised keys: output_dir,
+  filename_template, api_base, proxy, retries, timeout (seconds), delay
+  (milliseconds). Command-line flags override the file; an absent default file
+  is not an error.";
 
 /// Flags that take a value. Anything else starting with `-` is rejected, so a
 /// typo fails loudly instead of being silently ignored.
@@ -106,6 +121,8 @@ const VALUE_FLAGS: &[&str] = &[
     "--save-hax",
     "--input",
     "--filename-template",
+    "--output-dir",
+    "--config",
 ];
 
 /// Flags that name a single output or source, so they cannot be combined with
@@ -139,6 +156,34 @@ const BOOL_FLAGS: &[&str] = &[
     "--force",
 ];
 
+/// Process exit codes, so a script can tell failure classes apart without
+/// parsing stderr. Documented in `--help`; `0` is `ExitCode::SUCCESS` and `1` is
+/// `ExitCode::FAILURE`, so only the classes below need constants.
+mod code {
+    /// Bad input: an unknown flag, a bad value, or an unusable config file.
+    pub const USAGE: u8 = 2;
+    /// A network or transport failure.
+    pub const NETWORK: u8 = 3;
+    /// A protocol, listen, decryption or signer failure.
+    pub const PROTOCOL: u8 = 4;
+    /// A local filesystem failure.
+    pub const IO: u8 = 5;
+}
+
+/// The exit code for a pipeline failure, by [`Error`] class.
+fn exit_code(e: &Error) -> u8 {
+    match e {
+        Error::Http(_) => code::NETWORK,
+        Error::Io(_) => code::IO,
+        Error::Auth
+        | Error::Decode(_)
+        | Error::State(_)
+        | Error::Listen(_)
+        | Error::Protocol(_)
+        | Error::Sign(_) => code::PROTOCOL,
+    }
+}
+
 fn main() -> ExitCode {
     #[cfg(target_arch = "wasm32")]
     {
@@ -171,16 +216,27 @@ fn run() -> ExitCode {
     }
     if args.is_empty() {
         eprintln!("{USAGE}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(code::USAGE);
     }
     if let Err(e) = validate(&args) {
         eprintln!("error: {e}\n");
         eprintln!("{USAGE}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(code::USAGE);
     }
 
+    // Defaults from the config file, then the CLI overrides them: every
+    // `flag(..).or(config.…)` below is "flag wins, else file, else built-in".
+    let config = match Config::load(flag(&args, "--config").as_deref()) {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("error: {message}\n");
+            return ExitCode::from(code::USAGE);
+        }
+    };
+
     let out = flag(&args, "--out");
-    let filename_template = flag(&args, "--filename-template");
+    let filename_template = flag(&args, "--filename-template").or(config.filename_template);
+    let output_dir = flag(&args, "--output-dir").or(config.output_dir);
     let stream_to = flag(&args, "--stream-to");
     let save_keys = flag(&args, "--save-keys");
     let save_hax = flag(&args, "--save-hax");
@@ -188,27 +244,27 @@ fn run() -> ExitCode {
     let hax_url = flag(&args, "--hax-url");
     let keys_path = flag(&args, "--keys");
     let track_id = flag(&args, "--track");
-    let api_base = flag(&args, "--api-base");
-    let proxy = flag(&args, "--proxy");
-    let retry = match retry_from(&args) {
+    let api_base = flag(&args, "--api-base").or(config.api_base);
+    let proxy = flag(&args, "--proxy").or(config.proxy);
+    let retry = match retry_from(&args, config.retries) {
         Ok(retry) => retry,
         Err(message) => {
             eprintln!("error: {message}\n");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code::USAGE);
         }
     };
-    let api_timeout_ms = match timeout_from(&args) {
+    let api_timeout_ms = match timeout_from(&args, config.timeout_secs) {
         Ok(timeout) => timeout,
         Err(message) => {
             eprintln!("error: {message}\n");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code::USAGE);
         }
     };
-    let delay_ms = match delay_from(&args) {
+    let delay_ms = match delay_from(&args, config.delay_ms) {
         Ok(delay) => delay,
         Err(message) => {
             eprintln!("error: {message}\n");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code::USAGE);
         }
     };
     let list_tracks = args.iter().any(|a| a == "--list-tracks");
@@ -227,7 +283,7 @@ fn run() -> ExitCode {
         Some("json") => true,
         Some(other) => {
             eprintln!("error: --progress must be 'text' or 'json', got '{other}'");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code::USAGE);
         }
     };
 
@@ -235,24 +291,25 @@ fn run() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}\n");
-            return ExitCode::FAILURE;
+            return ExitCode::from(code::IO);
         }
     };
     if all_tracks && sources.len() != 1 {
         eprintln!("error: --all-tracks needs exactly one page URL or HTML file\n");
-        return ExitCode::FAILURE;
+        return ExitCode::from(code::USAGE);
     }
     if let Some(name) = multi_output_conflict(&sources, all_tracks, &args) {
         eprintln!(
             "error: {name} names one path; it cannot be used with several sources or --all-tracks\n"
         );
-        return ExitCode::FAILURE;
+        return ExitCode::from(code::USAGE);
     }
 
     match hotaudio::block_on(execute(Run {
         sources,
         out,
         filename_template,
+        output_dir,
         stream_to,
         save_keys,
         save_hax,
@@ -277,7 +334,7 @@ fn run() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            ExitCode::from(exit_code(&e))
         }
     }
 }
@@ -286,6 +343,9 @@ struct Run {
     sources: Vec<String>,
     out: Option<String>,
     filename_template: Option<String>,
+    /// Directory for title-derived outputs (`--output-dir` or config
+    /// `output_dir`); an explicit `--out`/`--stream-to` bypasses it.
+    output_dir: Option<String>,
     stream_to: Option<String>,
     save_keys: Option<String>,
     save_hax: Option<String>,
@@ -331,7 +391,6 @@ async fn execute(r: Run) -> Result<(), Error> {
     let quiet = r.quiet;
     let progress_json = r.progress_json;
     let clobber = r.clobber;
-    let template = r.filename_template.clone();
     let mut report = move |p: Progress| {
         if quiet {
             return;
@@ -361,7 +420,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         let keys = saved.keys;
         let title = saved.title;
         let bytes = std::fs::read(hax_path)
-            .map_err(|e| Error::Http(format!("cannot read {hax_path}: {e}")))?;
+            .map_err(|e| Error::Io(format!("cannot read {hax_path}: {e}")))?;
         let hax = hotaudio::hax::Hax0::parse(&bytes)?;
         if let Some(path) = &r.save_hax {
             write_file(path, &bytes, clobber)?;
@@ -375,9 +434,14 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
         write_saved_keys(&r.save_keys, "", title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| stem(hax_path));
-        let out = r
-            .out
-            .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
+        let out = r.out.clone().unwrap_or_else(|| {
+            default_output(
+                r.filename_template.as_deref(),
+                r.output_dir.as_deref(),
+                &title,
+                1,
+            )
+        });
         write_file(&out, &audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, "", Some(&title));
@@ -418,7 +482,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             listen::list_tracks(&resp.text())
         } else {
             let html = std::fs::read_to_string(source)
-                .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
+                .map_err(|e| Error::Io(format!("cannot read {source}: {e}")))?;
             listen::list_tracks(&html)
         };
         let Some(tracks) = tracks.filter(|t| !t.is_empty()) else {
@@ -520,9 +584,14 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
         write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
-        let out = r
-            .out
-            .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
+        let out = r.out.clone().unwrap_or_else(|| {
+            default_output(
+                r.filename_template.as_deref(),
+                r.output_dir.as_deref(),
+                &title,
+                1,
+            )
+        });
         write_file(&out, &res.audio, clobber)?;
         let line = if r.json {
             let keys_json = download::keys_to_json(&keys, &url, Some(&title));
@@ -565,7 +634,7 @@ async fn execute(r: Run) -> Result<(), Error> {
             listen::load_handshake(&api, &source, api_base, r.track_id.as_deref()).await?
         } else {
             let html = std::fs::read_to_string(&source)
-                .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
+                .map_err(|e| Error::Io(format!("cannot read {source}: {e}")))?;
             let api_base = r.api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
             let mut hs = listen::handshake_from_html(&html, api_base, r.track_id.as_deref())?
                 .ok_or_else(|| {
@@ -588,12 +657,12 @@ async fn execute(r: Run) -> Result<(), Error> {
             |fragment| {
                 writer
                     .write_all(fragment)
-                    .map_err(|e| Error::Http(e.to_string()))
+                    .map_err(|e| Error::Io(e.to_string()))
             },
             Some(&mut report),
         )
         .await?;
-        writer.flush().map_err(|e| Error::Http(e.to_string()))?;
+        writer.flush().map_err(|e| Error::Io(e.to_string()))?;
         // Close the file before promoting it: Windows will not move an open file.
         drop(writer);
         sink.commit()?;
@@ -656,9 +725,14 @@ async fn execute(r: Run) -> Result<(), Error> {
     }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
     write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys, clobber)?;
-    let out = r
-        .out
-        .unwrap_or_else(|| derived_name(template.as_deref(), &title, 1));
+    let out = r.out.clone().unwrap_or_else(|| {
+        default_output(
+            r.filename_template.as_deref(),
+            r.output_dir.as_deref(),
+            &title,
+            1,
+        )
+    });
     write_file(&out, &res.audio, clobber)?;
     if r.verbose {
         eprintln!(
@@ -721,7 +795,7 @@ async fn fetch_online(
         clients.download_from_page(source, &mut opts).await
     } else {
         let html = std::fs::read_to_string(source)
-            .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?;
+            .map_err(|e| Error::Io(format!("cannot read {source}: {e}")))?;
         let base = api_base.unwrap_or(hotaudio::HOTAUDIO_API_BASE);
         let mut hs = listen::handshake_from_html(&html, base, track_id)?
             .ok_or_else(|| Error::State("could not decrypt __ha_state from HTML file".into()))?;
@@ -752,42 +826,49 @@ fn net_of(r: &Run) -> Net<'_> {
     }
 }
 
-/// The retry policy from `--retries N` (`N` retries after the first attempt).
-fn retry_from(args: &[String]) -> Result<Retry, String> {
-    let Some(value) = flag(args, "--retries") else {
-        return Ok(Retry::default());
+/// The retry policy: `--retries N` (`N` retries after the first attempt), else
+/// the config's `retries`, else the built-in default.
+fn retry_from(args: &[String], fallback: Option<usize>) -> Result<Retry, String> {
+    let retries = match flag(args, "--retries") {
+        Some(value) => value
+            .parse()
+            .map_err(|_| format!("--retries needs a whole number, got '{value}'"))?,
+        None => match fallback {
+            Some(n) => n,
+            None => return Ok(Retry::default()),
+        },
     };
-    let retries: usize = value
-        .parse()
-        .map_err(|_| format!("--retries needs a whole number, got '{value}'"))?;
     Ok(Retry {
         attempts: retries.saturating_add(1),
         ..Retry::default()
     })
 }
 
-/// The per-attempt API timeout from `--timeout SECS`.
-fn timeout_from(args: &[String]) -> Result<Option<u64>, String> {
-    let Some(value) = flag(args, "--timeout") else {
-        return Ok(None);
+/// The per-attempt API timeout: `--timeout SECS`, else the config's `timeout`.
+fn timeout_from(args: &[String], fallback: Option<u64>) -> Result<Option<u64>, String> {
+    let secs = match flag(args, "--timeout") {
+        Some(value) => value
+            .parse()
+            .map_err(|_| format!("--timeout needs a whole number of seconds, got '{value}'"))?,
+        None => match fallback {
+            Some(secs) => secs,
+            None => return Ok(None),
+        },
     };
-    let secs: u64 = value
-        .parse()
-        .map_err(|_| format!("--timeout needs a whole number of seconds, got '{value}'"))?;
     if secs == 0 {
         return Err("--timeout must be at least 1 second".into());
     }
     Ok(Some(secs.saturating_mul(1000)))
 }
 
-/// The politeness pause from `--delay MS`.
-fn delay_from(args: &[String]) -> Result<u64, String> {
-    let Some(value) = flag(args, "--delay") else {
-        return Ok(0);
-    };
-    value
-        .parse()
-        .map_err(|_| format!("--delay needs a whole number of milliseconds, got '{value}'"))
+/// The politeness pause: `--delay MS`, else the config's `delay`.
+fn delay_from(args: &[String], fallback: Option<u64>) -> Result<u64, String> {
+    match flag(args, "--delay") {
+        Some(value) => value
+            .parse()
+            .map_err(|_| format!("--delay needs a whole number of milliseconds, got '{value}'")),
+        None => Ok(fallback.unwrap_or(0)),
+    }
 }
 
 /// A small-call client for `net`: `--timeout` and `--retries` applied.
@@ -858,7 +939,7 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
         resp.text()
     } else {
         std::fs::read_to_string(source)
-            .map_err(|e| Error::Http(format!("cannot read {source}: {e}")))?
+            .map_err(|e| Error::Io(format!("cannot read {source}: {e}")))?
     };
     let Some(tracks) = listen::list_tracks(&html).filter(|t| !t.is_empty()) else {
         return Err(Error::State(
@@ -918,7 +999,12 @@ async fn batch_one(
     )
     .await?;
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
-    let out = derived_name(r.filename_template.as_deref(), &title, index);
+    let out = default_output(
+        r.filename_template.as_deref(),
+        r.output_dir.as_deref(),
+        &title,
+        index,
+    );
     if !written.insert(out.clone()) {
         return Err(Error::State(format!(
             "output {out} was already written by an earlier source; rename it and retry"
@@ -1221,6 +1307,167 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     None
 }
 
+/// Defaults from the config file. Every field is `None` when the file is absent
+/// or does not set that key, so an unset key falls back to the built-in default
+/// rather than an empty value.
+#[derive(Default)]
+struct Config {
+    output_dir: Option<String>,
+    filename_template: Option<String>,
+    api_base: Option<String>,
+    proxy: Option<String>,
+    retries: Option<usize>,
+    timeout_secs: Option<u64>,
+    delay_ms: Option<u64>,
+}
+
+impl Config {
+    /// Read the config file: `--config PATH` when given (a missing file is an
+    /// error), else `$HOTAUDIO_CONFIG`, else `<config dir>/hotaudio/config.toml`
+    /// (a missing default file is not an error).
+    fn load(path_flag: Option<&str>) -> Result<Self, String> {
+        let (path, required) = match path_flag {
+            Some(path) => (std::path::PathBuf::from(path), true),
+            None => match default_config_path() {
+                Some(path) => (path, false),
+                None => return Ok(Self::default()),
+            },
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(e) => return Err(format!("cannot read config {}: {e}", path.display())),
+        };
+        Self::parse(&text).map_err(|e| format!("config {}: {e}", path.display()))
+    }
+
+    /// Parse the flat TOML subset documented in [`USAGE`].
+    ///
+    /// Only `key = value` lines are accepted, with `#` comments and blank lines
+    /// skipped; values are double-quoted strings or integers. Tables, arrays and
+    /// bare strings are rejected rather than guessed at, so a file a full TOML
+    /// parser would read differently is never silently half-applied.
+    fn parse(text: &str) -> Result<Self, String> {
+        let mut config = Self::default();
+        for (n, raw) in text.lines().enumerate() {
+            let line = strip_comment(raw).trim();
+            if line.is_empty() {
+                continue;
+            }
+            let line_no = n + 1;
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(format!(
+                    "line {line_no}: expected 'key = value', got '{line}'"
+                ));
+            };
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "output_dir" => config.output_dir = Some(parse_string(value, key, line_no)?),
+                "filename_template" => {
+                    let template = parse_string(value, key, line_no)?;
+                    if let Some(message) = template_error(&template) {
+                        return Err(format!("line {line_no}: {message}"));
+                    }
+                    config.filename_template = Some(template);
+                }
+                "api_base" => config.api_base = Some(parse_string(value, key, line_no)?),
+                "proxy" => config.proxy = Some(parse_string(value, key, line_no)?),
+                "retries" => {
+                    let retries = parse_uint(value, key, line_no)?;
+                    config.retries = Some(usize::try_from(retries).map_err(|_| {
+                        format!("line {line_no}: {key} is too large for this platform")
+                    })?);
+                }
+                "timeout" => config.timeout_secs = Some(parse_uint(value, key, line_no)?),
+                "delay" => config.delay_ms = Some(parse_uint(value, key, line_no)?),
+                other => {
+                    return Err(format!(
+                        "line {line_no}: unknown key '{other}' (expected output_dir, \
+                         filename_template, api_base, proxy, retries, timeout or delay)"
+                    ));
+                }
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// The default config location: `$HOTAUDIO_CONFIG`, else `config.toml` under
+/// `$XDG_CONFIG_HOME/hotaudio` (an absolute `XDG_CONFIG_HOME` only, per the
+/// spec), else `$HOME/.config/hotaudio`.
+fn default_config_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("HOTAUDIO_CONFIG") {
+        return Some(std::path::PathBuf::from(path));
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })?;
+    Some(base.join("hotaudio").join("config.toml"))
+}
+
+/// Drop a trailing `#` comment, ignoring a `#` inside a double-quoted string.
+fn strip_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, byte) in line.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' && in_string {
+            escaped = true;
+        } else if byte == b'"' {
+            in_string = !in_string;
+        } else if byte == b'#' && !in_string {
+            return &line[..i];
+        }
+    }
+    line
+}
+
+/// A TOML basic string: `"..."`, with `\n`, `\r`, `\t`, `\"` and `\\` escapes.
+fn parse_string(value: &str, key: &str, line_no: usize) -> Result<String, String> {
+    let not_a_string =
+        || format!("line {line_no}: {key} needs a double-quoted string, got '{value}'");
+    let mut chars = value.chars();
+    if chars.next() != Some('"') {
+        return Err(not_a_string());
+    }
+    let mut out = String::new();
+    loop {
+        match chars.next() {
+            Some('"') => break,
+            Some('\\') => out.push(match chars.next() {
+                Some('n') => '\n',
+                Some('r') => '\r',
+                Some('t') => '\t',
+                Some('"') => '"',
+                Some('\\') => '\\',
+                _ => return Err(not_a_string()),
+            }),
+            Some(c) => out.push(c),
+            None => return Err(not_a_string()),
+        }
+    }
+    if chars.as_str().trim().is_empty() {
+        Ok(out)
+    } else {
+        Err(not_a_string())
+    }
+}
+
+/// A non-negative integer, allowing `_` digit separators as TOML does.
+fn parse_uint(value: &str, key: &str, line_no: usize) -> Result<u64, String> {
+    let digits: String = value.chars().filter(|c| *c != '_').collect();
+    digits
+        .parse()
+        .map_err(|_| format!("line {line_no}: {key} needs a whole number, got '{value}'"))
+}
+
 fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
@@ -1233,8 +1480,7 @@ fn load_keys(path: &Option<String>) -> Result<download::SavedKeys, Error> {
     let text = if path.trim_start().starts_with('{') {
         path.clone()
     } else {
-        std::fs::read_to_string(path)
-            .map_err(|e| Error::Http(format!("cannot read {path}: {e}")))?
+        std::fs::read_to_string(path).map_err(|e| Error::Io(format!("cannot read {path}: {e}")))?
     };
     download::parse_saved_keys(&text)
 }
@@ -1251,7 +1497,7 @@ fn write_saved_keys(
     check_clobber(path, clobber)?;
     ensure_parent(path)?;
     let json = download::keys_to_json(keys, hax_url, title);
-    std::fs::write(path, json).map_err(|e| Error::Http(format!("cannot write {path}: {e}")))?;
+    std::fs::write(path, json).map_err(|e| Error::Io(format!("cannot write {path}: {e}")))?;
     eprintln!("Keys saved to {path}");
     Ok(())
 }
@@ -1286,7 +1532,7 @@ fn ensure_parent(path: &str) -> Result<(), Error> {
     // A bare filename (`track.m4a`) and stdout (`-`) have an empty parent.
     if !parent.as_os_str().is_empty() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Http(format!("cannot create {}: {e}", parent.display())))?;
+            .map_err(|e| Error::Io(format!("cannot create {}: {e}", parent.display())))?;
     }
     Ok(())
 }
@@ -1294,9 +1540,8 @@ fn ensure_parent(path: &str) -> Result<(), Error> {
 /// Write bytes to `path`, or to stdout when `path` is `-`.
 fn write_file(path: &str, bytes: &[u8], clobber: Clobber) -> Result<(), Error> {
     let mut out = open_output(path, clobber)?;
-    out.write_all(bytes)
-        .map_err(|e| Error::Http(e.to_string()))?;
-    out.flush().map_err(|e| Error::Http(e.to_string()))
+    out.write_all(bytes).map_err(|e| Error::Io(e.to_string()))?;
+    out.flush().map_err(|e| Error::Io(e.to_string()))
 }
 
 /// A writer for `path`, or stdout when `path` is `-`.
@@ -1310,8 +1555,8 @@ fn open_output(path: &str, clobber: Clobber) -> Result<Box<dyn Write>, Error> {
     }
     check_clobber(path, clobber)?;
     ensure_parent(path)?;
-    let file = std::fs::File::create(path)
-        .map_err(|e| Error::Http(format!("cannot create {path}: {e}")))?;
+    let file =
+        std::fs::File::create(path).map_err(|e| Error::Io(format!("cannot create {path}: {e}")))?;
     Ok(Box::new(file))
 }
 
@@ -1348,7 +1593,7 @@ impl StreamSink {
         ensure_parent(dest)?;
         let temp = format!("{dest}.part");
         let file = std::fs::File::create(&temp)
-            .map_err(|e| Error::Http(format!("cannot create {temp}: {e}")))?;
+            .map_err(|e| Error::Io(format!("cannot create {temp}: {e}")))?;
         let sink = Self {
             temp: Some(temp),
             dest: dest.to_string(),
@@ -1369,10 +1614,10 @@ impl StreamSink {
             #[cfg(windows)]
             if std::path::Path::new(&self.dest).exists() {
                 std::fs::remove_file(&self.dest)
-                    .map_err(|e| Error::Http(format!("cannot replace {}: {e}", self.dest)))?;
+                    .map_err(|e| Error::Io(format!("cannot replace {}: {e}", self.dest)))?;
             }
             std::fs::rename(&temp, &self.dest)
-                .map_err(|e| Error::Http(format!("cannot move {temp} to {}: {e}", self.dest)))?;
+                .map_err(|e| Error::Io(format!("cannot move {temp} to {}: {e}", self.dest)))?;
         }
         self.committed = true;
         Ok(())
@@ -1544,6 +1789,25 @@ fn derived_name(template: Option<&str>, title: &str, index: usize) -> String {
     parts.join("/")
 }
 
+/// The title-derived output path for one track, honouring `--output-dir` (or the
+/// config's `output_dir`). An explicit `--out` or `--stream-to` is a whole path
+/// and never goes through here.
+fn default_output(
+    template: Option<&str>,
+    output_dir: Option<&str>,
+    title: &str,
+    index: usize,
+) -> String {
+    let name = derived_name(template, title, index);
+    match output_dir {
+        Some(dir) => std::path::Path::new(dir)
+            .join(name)
+            .to_string_lossy()
+            .into_owned(),
+        None => name,
+    }
+}
+
 /// Filename stem from a path, without its extension.
 fn stem(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or(path);
@@ -1591,25 +1855,31 @@ mod tests {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Absent means the library defaults.
         assert_eq!(
-            retry_from(&a(&[])).unwrap().attempts,
+            retry_from(&a(&[]), None).unwrap().attempts,
             Retry::default().attempts
         );
         // `--retries N` is N retries after the first attempt.
-        assert_eq!(retry_from(&a(&["--retries", "0"])).unwrap().attempts, 1);
-        assert_eq!(retry_from(&a(&["--retries", "5"])).unwrap().attempts, 6);
-        assert!(retry_from(&a(&["--retries", "x"])).is_err());
-
-        assert_eq!(timeout_from(&a(&[])).unwrap(), None);
         assert_eq!(
-            timeout_from(&a(&["--timeout", "60"])).unwrap(),
+            retry_from(&a(&["--retries", "0"]), None).unwrap().attempts,
+            1
+        );
+        assert_eq!(
+            retry_from(&a(&["--retries", "5"]), None).unwrap().attempts,
+            6
+        );
+        assert!(retry_from(&a(&["--retries", "x"]), None).is_err());
+
+        assert_eq!(timeout_from(&a(&[]), None).unwrap(), None);
+        assert_eq!(
+            timeout_from(&a(&["--timeout", "60"]), None).unwrap(),
             Some(60_000)
         );
-        assert!(timeout_from(&a(&["--timeout", "0"])).is_err());
-        assert!(timeout_from(&a(&["--timeout", "soon"])).is_err());
+        assert!(timeout_from(&a(&["--timeout", "0"]), None).is_err());
+        assert!(timeout_from(&a(&["--timeout", "soon"]), None).is_err());
 
-        assert_eq!(delay_from(&a(&[])).unwrap(), 0);
-        assert_eq!(delay_from(&a(&["--delay", "250"])).unwrap(), 250);
-        assert!(delay_from(&a(&["--delay", "later"])).is_err());
+        assert_eq!(delay_from(&a(&[]), None).unwrap(), 0);
+        assert_eq!(delay_from(&a(&["--delay", "250"]), None).unwrap(), 250);
+        assert!(delay_from(&a(&["--delay", "later"]), None).is_err());
     }
 
     #[test]
@@ -2027,5 +2297,128 @@ mod tests {
         for f in VALUE_FLAGS.iter().chain(BOOL_FLAGS) {
             assert!(USAGE.contains(f), "USAGE does not mention {f}");
         }
+    }
+
+    #[test]
+    fn config_parses_recognised_keys() {
+        let cfg = Config::parse(
+            "# defaults\n\
+             output_dir = \"/music\"\n\
+             filename_template = \"{index} - {title}\"\n\
+             api_base = \"https://example.test\"\n\
+             proxy = \"http://127.0.0.1:8080\"\n\
+             retries = 4\n\
+             timeout = 60\n\
+             delay = 250\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.output_dir.as_deref(), Some("/music"));
+        assert_eq!(cfg.filename_template.as_deref(), Some("{index} - {title}"));
+        assert_eq!(cfg.api_base.as_deref(), Some("https://example.test"));
+        assert_eq!(cfg.proxy.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(cfg.retries, Some(4));
+        assert_eq!(cfg.timeout_secs, Some(60));
+        assert_eq!(cfg.delay_ms, Some(250));
+    }
+
+    #[test]
+    fn config_rejects_bad_keys_and_values() {
+        // A table header, an unknown key, a bare (unquoted) string, a non-integer
+        // and a bad template all fail rather than being ignored.
+        assert!(Config::parse("[defaults]\ntimeout = 5\n").is_err());
+        assert!(Config::parse("nope = 1\n").is_err());
+        assert!(Config::parse("timeout = \"soon\"\n").is_err());
+        assert!(Config::parse("timeout = 5\n").is_ok());
+        assert!(Config::parse("api_base = https://x\n").is_err());
+        assert!(Config::parse("filename_template = \"{nope}\"\n").is_err());
+    }
+
+    #[test]
+    fn config_strips_comments_and_unescapes_strings() {
+        let cfg = Config::parse(
+            r#"output_dir = "/a#b"  # a comment, not part of the value
+proxy = "a\\b\tc"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.output_dir.as_deref(), Some("/a#b"));
+        assert_eq!(cfg.proxy.as_deref(), Some("a\\b\tc"));
+    }
+
+    #[test]
+    fn config_is_empty_when_unset() {
+        let cfg = Config::parse("\n# nothing here\n").unwrap();
+        assert!(cfg.output_dir.is_none());
+        assert!(cfg.api_base.is_none());
+        assert!(cfg.retries.is_none());
+    }
+
+    #[test]
+    fn exit_codes_distinguish_failure_classes() {
+        assert_eq!(exit_code(&Error::Http("x".into())), code::NETWORK);
+        assert_eq!(exit_code(&Error::Io("x".into())), code::IO);
+        assert_eq!(exit_code(&Error::Protocol("x".into())), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::Sign("x".into())), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::Listen("x".into())), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::State("x".into())), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::Decode("hex")), code::PROTOCOL);
+        assert_eq!(exit_code(&Error::Auth), code::PROTOCOL);
+    }
+
+    #[test]
+    fn policy_flags_fall_back_to_config() {
+        // The flag wins when present.
+        assert_eq!(
+            retry_from(&["--retries".into(), "5".into()], Some(1))
+                .unwrap()
+                .attempts,
+            6
+        );
+        // Otherwise the config value is used.
+        assert_eq!(retry_from(&[], Some(3)).unwrap().attempts, 4);
+        // Without either, the built-in default.
+        assert_eq!(
+            retry_from(&[], None).unwrap().attempts,
+            Retry::default().attempts
+        );
+
+        assert_eq!(
+            timeout_from(&["--timeout".into(), "2".into()], Some(10)).unwrap(),
+            Some(2_000)
+        );
+        assert_eq!(timeout_from(&[], Some(10)).unwrap(), Some(10_000));
+        assert!(timeout_from(&[], Some(0)).is_err());
+
+        assert_eq!(
+            delay_from(&["--delay".into(), "5".into()], Some(250)).unwrap(),
+            5
+        );
+        assert_eq!(delay_from(&[], Some(250)).unwrap(), 250);
+        assert_eq!(delay_from(&[], None).unwrap(), 0);
+    }
+
+    #[test]
+    fn default_output_prefixes_the_output_dir() {
+        assert_eq!(default_output(None, None, "Track One", 1), "Track One.m4a");
+        // Compare through `Path::join` so the test holds on every separator.
+        let under = |dir: &str, name: &str| {
+            std::path::Path::new(dir)
+                .join(name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(
+            default_output(None, Some("music"), "Track One", 1),
+            under("music", "Track One.m4a")
+        );
+        assert_eq!(
+            default_output(Some("{index}"), Some("out"), "x", 2),
+            under("out", "2.m4a")
+        );
+        // The template's own subdirectories are preserved under the directory.
+        assert_eq!(
+            default_output(Some("{ext}/{index}"), Some("out"), "x", 3),
+            under("out", "m4a/3.m4a")
+        );
     }
 }
