@@ -5,29 +5,47 @@
 //! one connection doing one request at a time is as fast as anything more
 //! elaborate and far easier to reason about (see `docs/ARCHITECTURE.md`).
 
-use ureq::Agent;
+use ureq::{Agent, Proxy, ProxyProtocol};
 
 use crate::crypto::{Error, Result};
 use crate::http::{FullResponse, Head, Request};
 
 pub(super) struct Transport {
     agent: Agent,
+    timeout_ms: Option<u64>,
 }
 
 impl Transport {
     pub(super) fn new(timeout_ms: Option<u64>) -> Self {
-        let config = Agent::config_builder()
-            .user_agent(crate::HOTAUDIO_UA)
-            // Non-2xx is a normal outcome here: callers inspect statuses and
-            // read the error body, which the default error path discards.
-            .http_status_as_error(false);
-        let config = match timeout_ms {
-            Some(ms) => config.timeout_global(Some(std::time::Duration::from_millis(ms))),
-            None => config,
-        };
         Self {
-            agent: config.build().into(),
+            agent: build_agent(timeout_ms, Proxy::try_from_env()),
+            timeout_ms,
         }
+    }
+
+    /// Rebuild the agent around an explicit proxy, overriding any that came from
+    /// the environment.
+    pub(super) fn with_proxy(self, proxy: &str) -> Result<Self> {
+        let parsed = Proxy::new(proxy)
+            .map_err(|e| Error::Protocol(format!("invalid proxy '{proxy}': {e}")))?;
+        // `ureq` accepts a SOCKS URL even when the feature is off, then panics on
+        // the first request. Reject it here so `--proxy` fails cleanly instead.
+        if matches!(
+            parsed.protocol(),
+            ProxyProtocol::Socks4
+                | ProxyProtocol::Socks4A
+                | ProxyProtocol::Socks5
+                | ProxyProtocol::Socks5h
+        ) {
+            return Err(Error::Protocol(format!(
+                "SOCKS proxy '{proxy}' needs ureq's socks-proxy feature, which this build keeps off; \
+                 use an http(s) proxy"
+            )));
+        }
+        Ok(Self {
+            agent: build_agent(self.timeout_ms, Some(parsed)),
+            timeout_ms: self.timeout_ms,
+        })
     }
 
     /// One attempt, body read into memory.
@@ -112,6 +130,24 @@ impl OpenBody {
             }
         }
     }
+}
+
+/// Build an agent with the shared policy and, when given, an explicit proxy.
+///
+/// `proxy` is `Some` for `--proxy` and for the environment variables read at
+/// construction; `None` means a direct connection.
+fn build_agent(timeout_ms: Option<u64>, proxy: Option<Proxy>) -> Agent {
+    let config = Agent::config_builder()
+        .user_agent(crate::HOTAUDIO_UA)
+        // Non-2xx is a normal outcome here: callers inspect statuses and read
+        // the error body, which the default error path discards.
+        .http_status_as_error(false)
+        .proxy(proxy);
+    let config = match timeout_ms {
+        Some(ms) => config.timeout_global(Some(std::time::Duration::from_millis(ms))),
+        None => config,
+    };
+    config.build().into()
 }
 
 fn collect_headers(response: &ureq::http::Response<ureq::Body>) -> Vec<(String, String)> {
