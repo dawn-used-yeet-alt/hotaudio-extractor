@@ -575,7 +575,10 @@ async fn execute(r: Run) -> Result<(), Error> {
             hs
         };
 
-        let mut writer = std::io::BufWriter::with_capacity(1 << 20, open_output(dest, clobber)?);
+        // Stream into a sibling temp file and promote it only on success, so a
+        // failed run never leaves a corrupt `.m4a` at `dest` (see [`StreamSink`]).
+        let (sink, out) = StreamSink::open(dest, clobber)?;
+        let mut writer = std::io::BufWriter::with_capacity(1 << 20, out);
 
         let res = download::download_streaming(
             &api,
@@ -591,6 +594,9 @@ async fn execute(r: Run) -> Result<(), Error> {
         )
         .await?;
         writer.flush().map_err(|e| Error::Http(e.to_string()))?;
+        // Close the file before promoting it: Windows will not move an open file.
+        drop(writer);
+        sink.commit()?;
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
         write_saved_keys(
@@ -1309,6 +1315,81 @@ fn open_output(path: &str, clobber: Clobber) -> Result<Box<dyn Write>, Error> {
     Ok(Box::new(file))
 }
 
+/// The `--stream-to` destination, written through a sibling temp file.
+///
+/// A streaming download can fail midway, and a truncated fragmented MP4 is not
+/// playable. Rather than risk that, the bytes go to `<dest>.part` and
+/// [`StreamSink::commit`] renames them onto `dest` only once the whole download
+/// succeeded. [`Drop`] removes the temp file otherwise, so a failed run leaves
+/// neither a corrupt `.m4a` nor a stray temp file. `-` streams straight to
+/// stdout, which cannot be made atomic.
+struct StreamSink {
+    /// Temp file to promote, or `None` when the destination is stdout.
+    temp: Option<String>,
+    dest: String,
+    clobber: Clobber,
+    committed: bool,
+}
+
+impl StreamSink {
+    /// Prepare `dest` and return its writer. Fails early under `--no-clobber`
+    /// if `dest` already exists.
+    fn open(dest: &str, clobber: Clobber) -> Result<(Self, Box<dyn Write>), Error> {
+        if dest == "-" {
+            let sink = Self {
+                temp: None,
+                dest: dest.to_string(),
+                clobber,
+                committed: false,
+            };
+            return Ok((sink, Box::new(std::io::stdout())));
+        }
+        check_clobber(dest, clobber)?;
+        ensure_parent(dest)?;
+        let temp = format!("{dest}.part");
+        let file = std::fs::File::create(&temp)
+            .map_err(|e| Error::Http(format!("cannot create {temp}: {e}")))?;
+        let sink = Self {
+            temp: Some(temp),
+            dest: dest.to_string(),
+            clobber,
+            committed: false,
+        };
+        Ok((sink, Box::new(file)))
+    }
+
+    /// Promote the temp file onto the destination.
+    ///
+    /// Re-checks `--no-clobber`: the destination could have appeared since
+    /// [`StreamSink::open`]. Otherwise the rename replaces it; on Windows
+    /// `rename` cannot replace, so an existing destination is removed first.
+    fn commit(mut self) -> Result<(), Error> {
+        if let Some(temp) = self.temp.clone() {
+            check_clobber(&self.dest, self.clobber)?;
+            #[cfg(windows)]
+            if std::path::Path::new(&self.dest).exists() {
+                std::fs::remove_file(&self.dest)
+                    .map_err(|e| Error::Http(format!("cannot replace {}: {e}", self.dest)))?;
+            }
+            std::fs::rename(&temp, &self.dest)
+                .map_err(|e| Error::Http(format!("cannot move {temp} to {}: {e}", self.dest)))?;
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StreamSink {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(temp) = &self.temp {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
 /// Print a result line to stdout, or to stderr when `dest` is stdout (`-`),
 /// where stdout carries the audio instead.
 fn print_result(dest: &str, line: &str) {
@@ -1665,6 +1746,80 @@ mod tests {
         let file = dir.join("a/b/track.m4a");
         assert!(open_output(file.to_str().unwrap(), Clobber::Replace).is_ok());
         assert!(file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stream_sink_commits_a_temp_file() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("hotaudio-stream-commit-{pid}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest = dir.join("track.m4a");
+        let dest = dest.to_str().unwrap();
+        let temp = format!("{dest}.part");
+
+        let (sink, mut out) = StreamSink::open(dest, Clobber::Replace).unwrap();
+        out.write_all(b"audio").unwrap();
+        out.flush().unwrap();
+        drop(out);
+        // Nothing lands at the destination until the whole stream succeeds.
+        assert!(std::path::Path::new(&temp).exists(), "temp while streaming");
+        assert!(
+            !std::path::Path::new(dest).exists(),
+            "dest waits for commit"
+        );
+        sink.commit().unwrap();
+        assert_eq!(std::fs::read(dest).unwrap(), b"audio");
+        assert!(
+            !std::path::Path::new(&temp).exists(),
+            "temp removed on commit"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stream_sink_drops_a_failed_partial() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("hotaudio-stream-fail-{pid}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest = dir.join("track.m4a");
+        let dest = dest.to_str().unwrap();
+        let temp = format!("{dest}.part");
+
+        {
+            // Dropping without `commit` is a mid-download failure.
+            let (sink, mut out) = StreamSink::open(dest, Clobber::Replace).unwrap();
+            out.write_all(b"partial").unwrap();
+            drop(out);
+            drop(sink);
+        }
+        assert!(!std::path::Path::new(dest).exists(), "no corrupt dest");
+        assert!(
+            !std::path::Path::new(&temp).exists(),
+            "temp cleaned up on drop"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stream_sink_honors_no_clobber() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("hotaudio-stream-clobber-{pid}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("track.m4a");
+        let dest = dest.to_str().unwrap();
+        std::fs::write(dest, b"old").unwrap();
+
+        assert!(StreamSink::open(dest, Clobber::Refuse).is_err());
+        // Under Replace the old file survives until the commit replaces it.
+        let (sink, out) = StreamSink::open(dest, Clobber::Replace).unwrap();
+        drop(out);
+        assert_eq!(std::fs::read(dest).unwrap(), b"old");
+        sink.commit().unwrap();
+        assert_eq!(std::fs::read(dest).unwrap(), b"");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

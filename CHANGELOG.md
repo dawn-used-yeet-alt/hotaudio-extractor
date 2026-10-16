@@ -126,6 +126,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- **`--stream-to` writes atomically.** Streamed output goes to a sibling
+  `<dest>.part` and is renamed onto the destination only once the download
+  succeeds; a failed or interrupted stream no longer leaves a truncated `.m4a`
+  in its place. `-` (stdout) is unchanged, since a pipe cannot be made atomic.
+
 - **A literal `-` is accepted as a flag value.** Validation rejected any value
   starting with `-` as a missing value, so `--out -` (stdout, added for piping)
   never worked; `-` is now allowed, while a longer dash-word in the value
