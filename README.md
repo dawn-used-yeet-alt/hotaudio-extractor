@@ -8,7 +8,7 @@ Save audio from [hotaudio.net](https://hotaudio.net) as a playable `.m4a`. Paste
 
 ## Install
 
-Linux, macOS and Termux, one line:
+Linux, macOS and Termux:
 
 ```bash
 curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/install.sh | sh
