@@ -2,53 +2,57 @@
 
 ## It suddenly stopped working
 
-This tool depends on how hotaudio.net works today, so a site update can break it.
-If downloads fail where they used to work, check the
-[releases page](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases)
-for a newer version, or open an issue.
+The extractor tracks how hotaudio.net works today, so a site update can break it.
+Check the [releases page](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases)
+for a newer version, or open an issue with what you saw.
 
-[coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is
-slower but more stable, because it does not track the site's internals.
+[coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is the
+slower-but-stable alternative: it does not track the site's internals.
 
-## A download failed, or the audio looks truncated
+## A download fails or the audio looks truncated
 
-Transfers resume themselves across dropped connections, so most failures are
-temporary. With `--stream-to <file>` the output goes to a sibling `<file>.part`
-and is renamed into place only once the whole download has succeeded, so a failed
-or interrupted run never leaves a half-written `.m4a`. A leftover `.part` is safe
-to delete, and a re-run starts clean.
-
-If the network is flaky, give the request more room:
+Transfers resume themselves after dropped connections, so many failures are
+temporary. Give the requests more room on a flaky link:
 
 ```bash
 hotaudio-download "$URL" --retries 5 --timeout 60
 ```
 
-To be sure the decrypted bytes are what the container says they are, `--verify`
-walks the MP4 box tree and checks the audio's duration against the container's,
-failing loudly on a mismatch:
+Downloads to `--stream-to` land at a sibling `.part` file and are renamed into
+place only after the whole download succeeds, so an interrupted run leaves no
+half-written `.m4a` behind. The manual construction is shown in
+[CLI.md](CLI.md#streaming-output), and leftover `.part` files are safe to delete.
+
+To be certain the decrypted bytes match the container:
 
 ```bash
 hotaudio-download "$URL" --verify
 ```
 
+`--verify` walks the MP4 box tree and fails loudly when the output's duration
+does not match the container.
+
 ## The binary will not run
 
-- **`cannot execute binary file`** (Termux or Linux): the build does not match
-  your architecture. `uname -m` prints `x86_64` for Intel/AMD and `aarch64` for
-  ARM; re-download the matching archive from
-  [the latest release](https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest).
-- **macOS "cannot be opened because the developer cannot be verified"**:
-  `xattr -d com.apple.quarantine hotaudio-download`.
-- **Windows SmartScreen**: More info → Run anyway.
-- **`hotaudio-download: command not found`** after using `install.sh`: the
-  install directory is not on your `PATH`. The script prints the line to add.
-- **Termux is missing `tar`**: `pkg install tar`. Android builds need API 24 or
-  newer.
+The fixes for architecture mismatches, Gatekeeper, SmartScreen, `PATH` and
+Termux live in [INSTALL.md](INSTALL.md#after-unpacking), next to the download
+instructions they belong with.
 
 ## Reading the output
 
-Failures are distinguished by exit code (`2` bad input, `3` transport, `4`
-protocol, `5` filesystem, `130` cancelled); the full table is in
-[CLI.md](CLI.md#exit-codes). `--json` prints a machine-readable result, and
-`--quiet` / `--verbose` change how much is printed.
+Failures separate into these classes by exit code:
+
+- `3` transport error
+- `4` protocol error
+
+plus `2` for bad input, `5` for the local filesystem, and `130` for Ctrl-C.
+The full table is in [CLI.md](CLI.md#exit-codes). `--json` prints a
+machine-readable result, and `--quiet` / `--verbose` change how much is
+printed. A 3 or 4 after a working install is a site-side change; see the
+section above.
+
+## Debugging deeper
+
+`--verbose` logs request-level detail. If you can read the protocol, the
+failure-symptom table in [MAINTENANCE.md](MAINTENANCE.md#diagnosis-first) maps
+each symptom to the component that owns it: most failures name their own fix.
