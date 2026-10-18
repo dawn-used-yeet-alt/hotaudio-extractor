@@ -1,9 +1,8 @@
 # Protocol reference
 
 Reverse-engineered from the player's behaviour and the pinned `nozzle.js`
-build. Everything here is what the server actually validates.
-
----
+build. Everything here is what the server actually validates, and measurements
+are from the live site unless noted.
 
 ## 1. Page state
 
@@ -13,8 +12,8 @@ The track page embeds:
 <script>var __ha_state = "<base64>";</script>
 ```
 
-Decode the base64, then split: the **last 32 bytes are the key**, everything
-before is a ChaCha20-Poly1305 ciphertext under a **zero 96-bit nonce**.
+Decode the base64, then split: the **last 32 bytes are the key**, and
+everything before is a ChaCha20-Poly1305 ciphertext under a zero 96-bit nonce.
 
 ```json
 {
@@ -26,27 +25,29 @@ before is a ChaCha20-Poly1305 ciphertext under a **zero 96-bit nonce**.
 }
 ```
 
-`pid`, `tick` and `tracks[tid].key` must be server-issued — the page fetch
-cannot be skipped. Measured: a garbage `pid` yields 400, a garbage `tick` yields
-401 (`bad signature`, plaintext body). `tick` stays valid for hours across
+`pid`, `tick` and `tracks[tid].key` must be server-issued: the page fetch
+cannot be skipped. A garbage `pid` yields 400 and a garbage `tick` yields 401
+(`bad signature`, plaintext body). `tick` stays valid for hours across
 sessions, so caching a state is viable; keys are not derived from it.
 
 ## 2. Key exchange
 
-Standard X25519. The client generates an ephemeral keypair; the shared secret is
-hashed to produce the session key:
+Standard X25519. The client generates an ephemeral keypair; the shared secret
+is hashed to produce the session key:
 
 ```
-Ee = SHA-256(X25519(claude_private, server_public))
+Ee = SHA-256(X25519(client_private, server_public))
 ```
 
 One keypair per extraction is reused for every listen request. Each request
-still gets a fresh signature and therefore a fresh nonce, so nonces never repeat
-under a fixed `Ee`.
+still gets a fresh signature and therefore a fresh nonce, so nonces never
+repeat under a fixed `Ee`.
 
 `client_pub` is sent as the hex `X-Key` header.
 
 ## 3. Listen request
+
+The main API call. Endpoint and headers:
 
 ```
 POST /api/v1/audio/listen[?key=<page-url key>]
@@ -58,20 +59,20 @@ Origin: https://hotaudio.net
 Referer: https://hotaudio.net/
 ```
 
-The `?key=` query is the page URL's `key` parameter, forwarded verbatim for
-private/unlisted tracks.
+The `?key=` query repeats the page URL's `key` parameter verbatim for private
+and unlisted tracks.
 
 ### Payload
 
-Field order is significant: the server validates the signature over exactly the
-serialised string, so it must match the player's `JSON.stringify` order.
+Field order is significant: the server validates the signature over exactly
+the serialised string, so order must match the player's `JSON.stringify`.
 
 ```json
 {"tid":"<track id>","pid":"<page pid>","key":"<track key>","tick":"<page tick>","first":<n>}
 ```
 
-`first = -1` is the initial call. `first = <segmentIndex>` pages key branches for
-long tracks.
+`first = -1` is the initial call; `first = <segmentIndex>` pages key branches
+for long tracks (see section 5).
 
 ### Nonces
 
@@ -97,8 +98,10 @@ secret.
 Success bodies carry `Content-Type: application/vnd.hotaudio.crypt+json` and
 are encrypted. A plaintext body is an error to surface, not to decrypt.
 
-Status handling mirrors the player: `401` is retried once then reported as
-"bad sig"; `403` is fatal ("refresh page").
+Status handling mirrors the player: `401` is retried once, then reported as
+"bad sig"; `403` is fatal ("refresh page"). These are the statuses the retry
+policy covers (measured in [ARCHITECTURE.md](ARCHITECTURE.md#reliability):
+401 being retryable is what makes a transient signature rejection recoverable).
 
 ### The `.hax` URL
 
@@ -108,9 +111,9 @@ Derivable without a listen call:
 https://cdn.hotaudio.net/a/<track key>.hax
 ```
 
-Stable across tracks and sessions. The downloader still uses the server-issued
-URL; this is documented as a tripwire — if the two ever disagree, the CDN layout
-changed.
+Stable across tracks and sessions. The downloader still uses the
+server-issued URL; the derivation is documented as a tripwire, so the two
+disagreeing is the signal that the CDN layout changed.
 
 ## 4. HAX0 container
 
@@ -119,27 +122,27 @@ offset 0:  magic "HAX0"
 offset 4:  fileLength    u32 LE
 offset 8:  headerLength  u32 LE
 offset 12: extraLength   u32 LE
-offset 16: bencoded metadata dict, through headerLength
+offset 16: bencoded metadata dict, through offset 16 + headerLength
 ```
 
-Metadata keys: `codec`, `durationMs`, `segmentCount`, `segments` (a byte string
-of `segmentCount` × `{offset u32 LE, pts u32 LE}`), `baseKey`.
+Metadata keys: `codec`, `durationMs`, `segmentCount`, `segments` (a byte
+string of `segmentCount` × `{offset u32 LE, pts u32 LE}`), `baseKey`.
 
 When `extraLength > 0`, the region `[headerLength, headerLength + extraLength)`
-is an independent ChaCha20-Poly1305 ciphertext under a **zero nonce**, keyed by
-the tree node at `tree_base - 1` (segment index `-1`). The player bencode-decodes
-the plaintext into the map it calls `ext` and uses at least `ebur128` (loudness)
-for its visualiser. It is not audio and is not needed to decrypt the track; the
-crate surfaces the ciphertext as `Hax0::extra`.
+is an independent ChaCha20-Poly1305 ciphertext under a zero nonce, keyed by the
+tree node at `tree_base - 1` (segment index `-1`). The player bencode-decodes
+the plaintext into the map it calls `ext` and uses at least `ebur128`
+(loudness) for its visualiser. It is not audio, and decrypting the track never
+needs it; the crate surfaces the ciphertext as `Hax0::extra`.
 
-`baseKey` is decoded by the player only to log it; it is **not** used for
-derivation — every branch key comes from the listen API. The crate surfaces it as
-`Hax0::base_key` but does not derive from it.
+`baseKey` is decoded by the player only to log it. It is not used for
+derivation: every branch key comes from the listen API. The crate surfaces it
+as `Hax0::base_key` and does not derive from it.
 
-Segment `i` occupies `[segments[i].offset, segments[i+1].offset)`, and the last
-segment runs to `fileLength`. Each slice is an **independent** ChaCha20-Poly1305
-ciphertext under a **zero nonce**, keyed by the segment's derived key. There is
-no chaining between segments.
+Segment `i` occupies `[segments[i].offset, segments[i+1].offset)`, and the
+last segment runs to `fileLength`. Each slice is an independent
+ChaCha20-Poly1305 ciphertext under a zero nonce, keyed by the segment's
+derived key. There is no chaining between segments.
 
 ## 5. Segment key tree
 
@@ -152,56 +155,59 @@ tree_base = 1 + (1 << depth)
 leaf(i)   = tree_base + i
 ```
 
-To derive leaf `i`, walk from the root down. `node(level) = leaf(i) >> (depth - level)`.
-At each level, starting from the nearest ancestor whose key is already known:
+To derive leaf `i`, walk from the root down: `node(level) = leaf(i) >> (depth -
+level)`. At each level, starting from the nearest ancestor whose key is
+already known:
 
 ```
 child = SHA-256(parent_key || (node & 0xff))      # one appended byte
 ```
 
-An error means no ancestor of that leaf is present in the key map — that is the
-signal to page more branches.
+An error means no ancestor of that leaf is in the key map: that is the signal
+to page more branches.
 
 Consecutive segments share most of their path, so memoising intermediate node
-keys makes derivation effectively free. **Clear the cache whenever new branch
-keys are merged**: a new ancestor changes every key beneath it.
+keys makes derivation effectively free. Clear the cache whenever new branch
+keys merge: a new ancestor changes every key beneath it.
 
 ### Branch semantics
 
 Measured against the live API on an 899-segment track:
 
 - `first <= 0` is the initial call: returns the `.hax` URL plus one branch
-  (here node `16`, covering ~127 leaves).
-- `first = n` (n ≥ 1) returns a small window starting at segment `n`
+  (node `16` here, covering ~127 leaves).
+- `first = n` for `n >= 1` returns a small window starting at segment `n`
   (typically 8 leaves), without a URL.
 - Out-of-range `first` clamps to the last leaf key.
 - Branch keys are deterministic per `(track, first)` and byte-identical across
-  sessions with different `tick`s.
-- Branch **width** rotates per request (8, 32, up to 128 observed). Width is not
-  a function of `first`, so no seeding strategy beats miss-driven paging — which
-  already harvests lucky wide branches by merging everything returned.
-- Concurrent requests show no latency benefit; the server serialises per track.
+  sessions with different `tick` values.
+- Branch **width** rotates per request (8, 32, up to 128 observed). Width is
+  not a function of `first`, so no seeding strategy beats miss-driven paging,
+  which already harvests lucky wide branches by merging everything returned.
+- Concurrent requests show no latency benefit; the server serialises per
+  track.
 
-Because width rotates, one draw for an index can miss even though a later draw
-covers it. Hence the policy in `download.rs`: on a miss, redraw the missing
-index, bounded by `KEY_PAGE_ATTEMPTS`. A sequential pass recovers from a miss on
-the next segment anyway; random access (seeking) has no next segment, which is
-what the bound is for.
+Because width rotates, one draw for an index can miss even though a later
+draw covers it. Hence the policy in `download.rs`: on a miss, redraw the
+missing index, bounded by `KEY_PAGE_ATTEMPTS` (4). A sequential pass recovers
+from a miss on the next segment anyway; random access (seeking) has no next
+segment, which is what the bound is for.
 
 ## 6. The signature VM
 
-This is the unusual part, and the part worth reading carefully.
+### What produces it
 
-### What it is not
-
-The `X-Signature` looks like a MAC. It is not a call to any crypto primitive.
-Upstream it is produced by evaluating `nozzle.js` — ~106 KB of deliberately
-obfuscated JavaScript — inside a fake-browser sandbox. Deobfuscating it shows the
-payload is a **register machine**.
+No standard crypto primitive is evaluated. Upstream, the signature comes from
+evaluating `nozzle.js`, a ~106 KB obfuscated JavaScript bundle, inside a
+fake-browser sandbox. Deobfuscating it showed the payload is a register
+machine running a 1,314-byte program (657 instructions, two bytes each). This
+crate implements that machine and embeds the program; see
+[ARCHITECTURE.md](ARCHITECTURE.md#the-signature-vm) for why the exact program
+is embedded rather than the algorithm re-derived.
 
 ### The program
 
-657 instructions, two bytes each, recovered from the bundle expression:
+Recovered from the bundled expression:
 
 ```
 n[e(82)] = n[e(87)] || w(e(177)) + w[e(101)](e(97), e(171)) + w(37) + w(e(260)) + w(e(172))
@@ -213,9 +219,9 @@ The VM normalises the program before running it:
 n[3] = [...bc].map(c => B(c.charCodeAt(0), "34", k(-36)))
 ```
 
-`B` dispatches on a captured flag `re`; with `re === -36` it returns `n[0] - n[1]`,
-so each entry becomes `charCode - 34`. `src/signer/bytecode.rs` stores that
-already-decoded form.
+`B` dispatches on a captured flag `re`; with `re === -36` it returns
+`n[0] - n[1]`, so each entry becomes `charCode - 34`. `src/signer/bytecode.rs`
+stores that already-decoded form.
 
 ### The machine
 
@@ -223,64 +229,64 @@ already-decoded form.
   accumulator, `reg[34]` the string register, `reg[35]` the call argument.
 - Registers 0..33 start as the number `0`; 34..79 start as empty strings.
 - `opcode < 80` is `MOV reg[opcode] = reg[operand]`.
-- `opcode >= 80` dispatches. Instructions are fetched two bytes at a time and the
-  counter advances by 2.
+- `opcode >= 80` dispatches. Instructions are fetched two bytes at a time and
+  the counter advances by 2.
 
 Instruction set:
 
 | Opcode | Effect |
 | --- | --- |
-| 80–88 | `+`, `-`, `Math.imul`, `^`, `&`, `\|`, `>>>`, `<<` on the accumulator, with `>>> 0` coercion |
+| 80-88 | `+`, `-`, `Math.imul`, `^`, `&`, `\|`, `>>>`, `<<` on the accumulator, with `>>> 0` coercion |
 | 89, 90 | `reg[operand]++` / `--` |
 | 91 | `acc = operand` |
 | 92, 93 | rotate right / left |
 | 94, 95 | negate / numeric-coerce the operand register |
 | 96 | `acc = (acc / reg[operand]) >>> 0` |
 | 97 | `acc = acc << operand` |
-| 98–101 | forward / backward branches on truthiness |
+| 98-101 | forward / backward branches on truthiness |
 | 113 | `reg[34] += reg[operand]` |
 | 114 | `acc = reg[operand].length` |
 | 115 | `acc = reg[34].charCodeAt(reg[operand])` |
-| 118 | `acc = (reg[operand] in reg[34])` → a **boolean** |
+| 118 | `acc = (reg[operand] in reg[34])`, a JS boolean |
 | 119 | `reg[34] = reg[34][reg[operand]]` (global, then member lookup) |
 | 120 | `reg[34] = globalThis` |
 | 122 | `reg[34] = (reg[operand] >>> 0).toString(16).padStart(8, "0")` |
-| 123–125 | string reset, `fromCharCode`, and append |
+| 123-125 | string reset, `fromCharCode`, and append |
 | 126 | build the environment fingerprint object |
-| 127 | `new reg[operand]()` — the `Date` constructor |
+| 127 | `new reg[operand]()`, the `Date` constructor |
 | 128 | `reg[34].split(reg[operand])` |
 | 129 | `String(reg[operand])`, with a native-stub fallback |
 | 130 | `+reg[34].includes(reg[operand])` |
 | 131 | `+(reg[34] === reg[operand])` |
 
-Several entries above deserve distrust, because each was wrong in a first
-reading and each produced a silently incorrect signature. See
-[MAINTENANCE.md](MAINTENANCE.md#things-that-are-easy-to-get-wrong).
+Several entries above deserve distrust: each was wrong in a first reading,
+and each produced a silently incorrect signature. The list, and how each was
+caught, is in [MAINTENANCE.md](MAINTENANCE.md#things-easy-to-get-wrong).
 
 ### The environment probe
 
-`op 126` builds an object from `ENV_HASHES` (144 keys, all values `undefined`).
-The program then tests membership with `op 118` and reads a few globals with
-`op 119`, building a fingerprint that depends on the *absence* of markers as well
-as their presence. The observable surface is small:
+`op 126` builds an object from `ENV_HASHES` (144 keys, all values
+`undefined`). The program then tests membership with `op 118` and reads a few
+globals with `op 119`, building a fingerprint that depends on the *absence* of
+markers as much as on their presence. The observable surface:
 
 | Property | Value |
 | --- | --- |
 | `Date` | function; `Date.stack` is `undefined`, which throws |
 | `MediaSource` | `function MediaSource() { [native code] }` |
 | `SourceBuffer` | `function SourceBuffer() { [native code] }` |
-| `SourceBuffer.prototype` | `Symbol.toStringTag` = `SourceBuffer` → `[object SourceBuffer]` |
+| `SourceBuffer.prototype` | `Symbol.toStringTag` = `SourceBuffer`, giving `[object SourceBuffer]` |
 | `appendBuffer` | `function appendBuffer() { [native code] }` |
-| `__ha_chunks` | **absent** — its absence is part of the fingerprint |
+| `__ha_chunks` | absent; its absence is part of the fingerprint |
 
 The `Date.stack` throw is converted by the bundle's `__FAB` hook into a
 V8-formatted stack rooted at the pinned player URL, which is folded into the
-digest. `src/signer/env.rs::nozzle_stack` reproduces it verbatim.
+digest. `src/signer/env.rs::nozzle_stack` reproduces that stack verbatim.
 
 Verified: the signature is timezone-independent. `Date.toString()` includes a
-local timezone, so one might expect it to matter — signing the same payload under
-`UTC`, `America/New_York`, `Asia/Kolkata` and `Pacific/Kiritimati` produces
-identical output.
+local timezone, so one might expect it to matter, but signing the same payload
+under `UTC`, `America/New_York`, `Asia/Kolkata` and `Pacific/Kiritimati`
+produces identical output.
 
 ### Output
 
@@ -288,23 +294,23 @@ identical output.
 "9:" + big_endian_u32(floor(now_seconds)) + 24 lowercase hex chars (12 bytes)
 ```
 
-for example `9:6553f1006bc31e581c8825bd656a3c75` at `2023-11-14T22:13:20Z`.
+For example `9:6553f1006bc31e581c8825bd656a3c75` at `2023-11-14T22:13:20Z`.
 
 Because the 4-byte timestamp is embedded in cleartext, a server can bound
-signature freshness, and the 12-byte tag is truncated output rather than a full
-digest width.
+signature freshness, and the 12-byte tag is truncated output rather than a
+full digest width.
 
 ### Version pinning
 
 The program, the environment table and the build id
-(`PINNED_NOZZLE_VERSION = "1J1Db0bF"`) are one contract. When the upstream player
-changes, signatures are rejected with 401 and all three must be re-captured —
-see [MAINTENANCE.md](MAINTENANCE.md).
+(`PINNED_NOZZLE_VERSION = "1J1Db0bF"`) are one contract. When the upstream
+player changes, signatures are rejected with 401 and all three must be
+re-captured together ([MAINTENANCE.md](MAINTENANCE.md#the-three-pinned-artefacts)).
 
 ## 7. Rate limiting and politeness
 
-Measured: a per-request server-side floor of about 1 s dominates; concurrency
+A per-request server-side floor of about 1 second dominates, and concurrency
 changes nothing. The downloader is sequential by design. For extra spacing on
 bulk or batch runs, `--delay MS` (and `download::DownloadOptions::delay_ms`)
-pauses before each listen/key-paging request; it is politeness only, and
+pauses before each listen / key-paging request. It is politeness only;
 correctness never depends on it.

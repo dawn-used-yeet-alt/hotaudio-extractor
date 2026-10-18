@@ -17,7 +17,7 @@ curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/lat
 It picks the build for your platform and installs `hotaudio-download` to
 `~/.local/bin` (`$PREFIX/bin` on Termux).
 
-Windows (PowerShell) — x86-64 shown; use `windows-arm64` on ARM:
+Windows, in PowerShell (x86-64 shown; use `windows-arm64` on ARM):
 
 ```powershell
 Invoke-WebRequest https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/hotaudio-download-windows-x86_64.zip -OutFile hotaudio-download-windows-x86_64.zip
@@ -46,15 +46,17 @@ config file all exist; [docs/CLI.md](docs/CLI.md) covers them, and
 
 ## Docs
 
-- [Install](docs/INSTALL.md) — every platform, checksums, from source
-- [Command line](docs/CLI.md) — sources, output, keys, network, exit codes
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — when it stops working
-- [Architecture](docs/ARCHITECTURE.md) — how it works and why
-- [Protocol](docs/PROTOCOL.md) — the wire protocol and signer
-- [Browser / wasm](docs/BROWSER.md) — running it in a page
-- [Maintenance](docs/MAINTENANCE.md) — fixing it after a site change
-- [Migration](docs/MIGRATION.md) — moving from the TypeScript version
-- [Contributing](CONTRIBUTING.md)
+Docs live in [`docs/`](docs/README.md), split by reader:
+
+- Install and use: [Install](docs/INSTALL.md), [Command line](docs/CLI.md),
+  [Troubleshooting](docs/TROUBLESHOOTING.md)
+- Build on the crate: [Library (Rust)](docs/LIBRARY.md),
+  [Browser / wasm](docs/BROWSER.md)
+- Keep it working: [Architecture](docs/ARCHITECTURE.md),
+  [Protocol](docs/PROTOCOL.md), [Maintenance](docs/MAINTENANCE.md)
+- Historical: [Migration from TypeScript](docs/MIGRATION.md)
+- [Contributing](CONTRIBUTING.md), and the full
+  [documentation index](docs/README.md)
 
 ## License
 

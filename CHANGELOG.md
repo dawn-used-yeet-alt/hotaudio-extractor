@@ -8,12 +8,20 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- **The docs are split by reader.** `docs/` now has an index
+  (`docs/README.md`) organising every page into three parts: using the
+  downloader (install, CLI, troubleshooting), building on the crate (new
+  `docs/LIBRARY.md` for the Rust API, plus the browser guide), and keeping it
+  working (architecture, protocol, maintenance runbook). Overlapping content
+  was consolidated: install-execution fixes moved next to the install steps,
+  the proxy rationale lives once in the browser guide, and cross-references
+  replace repeated summaries.
 - **Windows instructions are in the README.** `install.sh` is POSIX, so the
   README now carries a PowerShell download/unpack/run block; a CI step pins the
   archive it names against `scripts/release-targets.tsv`.
 - **The release page is a release page again.** `release-notes.md` had grown
-  into a near-copy of the README; it is now a short header — install one-liner,
-  one usage example, links — above GitHub's generated changelog.
+  into a near-copy of the README; it is now a short header (install one-liner,
+  one usage example, links) above GitHub's generated changelog.
 
 ## [1.2.2] - 2026-10-16
 
