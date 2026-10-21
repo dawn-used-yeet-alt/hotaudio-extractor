@@ -598,7 +598,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         )
         .await?;
         write_saved_keys(
-            &r.save_keys,
+            r.save_keys.as_deref(),
             &bundle.hax_url,
             bundle.title.as_deref(),
             &bundle.keys,
@@ -754,7 +754,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
         write_saved_keys(
-            &r.save_keys,
+            r.save_keys.as_deref(),
             &res.hax_url,
             title.as_deref(),
             &res.keys,
