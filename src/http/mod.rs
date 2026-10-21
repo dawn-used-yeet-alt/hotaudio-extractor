@@ -92,6 +92,7 @@ impl Retry {
 }
 
 /// True for transient HTTP statuses worth retrying.
+#[must_use]
 pub fn is_retryable(status: u16) -> bool {
     matches!(status, 401 | 408 | 425 | 429 | 500 | 502 | 503 | 504)
 }
@@ -105,11 +106,13 @@ pub struct FullResponse {
 
 impl FullResponse {
     /// The body decoded as UTF-8, lossily.
+    #[must_use]
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
     /// Case-insensitive header lookup.
+    #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -118,6 +121,7 @@ impl FullResponse {
     }
 
     /// True for 2xx.
+    #[must_use]
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
@@ -216,6 +220,11 @@ impl Client {
     /// applies by default (`ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`, plus
     /// `NO_PROXY`). Returns an error for a malformed URL or an unsupported
     /// scheme (SOCKS needs ureq's `socks-proxy` feature, which is off).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the proxy URL is malformed or its scheme is
+    /// unsupported.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_proxy(mut self, proxy: &str) -> Result<Self> {
         self.backend = self.backend.with_proxy(proxy)?;
@@ -225,6 +234,10 @@ impl Client {
     /// `wasm32` has no proxy configuration of its own: the browser's `fetch`
     /// already uses the embedder's settings, and [`Client::with_fetch`] is the
     /// seam for a host that needs one. This returns the client unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Never; the `Result` matches the native builder.
     #[cfg(target_arch = "wasm32")]
     pub fn with_proxy(self, _proxy: &str) -> Result<Self> {
         Ok(self)
@@ -239,6 +252,10 @@ impl Client {
 
     /// Perform a request with retries, returning the response even on a
     /// retryable error status so callers can inspect the error body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the last transport error once the retry budget is exhausted.
     pub async fn request(
         &self,
         method: &str,
@@ -308,6 +325,15 @@ impl Client {
     /// it aborts the transfer: that error is propagated as-is and never retried,
     /// since it is the caller's decision (a cancellation, say) rather than a
     /// transport failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the last transport error, an [`Error::Http`] if the transfer
+    /// stops short of its announced length, or the error returned by
+    /// `on_progress`, which is propagated without retrying.
+    // One retry loop whose state (partial buffer, expected length, last error)
+    // only makes sense together; splitting it would hide the state machine.
+    #[allow(clippy::too_many_lines)]
     pub async fn get_resumable(
         &self,
         url: &str,

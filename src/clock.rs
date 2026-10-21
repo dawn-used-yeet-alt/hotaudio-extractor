@@ -121,6 +121,14 @@ fn performance_now() -> Option<f64> {
 ///
 /// On wasm this yields to the event loop rather than blocking it, which is what
 /// makes the retry backoff usable in a page at all.
+///
+/// # Panics
+///
+/// On `wasm32`, if the timer callback cannot be represented as a JS function;
+/// a `Closure` always can, so this cannot happen in practice.
+// `async` is required on wasm, where the timer is a promise; the native branch
+// has nothing to await.
+#[allow(clippy::unused_async)]
 pub async fn sleep(d: Duration) {
     #[cfg(not(target_arch = "wasm32"))]
     {

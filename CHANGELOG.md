@@ -8,6 +8,10 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- **Clippy `pedantic` is enforced.** `Cargo.toml` now denies the group on both
+  targets, so CI rejects the extra lints it enables. Lossy numeric casts stay
+  allowed crate-wide: the signer mirrors JavaScript number semantics, and the
+  parsers read wire formats where the conversion is the protocol.
 - **The docs are split by reader.** `docs/` now has an index
   (`docs/README.md`) organising every page into three parts: using the
   downloader (install, CLI, troubleshooting), building on the crate (new

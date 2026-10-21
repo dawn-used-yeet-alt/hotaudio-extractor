@@ -18,17 +18,26 @@ pub use vm::{Rendered, SignError, sign, trace};
 /// Routed through [`crate::clock`] because `SystemTime::now` panics on
 /// `wasm32-unknown-unknown`, and the browser build must produce the same
 /// signature the native one does.
+#[must_use]
 pub fn now_secs() -> f64 {
     crate::clock::unix_secs()
 }
 
 /// Compute the `X-Signature` header value for a listen-request payload,
 /// stamped with the current time.
+///
+/// # Errors
+///
+/// Returns [`SignError`] if the payload cannot be rendered or the VM stops.
 pub fn sign_payload(payload: &str) -> Result<String, SignError> {
     sign(payload, now_secs())
 }
 
 /// Convenience for callers that want to pin the clock (tests, replays).
+///
+/// # Errors
+///
+/// Returns [`SignError`] if the payload cannot be rendered or the VM stops.
 pub fn sign_payload_at(payload: &str, timestamp_secs: f64) -> Result<String, SignError> {
     sign(payload, timestamp_secs)
 }

@@ -136,8 +136,7 @@ impl Val {
                 })
                 .collect::<Vec<_>>()
                 .join(","),
-            Val::Native { display, .. } => (*display).to_string(),
-            Val::Object { display, .. } => (*display).to_string(),
+            Val::Native { display, .. } | Val::Object { display, .. } => (*display).to_string(),
             Val::Date(ms) => js_date_string(*ms),
             Val::Global => "[object Window]".to_string(),
             Val::Err => "TypeError".to_string(),
@@ -180,9 +179,7 @@ fn str_to_number(s: &str) -> f64 {
         _ => {}
     }
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16)
-            .map(|v| v as f64)
-            .unwrap_or(f64::NAN);
+        return u64::from_str_radix(hex, 16).map_or(f64::NAN, |v| v as f64);
     }
     t.parse::<f64>().unwrap_or(f64::NAN)
 }
@@ -211,12 +208,12 @@ fn js_number_to_string(n: f64) -> String {
 /// signing under four different `TZ` values and getting identical output). We
 /// render the fixed UTC form so the value stays deterministic.
 fn js_date_string(ms: f64) -> String {
+    const WD: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let secs = (ms / 1000.0).floor() as i64;
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);
     let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
     let (y, mo, d) = civil_from_days(days);
-    const WD: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let wd = WD[(days.rem_euclid(7)) as usize];
     format!(
         "{wd} {mo:>3} {d:02} {y:04} {h:02}:{mi:02}:{s:02} GMT+0000 (Coordinated Universal Time)"
@@ -251,7 +248,7 @@ fn from_char_code(code: f64) -> String {
     char::from_u32(u).map(String::from).unwrap_or_default()
 }
 
-/// `>>> 0`: ToUint32.
+/// `>>> 0`: `ToUint32`.
 fn to_u32(n: f64) -> u32 {
     if !n.is_finite() || n == 0.0 {
         return 0;
@@ -307,8 +304,7 @@ fn member_lookup(recv: &Val, key: &str) -> Option<Val> {
                 tag: Some("SourceBuffer"),
             }
         }
-        (Val::Native { .. }, "stack") => Val::Undef,
-        (Val::Object { .. }, "stack") => Val::Undef,
+        (Val::Native { .. } | Val::Object { .. }, "stack") => Val::Undef,
         // The `__FAB` error object exposes the synthesised V8 stack that the
         // bundle's error hook builds, which the program folds into the digest.
         (Val::Err, "stack") => Val::Str(Rc::new(nozzle_stack())),
@@ -330,7 +326,7 @@ fn env_object() -> Val {
             std::sync::Arc::new(
                 ENV_HASHES
                     .iter()
-                    .map(|k| k.to_string())
+                    .map(ToString::to_string)
                     .collect::<HashSet<_>>(),
             )
         })
@@ -341,6 +337,11 @@ fn env_object() -> Val {
 /// Run the program, recording `(opcode, operand, registers)` before each
 /// instruction executes. Used by the differential test against the reference
 /// implementation to locate divergence; not on the hot path.
+///
+/// # Errors
+///
+/// Returns [`SignError`] if the program exceeds the step limit or dispatches an
+/// opcode the machine does not model.
 pub fn trace(
     payload: &str,
     timestamp_secs: f64,
@@ -384,10 +385,20 @@ impl std::fmt::Display for Rendered {
 /// Compute the `X-Signature` for `payload` at `timestamp_secs` (Unix seconds).
 ///
 /// Returns `"<prefix><8 hex timestamp><24 hex tag>"`.
+///
+/// # Errors
+///
+/// Returns [`SignError`] if the program exceeds the step limit or dispatches an
+/// opcode the machine does not model.
 pub fn sign(payload: &str, timestamp_secs: f64) -> Result<String, SignError> {
     run(payload, timestamp_secs, None)
 }
 
+// A flat dispatch loop: one arm per opcode, which is what keeps the mapping to
+// the recovered program readable. Splitting it would scatter the machine state
+// across helpers for no gain.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::float_cmp)] // `===` on JS numbers is exactly IEEE equality.
 fn run(
     payload: &str,
     timestamp_secs: f64,
@@ -447,17 +458,19 @@ fn run(
         }
 
         match op {
-            80 => acc_bin!(|a, b| to_u32(a + b) as f64),
-            81 => acc_bin!(|a, b| to_u32(a - b) as f64),
+            80 => acc_bin!(|a, b| f64::from(to_u32(a + b))),
+            81 => acc_bin!(|a, b| f64::from(to_u32(a - b))),
             // Math.imul: 32-bit signed multiply, wrapped to u32.
             82 => {
-                acc_bin!(|a, b| { (to_u32(a) as i32).wrapping_mul(to_u32(b) as i32) as u32 as f64 })
+                acc_bin!(
+                    |a, b| f64::from((to_u32(a) as i32).wrapping_mul(to_u32(b) as i32) as u32)
+                );
             }
-            83 => acc_bin!(|a, b| (to_u32(a) ^ to_u32(b)) as f64),
-            84 => acc_bin!(|a, b| (to_u32(a) & to_u32(b)) as f64),
-            85 => acc_bin!(|a, b| (to_u32(a) | to_u32(b)) as f64),
-            87 => acc_bin!(|a: f64, b: f64| (to_u32(a) >> (to_u32(b) & 31)) as f64),
-            88 => acc_bin!(|a: f64, b: f64| (to_u32(a) << (to_u32(b) & 31)) as f64),
+            83 => acc_bin!(|a, b| f64::from(to_u32(a) ^ to_u32(b))),
+            84 => acc_bin!(|a, b| f64::from(to_u32(a) & to_u32(b))),
+            85 => acc_bin!(|a, b| f64::from(to_u32(a) | to_u32(b))),
+            87 => acc_bin!(|a: f64, b: f64| f64::from(to_u32(a) >> (to_u32(b) & 31))),
+            88 => acc_bin!(|a: f64, b: f64| f64::from(to_u32(a) << (to_u32(b) & 31))),
             // `d[arg]++` / `d[arg]--` on the register operand itself.
             89 => {
                 let v = regs[arg].to_num();
@@ -476,8 +489,10 @@ fn run(
                 // B(x, re = 40) => +x
                 regs[R_ACC] = Val::Num(regs[arg].to_num());
             }
-            96 => acc_bin!(|a, b| to_u32(a / b) as f64),
-            97 => regs[R_ACC] = Val::Num((to_u32(regs[R_ACC].to_num()) << (arg & 31)) as f64),
+            96 => acc_bin!(|a, b| f64::from(to_u32(a / b))),
+            97 => {
+                regs[R_ACC] = Val::Num(f64::from(to_u32(regs[R_ACC].to_num()) << (arg & 31)));
+            }
             98 => {
                 if regs[R_ACC].truthy() {
                     pc = jump(pc, arg as isize, true);
@@ -555,9 +570,7 @@ fn run(
                         regs[R_STR] = Val::Err;
                         continue;
                     }
-                    Val::Str(s) => utf16_at(s, regs[arg].to_num())
-                        .map(Val::Num)
-                        .unwrap_or(Val::Undef),
+                    Val::Str(s) => utf16_at(s, regs[arg].to_num()).map_or(Val::Undef, Val::Num),
                     other => match member_lookup(other, &key) {
                         Some(v) => v,
                         None => match global_member(&key) {
@@ -674,7 +687,7 @@ fn utf16_at(s: &str, idx: f64) -> Option<f64> {
         return None;
     }
     let idx = idx as usize;
-    s.encode_utf16().nth(idx).map(|u| u as f64)
+    s.encode_utf16().nth(idx).map(f64::from)
 }
 
 /// Render one register the way the reference tracer does, so traces diff

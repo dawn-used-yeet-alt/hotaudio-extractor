@@ -64,12 +64,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub type KeyMap = std::collections::HashMap<u32, [u8; 32]>;
 
 /// SHA-256 of `data`.
+#[must_use]
 #[inline]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
 /// Decode a lowercase or uppercase hex string.
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] if the input has odd length or a non-hex digit.
 #[inline]
 pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
     if s.len() % 2 != 0 {
@@ -79,12 +84,17 @@ pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
 }
 
 /// Encode bytes as lowercase hex.
+#[must_use]
 #[inline]
 pub fn hex_encode(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
 /// Decode standard base64 (the page state is base64 with padding).
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] if the input is not padded standard base64.
 pub fn base64_decode(s: &str) -> Result<Vec<u8>> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -99,6 +109,11 @@ fn zero_nonce() -> Nonce {
 }
 
 /// Encrypt `plaintext` with ChaCha20-Poly1305 under `key` and a zero nonce.
+///
+/// # Errors
+///
+/// Returns [`Error::Auth`] if the cipher rejects the input; for in-memory
+/// plaintext the AEAD cannot fail.
 pub fn seal_zero(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(&(*key).into());
     cipher
@@ -113,6 +128,11 @@ pub fn seal_zero(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decrypt a ChaCha20-Poly1305 ciphertext under `key` and a zero nonce.
+///
+/// # Errors
+///
+/// Returns [`Error::Auth`] if the ciphertext is shorter than the 16-byte tag or
+/// fails authentication.
 pub fn open_zero(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(&(*key).into());
     cipher
@@ -130,6 +150,16 @@ pub fn open_zero(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>> {
 ///
 /// Avoids the intermediate `Vec` that [`open_zero`] allocates, which matters
 /// because this runs once per HAX0 segment.
+///
+/// # Errors
+///
+/// Returns [`Error::Auth`] if the ciphertext is shorter than the 16-byte tag or
+/// fails authentication, leaving `out` unchanged.
+///
+/// # Panics
+///
+/// If the tag slice is not exactly 16 bytes; the length check above makes that
+/// impossible.
 pub fn open_zero_into(key: &[u8; 32], ciphertext: &[u8], out: &mut Vec<u8>) -> Result<()> {
     if ciphertext.len() < 16 {
         return Err(Error::Auth);
@@ -153,6 +183,16 @@ pub fn open_zero_into(key: &[u8; 32], ciphertext: &[u8], out: &mut Vec<u8>) -> R
 }
 
 /// Decrypt with an explicit 12-byte nonce (listen request/response bodies).
+///
+/// # Errors
+///
+/// Returns [`Error::Auth`] if the ciphertext is shorter than the 16-byte tag or
+/// fails authentication.
+///
+/// # Panics
+///
+/// If the tag slice is not exactly 16 bytes; the length check above makes that
+/// impossible.
 pub fn open_with_nonce(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
     if ciphertext.len() < 16 {
         return Err(Error::Auth);
@@ -169,6 +209,11 @@ pub fn open_with_nonce(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> R
 }
 
 /// Encrypt with an explicit 12-byte nonce.
+///
+/// # Errors
+///
+/// Returns [`Error::Auth`] if the cipher rejects the input; for in-memory
+/// plaintext the AEAD cannot fail.
 pub fn seal_with_nonce(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(&(*key).into());
     cipher
@@ -192,6 +237,11 @@ pub struct Session {
 
 /// Generate an ephemeral X25519 keypair and derive the session secret from the
 /// server's static public key.
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] if the key is not hex, or [`Error::Protocol`] if it
+/// is not 32 bytes.
 pub fn key_exchange(server_pub_hex: &str) -> Result<Session> {
     let server_pub_bytes = hex_decode(server_pub_hex)?;
     let server_pub_bytes: [u8; 32] = server_pub_bytes

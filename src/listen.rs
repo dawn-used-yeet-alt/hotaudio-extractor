@@ -9,6 +9,7 @@
 //!    encrypt under the session secret, and exchange it for branch keys.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use serde::Deserialize;
 
@@ -64,6 +65,7 @@ pub struct Handshake {
 }
 
 /// Extract the raw `__ha_state` value from page HTML.
+#[must_use]
 pub fn extract_ha_state(html: &str) -> Option<String> {
     let marker = "var __ha_state = \"";
     let start = html.find(marker)? + marker.len();
@@ -73,6 +75,17 @@ pub fn extract_ha_state(html: &str) -> Option<String> {
 }
 
 /// Decrypt the base64 `__ha_state` payload.
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] for malformed base64, [`Error::State`] if the
+/// payload is too short or not the expected JSON, or [`Error::Auth`] if it does
+/// not authenticate.
+///
+/// # Panics
+///
+/// If the trailing key is not 32 bytes; the length check above makes that
+/// impossible.
 pub fn decrypt_state(state_b64: &str) -> Result<PageState> {
     let raw = crypto::base64_decode(state_b64)?;
     if raw.len() < 32 + 16 {
@@ -85,6 +98,11 @@ pub fn decrypt_state(state_b64: &str) -> Result<PageState> {
 }
 
 /// Build a handshake from already-fetched page HTML.
+///
+/// # Errors
+///
+/// Returns [`Error::State`] if the page state cannot be decrypted, or
+/// [`Error::Decode`] / [`Error::Protocol`] if its server key is malformed.
 pub fn handshake_from_html(
     html: &str,
     api_base: &str,
@@ -100,7 +118,7 @@ pub fn handshake_from_html(
         None => state
             .order
             .first()
-            .map(|n| n.to_string())
+            .map(ToString::to_string)
             .filter(|id| state.tracks.contains_key(id))
             .or_else(|| state.tracks.keys().next().cloned())
             .unwrap_or_default(),
@@ -122,6 +140,7 @@ pub fn handshake_from_html(
 }
 
 /// Extract the `?key=` query parameter the player forwards to listen calls.
+#[must_use]
 pub fn extract_listen_key(page_url: &str) -> Option<String> {
     let query = page_url.split_once('?')?.1;
     for pair in query.split('&') {
@@ -145,15 +164,12 @@ fn percent_decode(s: &str) -> String {
             }
             b'%' if i + 2 < bytes.len() => {
                 let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
                 }
             }
             b => {
@@ -171,9 +187,11 @@ fn percent_encode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -184,6 +202,12 @@ fn percent_encode(s: &str) -> String {
 /// `track_id` is the same id `--track` accepts; `None` keeps the page's default
 /// (its first track). A requested id that the page does not carry is a protocol
 /// error rather than a silent fall-back to the default.
+///
+/// # Errors
+///
+/// Returns [`Error::Http`] for a non-2xx page, [`Error::State`] if the page has
+/// no decryptable state, or [`Error::Protocol`] if the requested track is
+/// missing or its server key is malformed.
 pub async fn load_handshake(
     client: &Client,
     page_url: &str,
@@ -212,6 +236,7 @@ pub async fn load_handshake(
 }
 
 /// List every track on a page, in page order.
+#[must_use]
 pub fn list_tracks(html: &str) -> Option<Vec<(String, String, String)>> {
     let state = decrypt_state(&extract_ha_state(html)?).ok()?;
     let mut ids: Vec<String> = state
@@ -241,6 +266,7 @@ pub fn list_tracks(html: &str) -> Option<Vec<(String, String, String)>> {
 ///
 /// Observed and stable across tracks: `https://cdn.hotaudio.net/a/<key>.hax`.
 /// The downloader still uses the server-issued URL.
+#[must_use]
 pub fn hax_url_for_key(track_key: &str) -> String {
     format!("https://cdn.hotaudio.net/a/{track_key}.hax")
 }
@@ -263,6 +289,11 @@ fn politeness_pause(delay_ms: u64) -> Option<std::time::Duration> {
 /// `delay_ms` pauses before the request when non-zero. It is politeness only —
 /// batch and bulk callers use it to space listen/key-paging load — and never
 /// affects correctness (see `docs/PROTOCOL.md` §7).
+///
+/// # Errors
+///
+/// Returns [`Error::Sign`] if the payload cannot be signed, [`Error::Listen`]
+/// for a rejected or non-encrypted response, or a transport error.
 pub async fn listen(
     client: &Client,
     hs: &Handshake,
@@ -292,7 +323,7 @@ pub async fn listen(
 
     let mut url = format!("{}/api/v1/audio/listen", hs.api_base);
     if let Some(key) = &hs.listen_key {
-        url.push_str(&format!("?key={}", percent_encode(key)));
+        let _ = write!(url, "?key={}", percent_encode(key));
     }
 
     let headers = [
@@ -348,7 +379,9 @@ fn json_string(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -357,7 +390,10 @@ fn json_string(s: &str) -> String {
 }
 
 /// Merge branch keys into a key map. Returns the number of *new* keys.
-pub fn merge_keys(map: &mut crypto::KeyMap, keys: &HashMap<String, String>) -> usize {
+pub fn merge_keys<S: std::hash::BuildHasher>(
+    map: &mut crypto::KeyMap,
+    keys: &HashMap<String, String, S>,
+) -> usize {
     let mut added = 0;
     for (k, v) in keys {
         let Ok(node) = k.parse::<u32>() else { continue };
@@ -376,7 +412,7 @@ pub fn merge_keys(map: &mut crypto::KeyMap, keys: &HashMap<String, String>) -> u
 
 /// Convert a branch-key map into the typed key map, skipping malformed entries
 /// so paging can refetch them.
-pub fn keys_to_map(keys: &HashMap<String, String>) -> crypto::KeyMap {
+pub fn keys_to_map<S: std::hash::BuildHasher>(keys: &HashMap<String, String, S>) -> crypto::KeyMap {
     let mut map = HashMap::new();
     merge_keys(&mut map, keys);
     map

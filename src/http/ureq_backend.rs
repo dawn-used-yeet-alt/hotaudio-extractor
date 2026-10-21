@@ -15,6 +15,9 @@ pub(super) struct Transport {
     timeout_ms: Option<u64>,
 }
 
+// The shared client awaits these; this blocking backend has nothing to await,
+// and the same method is genuinely async on the browser target.
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 impl Transport {
     pub(super) fn new(timeout_ms: Option<u64>) -> Self {
         Self {
@@ -115,6 +118,8 @@ pub(super) struct OpenBody {
     body: ureq::Body,
 }
 
+// Awaited by the shared streaming loop; reading a blocking body never suspends.
+#[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 impl OpenBody {
     pub(super) async fn pump(
         &mut self,
