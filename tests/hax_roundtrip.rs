@@ -68,7 +68,7 @@ fn build_container(
     meta.extend(bstr(b"durationMs"));
     meta.extend(bint(duration_ms));
     meta.extend(bstr(b"segmentCount"));
-    meta.extend(bint(segment_count as u64));
+    meta.extend(bint(u64::from(segment_count)));
     meta.extend(bstr(b"segments"));
     // Table length is fixed, so it can be encoded before offsets are filled.
     meta.extend(bstr(&table));
@@ -90,7 +90,7 @@ fn build_container(
     meta.extend(bstr(b"durationMs"));
     meta.extend(bint(duration_ms));
     meta.extend(bstr(b"segmentCount"));
-    meta.extend(bint(segment_count as u64));
+    meta.extend(bint(u64::from(segment_count)));
     meta.extend(bstr(b"segments"));
     meta.extend(bstr(&table));
     meta.push(b'e');
