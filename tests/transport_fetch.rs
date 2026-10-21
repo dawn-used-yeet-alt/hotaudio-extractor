@@ -37,7 +37,7 @@ impl Recorder {
             Reflect::set(&self.0, &JsString::from(key), &value).expect("set field");
         };
         set("status", JsValue::from_f64(f64::from(status)));
-        set("body", Uint8Array::from(body.as_slice()).into());
+        set("body", Uint8Array::from(body).into());
         let pairs: Array = headers
             .iter()
             .map(|(k, v)| {
