@@ -576,7 +576,7 @@ pub async fn decrypt_container(
         hax_url: initial.url.clone(),
         keys,
         segment_count: hax.segment_count,
-        pages,
+        pages: page_count,
         codec: hax.codec,
         hax_bytes: None,
     })
@@ -678,7 +678,7 @@ pub async fn download_streaming(
         codec: hax.codec.clone(),
         hax_url: initial.url,
         keys,
-        pages,
+        pages: page_count,
     })
 }
 
