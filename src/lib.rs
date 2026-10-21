@@ -123,6 +123,7 @@ pub(crate) fn warn(msg: &str) {
 /// The crate fetches whatever URL it is given, so this is a heuristic for
 /// catching a wrong link early, not an access-control check: mirrors, proxies and
 /// short links may legitimately fail it.
+#[must_use]
 pub fn is_hotaudio_url(url: &str) -> bool {
     // https?://(www.)?hotaudio.net/u/<user>/<track> with an optional query and
     // an optional trailing slash.

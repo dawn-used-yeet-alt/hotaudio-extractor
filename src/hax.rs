@@ -75,11 +75,16 @@ pub enum BValue<'a> {
 
 impl<'a> Bencode<'a> {
     /// Wrap a buffer, positioned at its first value.
+    #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
 
     /// Decode one value, leaving the reader just past it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crypto::Error::Decode`] for truncated or malformed bencode.
     pub fn next_value(&mut self) -> Result<BValue<'a>> {
         let byte = *self
             .buf
@@ -155,6 +160,17 @@ fn find(buf: &[u8], from: usize, needle: u8) -> Result<usize> {
 
 impl Hax0 {
     /// Parse a HAX0 header from the start of a container.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crypto::Error::Protocol`] if the magic, metadata or segment
+    /// table is missing or malformed, or [`crypto::Error::Decode`] for
+    /// malformed bencode.
+    ///
+    /// # Panics
+    ///
+    /// If a fixed-width field is not exactly its declared width, which the
+    /// length checks make impossible.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < 16 || &buf[..4] != b"HAX0" {
             return Err(crypto::Error::Protocol("not a HAX0 container".into()));
@@ -169,13 +185,10 @@ impl Hax0 {
             .min(buf.len());
         let extra = buf.get(header_end..extra_end).unwrap_or(&[]).to_vec();
         let meta_bytes = buf.get(16..header_end).unwrap_or(&[]);
-        let meta = match Bencode::new(meta_bytes).next_value()? {
-            BValue::Dict(d) => d,
-            _ => {
-                return Err(crypto::Error::Protocol(
-                    "HAX0 metadata is not a dict".into(),
-                ));
-            }
+        let BValue::Dict(meta) = Bencode::new(meta_bytes).next_value()? else {
+            return Err(crypto::Error::Protocol(
+                "HAX0 metadata is not a dict".into(),
+            ));
         };
 
         let codec = match meta.get("codec") {
@@ -210,16 +223,13 @@ impl Hax0 {
                 ));
             }
         };
-        let table = match meta.get("segments") {
-            Some(BValue::Bytes(b)) => b,
-            _ => {
-                return Err(crypto::Error::Protocol(
-                    "HAX0 metadata missing segments".into(),
-                ));
-            }
+        let Some(BValue::Bytes(table)) = meta.get("segments") else {
+            return Err(crypto::Error::Protocol(
+                "HAX0 metadata missing segments".into(),
+            ));
         };
 
-        if (table.len() as u64) < segment_count as u64 * 8 {
+        if (table.len() as u64) < u64::from(segment_count) * 8 {
             return Err(crypto::Error::Protocol(
                 "HAX0 segment table is short".into(),
             ));
@@ -248,6 +258,7 @@ impl Hax0 {
 
     /// Byte range of segment `i`'s ciphertext, from its offset to the next
     /// segment's offset (or `file_length` for the last one).
+    #[must_use]
     pub fn slice_range(&self, i: usize) -> (usize, usize) {
         let start = self.segments[i].offset as usize;
         let end = if i + 1 < self.segments.len() {
@@ -281,6 +292,7 @@ pub struct KeyTree {
 
 impl KeyTree {
     /// Build the tree geometry for `segment_count` segments.
+    #[must_use]
     pub fn new(segment_count: u32) -> Self {
         let bit_len = bit_len(segment_count.saturating_sub(1));
         Self {
@@ -290,6 +302,7 @@ impl KeyTree {
     }
 
     /// Node index of leaf `seg_idx`.
+    #[must_use]
     #[inline]
     pub fn leaf_node(&self, seg_idx: u32) -> u32 {
         self.tree_base + seg_idx
@@ -298,6 +311,7 @@ impl KeyTree {
     /// Node index at tree level `level` on the path to leaf `seg_idx`.
     ///
     /// `level` counts down from the root (`depth`) to the leaf.
+    #[must_use]
     #[inline]
     pub fn node_at(&self, leaf: u32, level: u32) -> u32 {
         leaf >> (self.depth - level)
@@ -317,6 +331,10 @@ impl KeyTree {
     /// Starts at the nearest known ancestor in `keys` and hashes down. `cache`
     /// memoises intermediate node keys and must be cleared whenever new branch
     /// keys are merged into `keys`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeyError::Missing`] if no ancestor of the leaf is in `keys`.
     pub fn derive(
         &self,
         keys: &crypto::KeyMap,
@@ -332,6 +350,10 @@ impl KeyTree {
     /// [`derive`](Self::derive) is the segment case; this is what a non-segment
     /// node such as [`extra_node`](Self::extra_node) needs. `node` must be a
     /// valid node index (its bit length at most `depth`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeyError::Missing`] if no ancestor of `node` is in `keys`.
     pub fn derive_node(
         &self,
         keys: &crypto::KeyMap,
@@ -349,9 +371,8 @@ impl KeyTree {
                 break;
             }
         }
-        let mut level = match start_level {
-            Some(l) => l,
-            None => return Err(KeyError::Missing { seg_idx: node }),
+        let Some(mut level) = start_level else {
+            return Err(KeyError::Missing { seg_idx: node });
         };
 
         while level < self.depth {

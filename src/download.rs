@@ -71,11 +71,16 @@ impl Cancel {
     }
 
     /// Whether the caller has asked the download to stop.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         (self.0)()
     }
 
     /// [`Error::Cancelled`] if the caller has asked to stop, else `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`] when the token reports cancellation.
     pub fn check(&self) -> Result<()> {
         if self.is_cancelled() {
             Err(Error::Cancelled)
@@ -157,6 +162,11 @@ impl<'a> Clients<'a> {
     }
 
     /// Download a track from its page URL.
+    ///
+    /// # Errors
+    ///
+    /// Propagates handshake, listen, container-fetch, decrypt and cancellation
+    /// errors from the stages this runs.
     pub async fn download_from_page(
         &self,
         page_url: &str,
@@ -175,6 +185,10 @@ impl<'a> Clients<'a> {
     }
 
     /// Download using an existing handshake.
+    ///
+    /// # Errors
+    ///
+    /// Propagates listen, container-fetch, decrypt and cancellation errors.
     pub async fn download_with_handshake(
         &self,
         hs: &Handshake,
@@ -203,6 +217,11 @@ impl<'a> Clients<'a> {
 /// The whole pipeline runs on `client`, including the container transfer. Use
 /// [`Clients`] to keep small API calls and the bulk transfer on separate
 /// timeout policies.
+///
+/// # Errors
+///
+/// Propagates handshake, listen, container-fetch, decrypt and cancellation
+/// errors from the stages this runs.
 pub async fn download_from_page(
     client: &Client,
     page_url: &str,
@@ -213,6 +232,10 @@ pub async fn download_from_page(
 }
 
 /// Download using an existing handshake, on one client for both roles.
+///
+/// # Errors
+///
+/// Propagates listen, container-fetch, decrypt and cancellation errors.
 pub async fn download_with_handshake(
     client: &Client,
     hs: &Handshake,
@@ -224,6 +247,11 @@ pub async fn download_with_handshake(
 
 /// Fetch the `.hax` container. `client` should be the untimed bulk client,
 /// since this is the transfer that legitimately takes minutes.
+///
+/// # Errors
+///
+/// Returns a transport error, [`Error::Http`] for an incomplete transfer, or
+/// [`Error::Cancelled`] if the token is set mid-transfer.
 pub async fn fetch_container(
     client: &Client,
     url: &str,
@@ -308,6 +336,7 @@ pub struct ListenPager<'a> {
 
 impl<'a> ListenPager<'a> {
     /// Page `hs`'s track through `client`.
+    #[must_use]
     pub fn new(client: &'a Client, hs: &'a Handshake) -> Self {
         Self {
             client,
@@ -339,7 +368,7 @@ impl KeyPager for ListenPager<'_> {
             cancel.check()?;
         }
         Ok(
-            listen::listen(self.client, self.hs, idx as i64, self.delay_ms)
+            listen::listen(self.client, self.hs, i64::from(idx), self.delay_ms)
                 .await?
                 .keys,
         )
@@ -355,26 +384,31 @@ impl KeyPager for ListenPager<'_> {
 /// The memo is consulted first, so a segment already covered by an earlier draw
 /// costs nothing. `keys` is the caller's merged-key map and `cache` its memo;
 /// both are updated in place. New keys invalidate the memo, since a new ancestor
-/// changes every key beneath it. `pages` counts listen requests actually made,
+/// changes every key beneath it. `page_count` counts listen requests made,
 /// misses included.
 ///
 /// Fails only once [`KEY_PAGE_ATTEMPTS`] consecutive draws have all missed; a
 /// transport error from `pager` is propagated immediately rather than retried,
 /// so a real failure is not reported as an uncovered segment.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] after [`KEY_PAGE_ATTEMPTS`] misses, and
+/// propagates a transport error from `pager` without retrying it.
 pub async fn derive_or_page(
     pager: &mut impl KeyPager,
     tree: &KeyTree,
     keys: &mut crypto::KeyMap,
     cache: &mut crypto::KeyMap,
     seg_idx: u32,
-    pages: &mut u32,
+    page_count: &mut u32,
 ) -> Result<[u8; 32]> {
     if let Ok(key) = tree.derive(keys, seg_idx, cache) {
         return Ok(key);
     }
     for _ in 0..KEY_PAGE_ATTEMPTS {
         let extra = pager.page(seg_idx).await?;
-        *pages += 1;
+        *page_count += 1;
         if listen::merge_keys(keys, &extra) == 0 {
             // The window missed this leaf; the next draw gets a new width.
             continue;
@@ -440,6 +474,11 @@ pub const VERIFY_TOLERANCE_MS: u64 = 500;
 /// `ftyp` signature; this also catches a truncated file and a duration that
 /// disagrees with [`Hax0::duration_ms`]. `reader` is taken by value so the
 /// streamed path can verify the file it just wrote without re-loading it.
+///
+/// # Errors
+///
+/// Propagates [`mp4::verify`]'s errors, or returns [`Error::Protocol`] if the
+/// decoded duration differs from `expected_ms` beyond the tolerance.
 pub fn verify_output(reader: impl std::io::Read, expected_ms: u64) -> Result<mp4::Info> {
     let info = mp4::verify(reader)?;
     if let Some(actual_ms) = info.duration_ms {
@@ -459,6 +498,12 @@ pub fn verify_output(reader: impl std::io::Read, expected_ms: u64) -> Result<mp4
 ///
 /// `client` is used for key paging (small, latency-bound calls); the container
 /// itself is supplied as bytes by the caller.
+///
+/// # Errors
+///
+/// Propagates container parsing, key paging, decryption and cancellation
+/// errors; also [`Error::Protocol`] if a segment slice is out of range or the
+/// output is not MP4.
 pub async fn decrypt_container(
     client: &Client,
     hs: &Handshake,
@@ -485,7 +530,7 @@ pub async fn decrypt_container(
     let mut pager = ListenPager::new(client, hs)
         .with_delay_ms(opts.delay_ms)
         .with_cancel(opts.cancel.clone());
-    let mut pages = 0u32;
+    let mut page_count = 0u32;
     for i in 0..hax.segment_count as usize {
         // Between segments: a page request has its own check, but a segment
         // already covered by the memo never pages, so this is the only place a
@@ -494,7 +539,12 @@ pub async fn decrypt_container(
             cancel.check()?;
         }
         let key = derive_or_page(
-            &mut pager, &tree, &mut keys, &mut cache, i as u32, &mut pages,
+            &mut pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            i as u32,
+            &mut page_count,
         )
         .await?;
 
@@ -510,7 +560,7 @@ pub async fn decrypt_container(
                 cb(Progress {
                     phase: Phase::Decrypting,
                     loaded: (i + 1) as u64,
-                    total: hax.segment_count as u64,
+                    total: u64::from(hax.segment_count),
                 });
             }
         }
@@ -526,7 +576,7 @@ pub async fn decrypt_container(
         hax_url: initial.url.clone(),
         keys,
         segment_count: hax.segment_count,
-        pages,
+        pages: page_count,
         codec: hax.codec,
         hax_bytes: None,
     })
@@ -551,6 +601,12 @@ pub async fn decrypt_container(
 /// [`DownloadOptions::delay_ms`]. `cancel`, when set, is polled before the
 /// first listen call, before each key-page request and between segments, so a
 /// cancelled run stops at the next segment boundary.
+///
+/// # Errors
+///
+/// Propagates listen, range-read, key-paging, decryption, `on_fragment` and
+/// cancellation errors; also [`Error::Listen`] if the listen response has no
+/// `.hax` URL.
 pub async fn download_streaming(
     api_client: &Client,
     hs: &Handshake,
@@ -586,32 +642,33 @@ pub async fn download_streaming(
     let mut pager = ListenPager::new(api_client, hs)
         .with_delay_ms(delay_ms)
         .with_cancel(cancel.clone());
-    let (keys, pages) = range::decrypt_streaming(&source, &hax, &keys, &mut pager, |i, plain| {
-        // Between segments: the page-request check inside the pager covers the
-        // paging path, this one covers a segment whose key is already memoised.
-        if let Some(cancel) = &cancel {
-            cancel.check()?;
-        }
-        if i == 0 {
-            // The first fragment is the earliest point a caller has MP4
-            // bytes; reject a non-MP4 first segment before handing it over.
-            ensure_mp4(plain)?;
-        }
-        on_fragment(plain)?;
-        written += plain.len() as u64;
-
-        if let Some(cb) = on_progress.as_mut() {
-            if (i & 15) == 15 || i + 1 == hax.segment_count as usize {
-                cb(Progress {
-                    phase: Phase::Decrypting,
-                    loaded: (i + 1) as u64,
-                    total: hax.segment_count as u64,
-                });
+    let (keys, page_count) =
+        range::decrypt_streaming(&source, &hax, &keys, &mut pager, |i, plain| {
+            // Between segments: the page-request check inside the pager covers the
+            // paging path, this one covers a segment whose key is already memoised.
+            if let Some(cancel) = &cancel {
+                cancel.check()?;
             }
-        }
-        Ok(())
-    })
-    .await?;
+            if i == 0 {
+                // The first fragment is the earliest point a caller has MP4
+                // bytes; reject a non-MP4 first segment before handing it over.
+                ensure_mp4(plain)?;
+            }
+            on_fragment(plain)?;
+            written += plain.len() as u64;
+
+            if let Some(cb) = on_progress.as_mut() {
+                if (i & 15) == 15 || i + 1 == hax.segment_count as usize {
+                    cb(Progress {
+                        phase: Phase::Decrypting,
+                        loaded: (i + 1) as u64,
+                        total: u64::from(hax.segment_count),
+                    });
+                }
+            }
+            Ok(())
+        })
+        .await?;
 
     Ok(Streamed {
         bytes: written,
@@ -621,7 +678,7 @@ pub async fn download_streaming(
         codec: hax.codec.clone(),
         hax_url: initial.url,
         keys,
-        pages,
+        pages: page_count,
     })
 }
 
@@ -643,6 +700,12 @@ pub struct Streamed {
 }
 
 /// Decrypt a container offline with previously saved branch keys.
+///
+/// # Errors
+///
+/// Propagates container parsing and decryption errors, returns
+/// [`Error::Protocol`] if the saved keys do not cover a segment, and propagates
+/// `on_progress` errors.
 pub fn decrypt_offline(
     hax_bytes: &[u8],
     all_keys: &crypto::KeyMap,
@@ -669,7 +732,7 @@ pub fn decrypt_offline(
                 cb(Progress {
                     phase: Phase::Decrypting,
                     loaded: (i + 1) as u64,
-                    total: hax.segment_count as u64,
+                    total: u64::from(hax.segment_count),
                 });
             }
         }
@@ -687,6 +750,11 @@ pub fn decrypt_offline(
 /// set, the raw container is kept on [`Downloaded::hax_bytes`] for archiving.
 /// `on_progress` reports the container fetch and then the decrypt; `cancel`
 /// aborts the fetch mid-transfer.
+///
+/// # Errors
+///
+/// Propagates container-fetch, decryption, progress-callback and cancellation
+/// errors.
 pub async fn download_cached(
     client: &Client,
     hax_url: &str,
@@ -734,6 +802,11 @@ pub struct KeyBundle {
 /// `track_id` selects a track on a multi-track page; `None` takes the page
 /// default, the same rule as [`download_with_handshake`]. `delay_ms` pauses
 /// before the listen request, as in [`DownloadOptions::delay_ms`].
+///
+/// # Errors
+///
+/// Propagates handshake and listen errors, or returns [`Error::Listen`] if the
+/// listen response has no `.hax` URL.
 pub async fn fetch_keys_only(
     client: &Client,
     page_url: &str,
@@ -757,6 +830,7 @@ pub async fn fetch_keys_only(
 }
 
 /// Serialise branch keys into the saved-keys envelope.
+#[must_use]
 pub fn keys_to_json(keys: &crypto::KeyMap, hax_url: &str, title: Option<&str>) -> String {
     use std::collections::BTreeMap;
     let mut map = BTreeMap::new();
@@ -789,6 +863,11 @@ pub struct SavedKeys {
 /// An envelope `version` must be `1`; any other value is rejected rather than
 /// misread. A bare map has no version and stays accepted for files written
 /// before the envelope.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] if the JSON is malformed, the version is not
+/// `1`, or a key entry is not a hex 32-byte value.
 pub fn parse_saved_keys(text: &str) -> Result<SavedKeys> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| Error::Protocol(e.to_string()))?;
@@ -876,6 +955,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     impl KeyPager for ScriptedPager {
         async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
             self.seen.push(idx);
@@ -897,14 +977,21 @@ mod tests {
         let tree = KeyTree::new(899);
         let mut keys = crypto::KeyMap::new();
         let mut cache = crypto::KeyMap::new();
-        let mut pages = 0;
+        let mut page_count = 0;
         let mut pager = ScriptedPager::new(vec![window(1, 7)]);
 
-        let key = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
-            .await
-            .unwrap();
+        let key = derive_or_page(
+            &mut pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            42,
+            &mut page_count,
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(pages, 1);
+        assert_eq!(page_count, 1);
         assert_eq!(pager.seen, vec![42]);
         let expect = tree
             .derive(&crypto::KeyMap::from([(1u32, [7u8; 32])]), 42, &mut HashMap::new())
@@ -919,7 +1006,7 @@ mod tests {
         let tree = KeyTree::new(899);
         let mut keys = crypto::KeyMap::new();
         let mut cache = crypto::KeyMap::new();
-        let mut pages = 0;
+        let mut page_count = 0;
         let non_ancestor = tree.tree_base + 500;
         let mut pager = ScriptedPager::new(vec![
             HashMap::new(),
@@ -927,12 +1014,19 @@ mod tests {
             window(1, 7),
         ]);
 
-        let key = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
-            .await
-            .unwrap();
+        let key = derive_or_page(
+            &mut pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            42,
+            &mut page_count,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(pager.seen, vec![42, 42, 42], "must redraw the same index");
-        assert_eq!(pages, 3);
+        assert_eq!(page_count, 3);
         let expect = tree
             .derive(&crypto::KeyMap::from([(1u32, [7u8; 32])]), 42, &mut HashMap::new())
             .unwrap();
@@ -943,14 +1037,21 @@ mod tests {
         let tree = KeyTree::new(899);
         let mut keys = crypto::KeyMap::new();
         let mut cache = crypto::KeyMap::new();
-        let mut pages = 0;
+        let mut page_count = 0;
         let mut pager = ScriptedPager::new(vec![]);
 
-        let err = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
-            .await
-            .unwrap_err();
+        let err = derive_or_page(
+            &mut pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            42,
+            &mut page_count,
+        )
+        .await
+        .unwrap_err();
 
-        assert_eq!(pages, KEY_PAGE_ATTEMPTS);
+        assert_eq!(page_count, KEY_PAGE_ATTEMPTS);
         assert_eq!(pager.seen.len(), KEY_PAGE_ATTEMPTS as usize);
         let msg = err.to_string();
         assert!(msg.contains("segment 42"), "got {msg}");
@@ -961,16 +1062,23 @@ mod tests {
         let tree = KeyTree::new(899);
         let mut keys = crypto::KeyMap::new();
         let mut cache = crypto::KeyMap::new();
-        let mut pages = 0;
+        let mut page_count = 0;
         let mut pager = ScriptedPager::with_error(Error::Protocol("listen exploded".into()));
 
-        let err = derive_or_page(&mut pager, &tree, &mut keys, &mut cache, 42, &mut pages)
-            .await
-            .unwrap_err();
+        let err = derive_or_page(
+            &mut pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            42,
+            &mut page_count,
+        )
+        .await
+        .unwrap_err();
 
         assert!(err.to_string().contains("listen exploded"), "got {err}");
         assert_eq!(pager.seen, vec![42], "a failure must not be retried");
-        assert_eq!(pages, 0);
+        assert_eq!(page_count, 0);
     });
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -1036,10 +1144,13 @@ mod tests {
 
     /// A minimal fragmented MP4 whose one fragment sums to `ms` milliseconds at
     /// 48 kHz, for the `--verify` tests.
+    // `moov` and `moof` are the box types the fixture is built from; renaming
+    // them would make the fixture harder to check against the spec.
+    #[allow(clippy::similar_names)]
     fn fragmented_mp4(ms: u32) -> Vec<u8> {
-        fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        fn bx(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
             let mut out = ((8 + body.len()) as u32).to_be_bytes().to_vec();
-            out.extend_from_slice(kind);
+            out.extend_from_slice(&kind);
             out.extend_from_slice(body);
             out
         }
@@ -1052,26 +1163,29 @@ mod tests {
             body.extend_from_slice(&0u32.to_be_bytes());
             body.extend_from_slice(&timescale.to_be_bytes());
             body.extend_from_slice(&ticks.to_be_bytes());
-            bx(kind, &body)
+            bx(*kind, &body)
         };
         let moov = bx(
-            b"moov",
+            *b"moov",
             &[
                 timescale_box(b"mvhd"),
-                bx(b"trak", &bx(b"mdia", &timescale_box(b"mdhd"))),
+                bx(*b"trak", &bx(*b"mdia", &timescale_box(b"mdhd"))),
             ]
             .concat(),
         );
         let mut tfhd = vec![0u8, 0, 0, 0x08]; // flags: default_sample_duration
         tfhd.extend_from_slice(&1u32.to_be_bytes());
         tfhd.extend_from_slice(&ticks.to_be_bytes());
-        let trun = bx(b"trun", &[0u8, 0, 0, 0, 0, 0, 0, 1]); // one sample
-        let moof = bx(b"moof", &bx(b"traf", &[bx(b"tfhd", &tfhd), trun].concat()));
+        let trun = bx(*b"trun", &[0u8, 0, 0, 0, 0, 0, 0, 1]); // one sample
+        let moof = bx(
+            *b"moof",
+            &bx(*b"traf", &[bx(*b"tfhd", &tfhd), trun].concat()),
+        );
         [
-            bx(b"ftyp", b"isom\x00\x00\x02\x00iso2"),
+            bx(*b"ftyp", b"isom\x00\x00\x02\x00iso2"),
             moov,
             moof,
-            bx(b"mdat", &[0u8; 8]),
+            bx(*b"mdat", &[0u8; 8]),
         ]
         .concat()
     }

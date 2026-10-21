@@ -46,6 +46,9 @@ mod tests {
 
     #[test]
     fn runs_nested_awaits_that_never_suspend() {
+        // `inner` must be `async` to be awaited; that it never suspends is what
+        // this test asserts `block_on` tolerates.
+        #[allow(clippy::unused_async)]
         async fn inner() -> u32 {
             7
         }

@@ -68,7 +68,7 @@ fn build_container(
     meta.extend(bstr(b"durationMs"));
     meta.extend(bint(duration_ms));
     meta.extend(bstr(b"segmentCount"));
-    meta.extend(bint(segment_count as u64));
+    meta.extend(bint(u64::from(segment_count)));
     meta.extend(bstr(b"segments"));
     // Table length is fixed, so it can be encoded before offsets are filled.
     meta.extend(bstr(&table));
@@ -90,7 +90,7 @@ fn build_container(
     meta.extend(bstr(b"durationMs"));
     meta.extend(bint(duration_ms));
     meta.extend(bstr(b"segmentCount"));
-    meta.extend(bint(segment_count as u64));
+    meta.extend(bint(u64::from(segment_count)));
     meta.extend(bstr(b"segments"));
     meta.extend(bstr(&table));
     meta.push(b'e');
@@ -345,9 +345,9 @@ fn wasm_decrypt_hax_round_trips() {
 #[wasm_bindgen_test::wasm_bindgen_test]
 fn wasm_decrypt_hax_rejects_an_unknown_envelope() {
     let container = build_container(&[vec![0, 0, 0, 0x20]], "mp4a.40.2", 1000, None);
-    let err = match hotaudio::wasm::decrypt_hax(&container, r#"{"version":2,"keys":{"1":"00"}}"#) {
-        Ok(_) => panic!("version 2 must be rejected"),
-        Err(e) => e,
+    let Err(err) = hotaudio::wasm::decrypt_hax(&container, r#"{"version":2,"keys":{"1":"00"}}"#)
+    else {
+        panic!("version 2 must be rejected");
     };
     assert!(
         err.as_string().unwrap_or_default().contains("version"),

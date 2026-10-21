@@ -32,12 +32,12 @@ impl Recorder {
     }
 
     /// Set the reply the stub should produce.
-    fn reply(&self, status: u16, body: Vec<u8>, headers: &[(&str, &str)]) {
+    fn reply(&self, status: u16, body: &[u8], headers: &[(&str, &str)]) {
         let set = |key: &str, value: JsValue| {
             Reflect::set(&self.0, &JsString::from(key), &value).expect("set field");
         };
         set("status", JsValue::from_f64(f64::from(status)));
-        set("body", Uint8Array::from(body.as_slice()).into());
+        set("body", Uint8Array::from(body).into());
         let pairs: Array = headers
             .iter()
             .map(|(k, v)| {
@@ -138,7 +138,7 @@ fn client(rec: &Recorder, stream: bool) -> Client {
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn carries_method_url_and_body() {
     let rec = Recorder::new();
-    rec.reply(200, b"pong".to_vec(), &[]);
+    rec.reply(200, b"pong", &[]);
 
     let resp = client(&rec, false)
         .request(
@@ -162,7 +162,7 @@ async fn preserves_response_headers_for_lookup() {
     let rec = Recorder::new();
     rec.reply(
         200,
-        vec![],
+        &[],
         &[("Content-Type", "application/vnd.hotaudio.crypt+json")],
     );
 
@@ -181,7 +181,7 @@ async fn preserves_response_headers_for_lookup() {
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn drops_forbidden_headers_but_keeps_real_ones() {
     let rec = Recorder::new();
-    rec.reply(200, vec![], &[]);
+    rec.reply(200, &[], &[]);
 
     client(&rec, false)
         .request(
@@ -220,7 +220,7 @@ async fn drops_forbidden_headers_but_keeps_real_ones() {
 async fn streams_a_large_body_through_the_resumable_path() {
     let rec = Recorder::new();
     let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
-    rec.reply(206, body.clone(), &[("content-length", "300000")]);
+    rec.reply(206, &body, &[("content-length", "300000")]);
 
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
@@ -248,7 +248,7 @@ async fn streams_a_large_body_through_the_resumable_path() {
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn a_non_2xx_status_is_returned_not_retried_forever() {
     let rec = Recorder::new();
-    rec.reply(404, b"nope".to_vec(), &[]);
+    rec.reply(404, b"nope", &[]);
 
     let resp = client(&rec, false)
         .request("GET", "https://example.test/", &[], None)
@@ -264,7 +264,7 @@ async fn a_non_2xx_status_is_returned_not_retried_forever() {
 #[wasm_bindgen_test::wasm_bindgen_test]
 async fn url_rewrite_maps_the_request() {
     let rec = Recorder::new();
-    rec.reply(200, vec![], &[]);
+    rec.reply(200, &[], &[]);
 
     client(&rec, false)
         .with_url_rewrite(|url| url.replace("hotaudio.net", "proxy.test"))
@@ -289,7 +289,7 @@ async fn a_range_read_sends_the_range_header() {
     .concat();
 
     let rec = Recorder::new();
-    rec.reply(206, prefix.clone(), &[("content-length", "16")]);
+    rec.reply(206, &prefix, &[("content-length", "16")]);
 
     let client = client(&rec, false);
     let source = HttpRangeSource::new(&client, "https://cdn.test/a.hax");

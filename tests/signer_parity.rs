@@ -77,7 +77,7 @@ fn timestamp_is_big_endian_seconds() {
         let hex = &sig[2..10];
         let decoded = u32::from_str_radix(hex, 16).unwrap();
         // The signer floors the clock to whole seconds.
-        assert_eq!(decoded as f64, ts.floor(), "ts={ts} sig={sig}");
+        assert_eq!(f64::from(decoded), ts.floor(), "ts={ts} sig={sig}");
     }
 }
 

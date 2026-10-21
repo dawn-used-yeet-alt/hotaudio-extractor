@@ -15,6 +15,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
@@ -55,6 +56,10 @@ Config file:
 /// config parser, name derivation) stay target-agnostic and keep their wasm
 /// tests.
 #[cfg(not(target_arch = "wasm32"))]
+// Each flag is independent: `--quiet`, `--json`, `--verify` and the rest do not
+// form a state machine, so pairing them into enums would only move the
+// conversion to every use site.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Parser)]
 #[command(
     name = BIN_NAME,
@@ -145,7 +150,8 @@ struct Cli {
     #[arg(long, value_name = "URL")]
     api_base: Option<String>,
 
-    /// Send requests through an HTTP(S) proxy; ALL_PROXY/HTTPS_PROXY/HTTP_PROXY and NO_PROXY are honored too
+    /// Send requests through an HTTP(S) proxy; `ALL_PROXY`/`HTTPS_PROXY`/
+    /// `HTTP_PROXY` and `NO_PROXY` are honored too
     #[arg(long, value_name = "URL")]
     proxy: Option<String>,
 
@@ -387,6 +393,9 @@ fn run() -> ExitCode {
     }
 }
 
+// A flat option bag built once from the parsed flags; each bool is an
+// independent switch, so there is no state machine to encode.
+#[allow(clippy::struct_excessive_bools)]
 struct Run {
     sources: Vec<String>,
     out: Option<String>,
@@ -424,6 +433,9 @@ struct Run {
     cancel: download::Cancel,
 }
 
+// One setup path shared by every mode, ending in the same error type. Splitting
+// it would thread `Run` through more functions without clarifying any step.
+#[allow(clippy::too_many_lines)]
 async fn execute(r: Run) -> Result<(), Error> {
     // A URL that is not a canonical share link is usually a typo, and the
     // failure would otherwise only surface deep in the pipeline. This is a
@@ -469,7 +481,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Offline: local .hax + saved keys, no network ----
     if let Some(hax_path) = &r.hax_path {
-        let saved = load_keys(&r.keys_path)?;
+        let saved = load_keys(r.keys_path.as_deref())?;
         let keys = saved.keys;
         let title = saved.title;
         let bytes = std::fs::read(hax_path)
@@ -488,7 +500,7 @@ async fn execute(r: Run) -> Result<(), Error> {
                 secs_since(started_ms)
             );
         }
-        write_saved_keys(&r.save_keys, "", title.as_deref(), &keys, clobber)?;
+        write_saved_keys(r.save_keys.as_deref(), "", title.as_deref(), &keys, clobber)?;
         let title = title.unwrap_or_else(|| stem(hax_path));
         let out = r.out.clone().unwrap_or_else(|| {
             default_output(
@@ -586,7 +598,7 @@ async fn execute(r: Run) -> Result<(), Error> {
         )
         .await?;
         write_saved_keys(
-            &r.save_keys,
+            r.save_keys.as_deref(),
             &bundle.hax_url,
             bundle.title.as_deref(),
             &bundle.keys,
@@ -609,7 +621,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
     // ---- Cached mode: saved keys (+ envelope hax URL), no page/listen ----
     if r.keys_path.is_some() && r.sources.is_empty() {
-        let saved = load_keys(&r.keys_path)?;
+        let saved = load_keys(r.keys_path.as_deref())?;
         let (keys, envelope_url, title) = (saved.keys, saved.hax_url, saved.title);
         let Some(url) = r.hax_url.clone().or(envelope_url) else {
             return Err(Error::Protocol(
@@ -641,7 +653,13 @@ async fn execute(r: Run) -> Result<(), Error> {
                 secs_since(started_ms)
             );
         }
-        write_saved_keys(&r.save_keys, &url, title.as_deref(), &keys, clobber)?;
+        write_saved_keys(
+            r.save_keys.as_deref(),
+            &url,
+            title.as_deref(),
+            &keys,
+            clobber,
+        )?;
         let title = title.unwrap_or_else(|| "hotaudio-track".into());
         let out = r.out.clone().unwrap_or_else(|| {
             default_output(
@@ -680,7 +698,7 @@ async fn execute(r: Run) -> Result<(), Error> {
     };
 
     let seed = match &r.keys_path {
-        Some(p) => Some(load_keys(&Some(p.clone()))?.keys),
+        Some(p) => Some(load_keys(Some(p.as_str()))?.keys),
         None => None,
     };
 
@@ -736,7 +754,7 @@ async fn execute(r: Run) -> Result<(), Error> {
 
         let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
         write_saved_keys(
-            &r.save_keys,
+            r.save_keys.as_deref(),
             &res.hax_url,
             title.as_deref(),
             &res.keys,
@@ -793,7 +811,13 @@ async fn execute(r: Run) -> Result<(), Error> {
         }
     }
     let title = res.title.clone().unwrap_or_else(|| "hotaudio-track".into());
-    write_saved_keys(&r.save_keys, &res.hax_url, Some(&title), &res.keys, clobber)?;
+    write_saved_keys(
+        r.save_keys.as_deref(),
+        &res.hax_url,
+        Some(&title),
+        &res.keys,
+        clobber,
+    )?;
     let out = r.out.clone().unwrap_or_else(|| {
         default_output(
             r.filename_template.as_deref(),
@@ -1118,7 +1142,9 @@ fn json_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -1453,12 +1479,12 @@ fn is_url(s: &str) -> bool {
 }
 
 /// Load saved keys from a path or inline JSON.
-fn load_keys(path: &Option<String>) -> Result<download::SavedKeys, Error> {
+fn load_keys(path: Option<&str>) -> Result<download::SavedKeys, Error> {
     let Some(path) = path else {
         return Err(Error::Protocol("--keys <file | JSON> is required".into()));
     };
     let text = if path.trim_start().starts_with('{') {
-        path.clone()
+        path.to_string()
     } else {
         std::fs::read_to_string(path).map_err(|e| Error::Io(format!("cannot read {path}: {e}")))?
     };
@@ -1467,7 +1493,7 @@ fn load_keys(path: &Option<String>) -> Result<download::SavedKeys, Error> {
 
 /// Write the saved-keys envelope, if requested.
 fn write_saved_keys(
-    path: &Option<String>,
+    path: Option<&str>,
     hax_url: &str,
     title: Option<&str>,
     keys: &HashMap<u32, [u8; 32]>,
@@ -1788,7 +1814,10 @@ fn derived_name(template: Option<&str>, title: &str, index: usize) -> String {
     let mut parts: Vec<String> = expanded.split('/').map(sanitize).collect();
     // `split` always yields at least one item, so `parts` is non-empty.
     let last = parts.len() - 1;
-    if !parts[last].ends_with(".m4a") {
+    let has_m4a = std::path::Path::new(&parts[last])
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("m4a"));
+    if !has_m4a {
         parts[last].push_str(".m4a");
     }
     parts.join("/")
@@ -1829,9 +1858,9 @@ mod tests {
     /// Parse `args` the way the binary would, with the program name prepended.
     #[cfg(not(target_arch = "wasm32"))]
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        let mut argv = vec!["hotaudio-download"];
-        argv.extend_from_slice(args);
-        Cli::try_parse_from(argv)
+        let mut cli_args = vec!["hotaudio-download"];
+        cli_args.extend_from_slice(args);
+        Cli::try_parse_from(cli_args)
     }
 
     #[test]
@@ -2208,7 +2237,10 @@ mod tests {
                 .sources,
             vec![url.to_string()]
         );
-        assert!(parse(&["--list-tracks"]).unwrap().sources.is_empty());
+        assert_eq!(
+            parse(&["--list-tracks"]).unwrap().sources,
+            Vec::<String>::new()
+        );
         // Several sources are collected in order.
         assert_eq!(
             parse(&[url, "https://x/u/c/d"]).unwrap().sources,

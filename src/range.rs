@@ -47,6 +47,7 @@ pub struct HttpRangeSource<'a> {
 }
 
 impl<'a> HttpRangeSource<'a> {
+    #[must_use]
     pub fn new(client: &'a Client, url: &str) -> Self {
         Self {
             client,
@@ -98,6 +99,16 @@ impl RangeSource for HttpRangeSource<'_> {
 /// Validates the magic and that `header_length` is a plausible fraction of
 /// `file_length`, so a truncated or wrong-object response fails loudly instead
 /// of producing a bogus segment table.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] for a short prefix, wrong magic, or an
+/// implausible header length, or a transport error from `source`.
+///
+/// # Panics
+///
+/// If the 16-byte prefix contains a field that is not four bytes; the length
+/// check above makes that impossible.
 pub async fn probe_header(source: &impl RangeSource) -> Result<(u64, u32)> {
     let head = source.range(0, 15).await?;
     if head.len() < 16 {
@@ -106,9 +117,9 @@ pub async fn probe_header(source: &impl RangeSource) -> Result<(u64, u32)> {
     if &head[..4] != b"HAX0" {
         return Err(Error::Protocol("not a HAX0 container".into()));
     }
-    let file_length = u32::from_le_bytes(head[4..8].try_into().unwrap()) as u64;
+    let file_length = u64::from(u32::from_le_bytes(head[4..8].try_into().unwrap()));
     let header_length = u32::from_le_bytes(head[8..12].try_into().unwrap());
-    if header_length < 16 || header_length as u64 > file_length {
+    if header_length < 16 || u64::from(header_length) > file_length {
         return Err(Error::Protocol(format!(
             "implausible HAX0 headerLength {header_length} for fileLength {file_length}"
         )));
@@ -117,9 +128,14 @@ pub async fn probe_header(source: &impl RangeSource) -> Result<(u64, u32)> {
 }
 
 /// Fetch and parse just the container header.
+///
+/// # Errors
+///
+/// Propagates [`probe_header`]'s errors and [`Hax0::parse`]'s, or a transport
+/// error from `source`.
 pub async fn read_header(source: &impl RangeSource) -> Result<Hax0> {
     let (_, header_length) = probe_header(source).await?;
-    let header = source.range(0, (header_length - 1) as u64).await?;
+    let header = source.range(0, u64::from(header_length - 1)).await?;
     Hax0::parse(&header)
 }
 
@@ -132,6 +148,11 @@ pub async fn read_header(source: &impl RangeSource) -> Result<Hax0> {
 ///
 /// Returns the merged key map (paged branches included, for `--save-keys`) and
 /// the number of page requests made.
+///
+/// # Errors
+///
+/// Propagates key paging, range-read, decryption and `on_segment` errors; also
+/// returns [`Error::Protocol`] if a range read is shorter than its segment.
 pub async fn decrypt_streaming(
     source: &impl RangeSource,
     hax: &Hax0,
@@ -142,10 +163,18 @@ pub async fn decrypt_streaming(
     let tree = KeyTree::new(hax.segment_count.max(1));
     let mut keys = initial_keys.clone();
     let mut cache = crypto::KeyMap::new();
-    let mut pages = 0u32;
+    let mut page_count = 0u32;
 
     for i in 0..hax.segment_count as usize {
-        let key = derive_or_page(pager, &tree, &mut keys, &mut cache, i as u32, &mut pages).await?;
+        let key = derive_or_page(
+            pager,
+            &tree,
+            &mut keys,
+            &mut cache,
+            i as u32,
+            &mut page_count,
+        )
+        .await?;
 
         let (start, end) = hax.slice_range(i);
         let slice = source.range(start as u64, (end - 1) as u64).await?;
@@ -159,11 +188,16 @@ pub async fn decrypt_streaming(
         let plain = crypto::open_zero(&key, &slice)?;
         on_segment(i, &plain)?;
     }
-    Ok((keys, pages))
+    Ok((keys, page_count))
 }
 
 /// Write decrypted audio straight to a file as segments arrive, avoiding the
 /// full-container buffer.
+///
+/// # Errors
+///
+/// Propagates [`decrypt_streaming`]'s errors, a write error as [`Error::Io`],
+/// and any error returned by `on_progress`.
 pub async fn write_to_file(
     source: &impl RangeSource,
     hax: &Hax0,
@@ -176,7 +210,7 @@ pub async fn write_to_file(
     decrypt_streaming(source, hax, initial_keys, pager, |i, plain| {
         out.write_all(plain).map_err(|e| Error::Io(e.to_string()))?;
         written += plain.len() as u64;
-        on_progress((i + 1) as u64, hax.segment_count as u64)
+        on_progress((i + 1) as u64, u64::from(hax.segment_count))
     })
     .await?;
     Ok(written)
@@ -242,6 +276,7 @@ mod tests {
         data: Vec<u8>,
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     impl RangeSource for MemoryRange {
         async fn range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
             let s = start as usize;
@@ -256,6 +291,7 @@ mod tests {
         data: Vec<u8>,
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     impl RangeSource for IgnoresRange {
         async fn range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
             Ok(self.data.clone())
@@ -317,6 +353,7 @@ mod tests {
         seen: Vec<u32>,
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     impl KeyPager for OneWindow {
         async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
             self.seen.push(idx);
@@ -324,6 +361,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     impl KeyPager for EmptyPager {
         async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
             self.seen.push(idx);
@@ -336,7 +374,7 @@ mod tests {
         let src = MemoryRange { data: data.clone() };
         let (file_length, header_length) = probe_header(&src).await.unwrap();
         assert_eq!(file_length as usize, data.len());
-        assert!(header_length >= 16 && (header_length as u64) <= file_length);
+        assert!(header_length >= 16 && u64::from(header_length) <= file_length);
 
         let hax = read_header(&src).await.unwrap();
         assert_eq!(hax.segment_count, 3);
@@ -379,7 +417,7 @@ mod tests {
             seen: Vec::new(),
         };
         let mut got = Vec::new();
-        let (keys, pages) = decrypt_streaming(
+        let (keys, page_count) = decrypt_streaming(
             &src,
             &hax,
             &crypto::KeyMap::new(),
@@ -395,7 +433,7 @@ mod tests {
         assert_eq!(got, b"first-segment!second-segment".to_vec());
         // Only segment 0 pages: the root covers the rest via the memo.
         assert_eq!(pager.seen, vec![0]);
-        assert_eq!(pages, 1);
+        assert_eq!(page_count, 1);
         assert!(keys.contains_key(&1), "paged branch is kept for --save-keys");
     });
 

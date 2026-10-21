@@ -52,7 +52,7 @@ use crate::{Error, Result};
 ///
 /// `page_url` is the share URL, or any URL serving the track page.
 /// `on_fragment` receives a `Uint8Array` per segment, in order: append each to a
-/// `SourceBuffer` for MediaSource playback, or collect them into a Blob. The
+/// `SourceBuffer` for `MediaSource` playback, or collect them into a Blob. The
 /// first call is the earliest point at which the bytes are a playable (if
 /// short) MP4.
 ///
@@ -73,6 +73,11 @@ use crate::{Error, Result};
 ///
 /// See `downloadTrackWith` to point the crate at a proxy or at a host whose HTTP
 /// is not the page's `fetch`.
+///
+/// # Errors
+///
+/// Rejects with the pipeline's error, or an `AbortError` when `signal` is
+/// aborted.
 #[wasm_bindgen(js_name = downloadTrack)]
 pub async fn download_track(
     page_url: String,
@@ -104,6 +109,11 @@ pub async fn download_track(
 ///
 /// `track_id` is the same optional selection `downloadTrack` takes, and `signal`
 /// the same optional `AbortSignal`.
+///
+/// # Errors
+///
+/// Rejects with the pipeline's error, or an `AbortError` when `signal` is
+/// aborted.
 #[wasm_bindgen(js_name = downloadTrackWith)]
 pub async fn download_track_with(
     page_url: &str,
@@ -133,6 +143,10 @@ pub async fn download_track_with(
 /// Cheaper than `downloadTrack` when the point is to save keys for a later
 /// offline fetch. `track_id` selects a track on a multi-track page, as in
 /// `downloadTrack`. Resolves with `{ title, haxUrl, keysJson }`.
+///
+/// # Errors
+///
+/// Rejects with the pipeline's handshake or listen error.
 #[wasm_bindgen(js_name = trackKeys)]
 pub async fn track_keys(
     page_url: String,
@@ -147,6 +161,10 @@ pub async fn track_keys(
 /// The same integration seam as `downloadTrackWith`: a key-only save can go
 /// through a proxy origin or a Capacitor-style native bridge. `track_id` selects
 /// a track on a multi-track page.
+///
+/// # Errors
+///
+/// Rejects with the pipeline's handshake or listen error.
 #[wasm_bindgen(js_name = trackKeysWith)]
 pub async fn track_keys_with(
     page_url: String,
@@ -176,6 +194,10 @@ pub async fn track_keys_with(
 /// `{ index: hex }` map. Returns the decrypted MP4 as a `Uint8Array`. Pure and
 /// offline: cache the container and this replays it without the page, the
 /// listen API or any network.
+///
+/// # Errors
+///
+/// Rejects with a parse or decryption error.
 #[wasm_bindgen(js_name = decryptHax)]
 pub fn decrypt_hax(hax_bytes: &[u8], keys_json: &str) -> std::result::Result<Uint8Array, JsValue> {
     let saved = download::parse_saved_keys(keys_json).map_err(js_error)?;
@@ -194,6 +216,11 @@ pub fn decrypt_hax(hax_bytes: &[u8], keys_json: &str) -> std::result::Result<Uin
 /// rejects with an `AbortError`, as in `downloadTrack`. Resolves with the same
 /// fields as `downloadTrack`; `title` comes from the envelope when it carries
 /// one.
+///
+/// # Errors
+///
+/// Rejects with a parse, fetch, decryption or `on_fragment` error, or an
+/// `AbortError` when `signal` is aborted.
 #[wasm_bindgen(js_name = downloadCached)]
 pub async fn download_cached(
     hax_url: String,
@@ -205,7 +232,7 @@ pub async fn download_cached(
     let saved = download::parse_saved_keys(&keys_json).map_err(js_error)?;
     let title = saved.title.clone();
 
-    let mut report = |p: Progress| report_progress(&on_progress, &p);
+    let mut report = |p: Progress| report_progress(on_progress.as_ref(), &p);
     let downloaded = download::download_cached(
         &Client::bulk(),
         &hax_url,
@@ -230,8 +257,8 @@ pub async fn download_cached(
     set(&info, "codec", downloaded.codec);
     set(&info, "mime", downloaded.mime);
     set(&info, "bytes", downloaded.audio.len() as f64);
-    set(&info, "segmentCount", downloaded.segment_count as f64);
-    set(&info, "keyPages", downloaded.pages as f64);
+    set(&info, "segmentCount", f64::from(downloaded.segment_count));
+    set(&info, "keyPages", f64::from(downloaded.pages));
     set(&info, "haxUrl", downloaded.hax_url.clone());
     set(
         &info,
@@ -245,6 +272,10 @@ pub async fn download_cached(
 ///
 /// Exposed so a host can compare against the reference signer in a browser,
 /// which is the parity check `tests/signer_parity.rs` runs natively.
+///
+/// # Errors
+///
+/// Rejects if the payload cannot be signed.
 #[wasm_bindgen(js_name = signPayload)]
 pub fn sign_payload(payload: &str) -> std::result::Result<String, JsValue> {
     crate::signer::sign_payload(payload).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -256,6 +287,10 @@ pub fn sign_payload(payload: &str) -> std::result::Result<String, JsValue> {
 /// `signPayload` stamps the current time; this pins the clock, so a host can
 /// reproduce a known vector from `tests/data/signer_golden.json` without waiting
 /// for a matching instant.
+///
+/// # Errors
+///
+/// Rejects if the payload cannot be signed.
 #[wasm_bindgen(js_name = signPayloadAt)]
 pub fn sign_payload_at(payload: &str, timestamp_secs: f64) -> std::result::Result<String, JsValue> {
     crate::signer::sign_payload_at(payload, timestamp_secs)
@@ -267,6 +302,7 @@ pub fn sign_payload_at(payload: &str, timestamp_secs: f64) -> std::result::Resul
 /// Takes page HTML as readily as a URL, so a host that already fetched the page
 /// does not have to fetch it twice. Resolves to `[{ id, key, title }, …]`, or an
 /// empty array when the page has no decryptable state.
+#[must_use]
 #[wasm_bindgen(js_name = listTracks)]
 pub fn list_tracks(html: &str) -> JsValue {
     let tracks = listen::list_tracks(html).unwrap_or_default();
@@ -297,7 +333,7 @@ async fn stream(
     let title = Some(hs.track.title.clone()).filter(|t| !t.is_empty());
 
     let sink = on_fragment.clone();
-    let mut report = |p: Progress| report_progress(&on_progress, &p);
+    let mut report = |p: Progress| report_progress(on_progress.as_ref(), &p);
 
     let streamed = download::download_streaming(
         client,
@@ -320,8 +356,8 @@ async fn stream(
     set(&info, "codec", streamed.codec.clone());
     set(&info, "mime", "audio/mp4");
     set(&info, "bytes", streamed.bytes as f64);
-    set(&info, "segmentCount", streamed.segment_count as f64);
-    set(&info, "keyPages", streamed.pages as f64);
+    set(&info, "segmentCount", f64::from(streamed.segment_count));
+    set(&info, "keyPages", f64::from(streamed.pages));
     set(&info, "haxUrl", streamed.hax_url.clone());
     set(
         &info,
@@ -332,11 +368,11 @@ async fn stream(
 }
 
 /// Forward one progress report to the JS callback, if there is one.
-fn report_progress(on_progress: &Option<Function>, p: &Progress) {
+fn report_progress(on_progress: Option<&Function>, p: &Progress) {
     if let Some(cb) = on_progress {
         let _ = cb.call3(
             &JsValue::NULL,
-            &JsValue::from_str(phase_name(&p.phase)),
+            &JsValue::from_str(phase_name(p.phase)),
             &JsValue::from_f64(p.loaded as f64),
             &JsValue::from_f64(p.total as f64),
         );
@@ -344,7 +380,7 @@ fn report_progress(on_progress: &Option<Function>, p: &Progress) {
 }
 
 /// The phase name a progress report carries to JS.
-fn phase_name(phase: &Phase) -> &'static str {
+fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Resolving => "resolving",
         Phase::Fetching => "fetching",
@@ -404,10 +440,12 @@ fn cancel_from_signal(signal: Option<&AbortSignal>) -> Option<Cancel> {
 fn js_error(e: Error) -> JsValue {
     // A cancellation is the caller's own doing, so reject with the DOM's
     // conventional `AbortError` name that `signal`-aware code already checks.
-    if matches!(e, Error::Cancelled) {
-        let err = js_sys::Error::new("the download was aborted");
-        err.set_name("AbortError");
-        return err.into();
+    match e {
+        Error::Cancelled => {
+            let err = js_sys::Error::new("the download was aborted");
+            err.set_name("AbortError");
+            err.into()
+        }
+        other => JsValue::from_str(&other.to_string()),
     }
-    JsValue::from_str(&e.to_string())
 }

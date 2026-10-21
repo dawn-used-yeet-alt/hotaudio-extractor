@@ -89,3 +89,21 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Strict lints for the whole crate, on both targets. `priority = -1` lets an
+# individual `#[allow]` override the group without also having to disable it in
+# every invocation; CI still turns warnings into errors.
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+
+# The signer is a port of a JavaScript VM, and the parsers read wire formats
+# whose fields are defined as wrapping, truncating or IEEE-754 values. These
+# conversions are deliberate at the point they appear, and every one is bounded
+# by a format or length check; rewriting them as `try_from` would add branches
+# to the decrypt path without making the bound any stronger. `cast_lossless`
+# stays denied, because those conversions lose nothing and read better as
+# `From`.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"

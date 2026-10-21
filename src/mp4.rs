@@ -32,6 +32,16 @@ pub struct Info {
 /// bad box size, a box that overruns the stream, a first box that is not `ftyp`,
 /// a missing `moov`, or no media at all. It does not require a seekable reader;
 /// media boxes are skipped as they arrive.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] for a malformed, truncated or incomplete stream,
+/// or [`Error::Io`] if the reader fails.
+///
+/// # Panics
+///
+/// If a fixed-width header field is not exactly its declared width; every slice
+/// is produced by a checked length.
 pub fn verify(mut reader: impl Read) -> Result<Info> {
     let mut boxes = 0u32;
     let mut fragmented = false;
@@ -51,7 +61,7 @@ pub fn verify(mut reader: impl Read) -> Result<Info> {
         if boxes == 0 && &kind != b"ftyp" {
             return Err(Error::Protocol(format!(
                 "mp4: first box is '{}', not 'ftyp'",
-                label(&kind)
+                label(kind)
             )));
         }
         boxes += 1;
@@ -70,7 +80,7 @@ pub fn verify(mut reader: impl Read) -> Result<Info> {
             n if n < 8 => {
                 return Err(Error::Protocol(format!(
                     "mp4: box '{}' has size {n}",
-                    label(&kind)
+                    label(kind)
                 )));
             }
             n => Some(u64::from(n - 8)),
@@ -79,20 +89,20 @@ pub fn verify(mut reader: impl Read) -> Result<Info> {
         match &kind {
             b"moov" => {
                 saw_moov = true;
-                let body = read_box_body(&mut reader, payload_len, &kind)?;
+                let body = read_box_body(&mut reader, payload_len, kind)?;
                 read_moov(&body, &mut media_timescale, &mut movie_duration_ms)?;
             }
             b"moof" => {
                 fragmented = true;
                 saw_media = true;
-                let body = read_box_body(&mut reader, payload_len, &kind)?;
+                let body = read_box_body(&mut reader, payload_len, kind)?;
                 fragment_ticks = fragment_ticks.saturating_add(fragment_ticks_of(&body)?);
             }
             b"mdat" => {
                 saw_media = true;
-                skip(&mut reader, payload_len, &kind)?;
+                skip(&mut reader, payload_len, kind)?;
             }
-            _ => skip(&mut reader, payload_len, &kind)?,
+            _ => skip(&mut reader, payload_len, kind)?,
         }
     }
 
@@ -131,7 +141,7 @@ pub fn verify(mut reader: impl Read) -> Result<Info> {
 fn read_header_bytes(reader: &mut impl Read, head: &mut [u8; 8]) -> Result<bool> {
     let mut filled = 0;
     while filled < head.len() {
-        match reader.read(&mut head[filled..]).map_err(io)? {
+        match reader.read(&mut head[filled..]).map_err(|e| io(&e))? {
             0 => break,
             n => filled += n,
         }
@@ -144,7 +154,7 @@ fn read_header_bytes(reader: &mut impl Read, head: &mut [u8; 8]) -> Result<bool>
 }
 
 /// Read a box body into memory; a box running to end-of-stream is refused.
-fn read_box_body(reader: &mut impl Read, len: Option<u64>, kind: &[u8; 4]) -> Result<Vec<u8>> {
+fn read_box_body(reader: &mut impl Read, len: Option<u64>, kind: [u8; 4]) -> Result<Vec<u8>> {
     let len = len.ok_or_else(|| {
         Error::Protocol(format!("mp4: box '{}' runs to end of stream", label(kind)))
     })?;
@@ -162,12 +172,12 @@ fn read_box_body(reader: &mut impl Read, len: Option<u64>, kind: &[u8; 4]) -> Re
 }
 
 /// Skip `len` bytes, or drain to end-of-stream when `len` is `None`.
-fn skip(reader: &mut impl Read, len: Option<u64>, kind: &[u8; 4]) -> Result<()> {
+fn skip(reader: &mut impl Read, len: Option<u64>, kind: [u8; 4]) -> Result<()> {
     let copied = match len {
         Some(len) => std::io::copy(&mut reader.by_ref().take(len), &mut std::io::sink()),
         None => std::io::copy(reader.by_ref(), &mut std::io::sink()),
     }
-    .map_err(io)?;
+    .map_err(|e| io(&e))?;
     if let Some(len) = len {
         if copied != len {
             return Err(Error::Protocol(format!(
@@ -197,7 +207,7 @@ fn box_at(body: &[u8], pos: usize) -> Result<([u8; 4], std::ops::Range<usize>)> 
         n if n < 8 => {
             return Err(Error::Protocol(format!(
                 "mp4: box '{}' has size {n}",
-                label(&kind)
+                label(kind)
             )));
         }
         n => (u64::from(n), 8),
@@ -205,7 +215,7 @@ fn box_at(body: &[u8], pos: usize) -> Result<([u8; 4], std::ops::Range<usize>)> 
     if size < header {
         return Err(Error::Protocol(format!(
             "mp4: box '{}' is smaller than its header",
-            label(&kind)
+            label(kind)
         )));
     }
     let start = pos + header as usize;
@@ -213,10 +223,7 @@ fn box_at(body: &[u8], pos: usize) -> Result<([u8; 4], std::ops::Range<usize>)> 
         .checked_add((size - header) as usize)
         .filter(|end| *end <= body.len())
         .ok_or_else(|| {
-            Error::Protocol(format!(
-                "mp4: box '{}' overruns its container",
-                label(&kind)
-            ))
+            Error::Protocol(format!("mp4: box '{}' overruns its container", label(kind)))
         })?;
     Ok((kind, start..end))
 }
@@ -272,21 +279,18 @@ fn read_moov(
 
 /// `(timescale, duration)` from a versioned `mvhd`/`mdhd` body.
 ///
-/// Both are FullBoxes with the same layout: `version(1)+flags(3)`, then
+/// Both are `FullBox`es with the same layout: `version(1)+flags(3)`, then
 /// `creation` and `modification` (4 bytes each in version 0, 8 in version 1),
 /// `timescale(4)` and `duration` (4 or 8).
 fn timescale_and_duration(body: &[u8]) -> Option<(u64, u64)> {
-    match *body.first()? {
-        0 => {
-            let timescale = u32::from_be_bytes(body.get(12..16)?.try_into().ok()?) as u64;
-            let duration = u32::from_be_bytes(body.get(16..20)?.try_into().ok()?) as u64;
-            Some((timescale, duration))
-        }
-        _ => {
-            let timescale = u32::from_be_bytes(body.get(20..24)?.try_into().ok()?) as u64;
-            let duration = u64::from_be_bytes(body.get(24..32)?.try_into().ok()?);
-            Some((timescale, duration))
-        }
+    if *body.first()? == 0 {
+        let timescale = u64::from(u32::from_be_bytes(body.get(12..16)?.try_into().ok()?));
+        let duration = u64::from(u32::from_be_bytes(body.get(16..20)?.try_into().ok()?));
+        Some((timescale, duration))
+    } else {
+        let timescale = u64::from(u32::from_be_bytes(body.get(20..24)?.try_into().ok()?));
+        let duration = u64::from_be_bytes(body.get(24..32)?.try_into().ok()?);
+        Some((timescale, duration))
     }
 }
 
@@ -320,7 +324,7 @@ fn fragment_ticks_of(moof: &[u8]) -> Result<u64> {
     Ok(total)
 }
 
-/// The 24-bit `flags` field of a FullBox body.
+/// The 24-bit `flags` field of a `FullBox` body.
 fn full_box_flags(body: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes([
         0,
@@ -335,13 +339,13 @@ fn tfhd_default_duration(body: &[u8]) -> Option<u64> {
     let flags = full_box_flags(body)?;
     // FullBox header (4) + track_ID (4), then the optional fields in order.
     let mut offset = 8usize;
-    if (flags & 0x000001) != 0 {
+    if (flags & 0x00_0001) != 0 {
         offset += 8; // base_data_offset
     }
-    if (flags & 0x000002) != 0 {
+    if (flags & 0x00_0002) != 0 {
         offset += 4; // sample_description_index
     }
-    if (flags & 0x000008) != 0 {
+    if (flags & 0x00_0008) != 0 {
         let bytes: [u8; 4] = body.get(offset..offset + 4)?.try_into().ok()?;
         return Some(u64::from(u32::from_be_bytes(bytes)));
     }
@@ -350,37 +354,37 @@ fn tfhd_default_duration(body: &[u8]) -> Option<u64> {
 
 /// Total duration of a `trun`'s samples, in media ticks.
 ///
-/// Per-sample durations (`0x000100`) win; otherwise every sample takes the track
+/// Per-sample durations (`0x00_0100`) win; otherwise every sample takes the track
 /// fragment's default. A `trun` with neither contributes nothing.
 fn trun_ticks(body: &[u8], default_duration: Option<u64>) -> Result<u64> {
     let flags =
         full_box_flags(body).ok_or_else(|| Error::Protocol("mp4: truncated trun".into()))?;
-    let count = u32::from_be_bytes(
+    let count = u64::from(u32::from_be_bytes(
         body.get(4..8)
             .ok_or_else(|| Error::Protocol("mp4: truncated trun".into()))?
             .try_into()
             .unwrap(),
-    ) as u64;
+    ));
     let mut offset = 8usize;
-    if (flags & 0x000001) != 0 {
+    if (flags & 0x00_0001) != 0 {
         offset += 4; // data_offset
     }
-    if (flags & 0x000004) != 0 {
+    if (flags & 0x00_0004) != 0 {
         offset += 4; // first_sample_flags
     }
-    if (flags & 0x000100) == 0 {
+    if (flags & 0x00_0100) == 0 {
         return Ok(count.saturating_mul(default_duration.unwrap_or(0)));
     }
     // Sample records are duration[, size][, flags][, composition offset], so the
     // stride is the sum of the fields that are present.
     let mut stride = 4usize;
-    if (flags & 0x000200) != 0 {
+    if (flags & 0x00_0200) != 0 {
         stride += 4;
     }
-    if (flags & 0x000400) != 0 {
+    if (flags & 0x00_0400) != 0 {
         stride += 4;
     }
-    if (flags & 0x000800) != 0 {
+    if (flags & 0x00_0800) != 0 {
         stride += 4;
     }
     let mut total = 0u64;
@@ -397,7 +401,7 @@ fn trun_ticks(body: &[u8], default_duration: Option<u64>) -> Result<u64> {
 }
 
 /// A box type as text for diagnostics; non-printable bytes become `?`.
-fn label(kind: &[u8; 4]) -> String {
+fn label(kind: [u8; 4]) -> String {
     kind.iter()
         .map(|b| {
             if b.is_ascii_graphic() {
@@ -410,7 +414,7 @@ fn label(kind: &[u8; 4]) -> String {
 }
 
 /// An I/O failure while walking the stream, reported as a protocol error.
-fn io(error: std::io::Error) -> Error {
+fn io(error: &std::io::Error) -> Error {
     Error::Protocol(format!("mp4: {error}"))
 }
 
@@ -421,10 +425,10 @@ mod tests {
     use super::*;
 
     /// One box: 32-bit size, type, body.
-    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    fn bx(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + body.len());
         out.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
-        out.extend_from_slice(kind);
+        out.extend_from_slice(&kind);
         out.extend_from_slice(body);
         out
     }
@@ -434,7 +438,7 @@ mod tests {
         parts.iter().flatten().copied().collect()
     }
 
-    /// A FullBox body: `version`, 24-bit `flags`, then `payload`.
+    /// A `FullBox` body: `version`, 24-bit `flags`, then `payload`.
     fn full(version: u8, flags: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![version];
         out.extend_from_slice(&flags.to_be_bytes()[1..4]);
@@ -444,7 +448,7 @@ mod tests {
 
     /// `mvhd`/`mdhd` share the fields this module reads, so one builder serves
     /// both; `version` selects the 32- or 64-bit layout.
-    fn timescale_box(kind: &[u8; 4], version: u8, timescale: u32, duration: u64) -> Vec<u8> {
+    fn timescale_box(kind: [u8; 4], version: u8, timescale: u32, duration: u64) -> Vec<u8> {
         let mut payload = Vec::new();
         if version == 1 {
             payload.extend_from_slice(&0u64.to_be_bytes()); // creation
@@ -463,11 +467,11 @@ mod tests {
     /// A `moov` with a movie header and one audio track.
     fn moov(timescale: u32, duration: u64) -> Vec<u8> {
         let trak = bx(
-            b"trak",
-            &bx(b"mdia", &timescale_box(b"mdhd", 0, timescale, duration)),
+            *b"trak",
+            &bx(*b"mdia", &timescale_box(*b"mdhd", 0, timescale, duration)),
         );
-        let body = join(&[timescale_box(b"mvhd", 0, timescale, duration), trak]);
-        bx(b"moov", &body)
+        let body = join(&[timescale_box(*b"mvhd", 0, timescale, duration), trak]);
+        bx(*b"moov", &body)
     }
 
     /// A `tfhd` with an optional default sample duration.
@@ -476,16 +480,16 @@ mod tests {
         let flags = match default_duration {
             Some(d) => {
                 payload.extend_from_slice(&d.to_be_bytes());
-                0x000008
+                0x00_0008
             }
             None => 0,
         };
-        bx(b"tfhd", &full(0, flags, &payload))
+        bx(*b"tfhd", &full(0, flags, &payload))
     }
 
     /// A `trun` whose samples all take the fragment default.
     fn trun_default(count: u32) -> Vec<u8> {
-        bx(b"trun", &full(0, 0, &count.to_be_bytes()))
+        bx(*b"trun", &full(0, 0, &count.to_be_bytes()))
     }
 
     /// A `trun` carrying a per-sample duration for each entry.
@@ -494,20 +498,20 @@ mod tests {
         for d in durations {
             payload.extend_from_slice(&d.to_be_bytes());
         }
-        bx(b"trun", &full(0, 0x000100, &payload))
+        bx(*b"trun", &full(0, 0x00_0100, &payload))
     }
 
     /// A `moof` holding one track fragment with a single `trun`.
     fn moof(default_duration: Option<u32>, trun: Vec<u8>) -> Vec<u8> {
         bx(
-            b"moof",
-            &bx(b"traf", &join(&[tfhd(default_duration), trun])),
+            *b"moof",
+            &bx(*b"traf", &join(&[tfhd(default_duration), trun])),
         )
     }
 
     /// A minimal `ftyp`.
     fn ftyp() -> Vec<u8> {
-        bx(b"ftyp", b"isom\x00\x00\x02\x00iso2")
+        bx(*b"ftyp", b"isom\x00\x00\x02\x00iso2")
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -518,9 +522,9 @@ mod tests {
             ftyp(),
             moov(48_000, 0),
             moof(None, trun_durations(&[12_000, 12_000])),
-            bx(b"mdat", &[0u8; 8]),
+            bx(*b"mdat", &[0u8; 8]),
             moof(None, trun_durations(&[12_000, 12_000])),
-            bx(b"mdat", &[0u8; 8]),
+            bx(*b"mdat", &[0u8; 8]),
         ]);
         let info = verify(Cursor::new(&file)).unwrap();
         assert_eq!(info.boxes, 6);
@@ -536,7 +540,7 @@ mod tests {
             ftyp(),
             moov(48_000, 0),
             moof(Some(480), trun_default(100)),
-            bx(b"mdat", &[0u8; 4]),
+            bx(*b"mdat", &[0u8; 4]),
         ]);
         assert_eq!(verify(Cursor::new(&file)).unwrap().duration_ms, Some(1000));
     }
@@ -544,7 +548,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn reads_the_progressive_movie_duration() {
-        let file = join(&[ftyp(), moov(44_100, 44_100), bx(b"mdat", &[0u8; 16])]);
+        let file = join(&[ftyp(), moov(44_100, 44_100), bx(*b"mdat", &[0u8; 16])]);
         let info = verify(Cursor::new(&file)).unwrap();
         assert!(!info.fragmented);
         assert_eq!(info.duration_ms, Some(1000));
@@ -555,8 +559,8 @@ mod tests {
     fn reads_a_version_1_duration() {
         let file = join(&[
             ftyp(),
-            bx(b"moov", &timescale_box(b"mvhd", 1, 48_000, 96_000)),
-            bx(b"mdat", &[0u8; 4]),
+            bx(*b"moov", &timescale_box(*b"mvhd", 1, 48_000, 96_000)),
+            bx(*b"mdat", &[0u8; 4]),
         ]);
         assert_eq!(verify(Cursor::new(&file)).unwrap().duration_ms, Some(2000));
     }
@@ -578,14 +582,14 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn rejects_a_non_ftyp_first_box() {
-        let file = join(&[bx(b"moov", &[]), bx(b"mdat", &[0u8; 4])]);
+        let file = join(&[bx(*b"moov", &[]), bx(*b"mdat", &[0u8; 4])]);
         assert!(verify(Cursor::new(&file)).is_err());
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn rejects_a_missing_moov() {
-        let file = join(&[ftyp(), bx(b"mdat", &[0u8; 4])]);
+        let file = join(&[ftyp(), bx(*b"mdat", &[0u8; 4])]);
         assert!(verify(Cursor::new(&file)).is_err());
     }
 
@@ -636,7 +640,7 @@ mod tests {
             ftyp(),
             moov(48_000, 0),
             moof(Some(480), trun_default(100)),
-            bx(b"mdat", &[0u8; 4]),
+            bx(*b"mdat", &[0u8; 4]),
         ]);
         let info = verify(Trickle { data: file, at: 0 }).unwrap();
         assert_eq!(info.duration_ms, Some(1000));

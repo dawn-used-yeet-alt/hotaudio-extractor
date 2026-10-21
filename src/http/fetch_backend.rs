@@ -32,7 +32,7 @@ pub(super) struct Transport {
 impl Transport {
     pub(super) fn new(timeout_ms: Option<u64>) -> Self {
         let fetch = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("fetch"))
-            .and_then(|f| f.dyn_into::<Function>())
+            .and_then(JsCast::dyn_into::<Function>)
             .expect("wasm build: no global fetch");
         Self { timeout_ms, fetch }
     }
@@ -192,9 +192,8 @@ impl OpenBody {
             let result = JsFuture::from(self.reader.read())
                 .await
                 .map_err(|e| Error::Http(format!("body read failed: {e:?}")))?;
-            let done = Reflect::get(&result, &JsValue::from_str("done"))
-                .map(|v| v.is_truthy())
-                .unwrap_or(false);
+            let done =
+                Reflect::get(&result, &JsValue::from_str("done")).is_ok_and(|v| v.is_truthy());
             if done {
                 return Ok(());
             }

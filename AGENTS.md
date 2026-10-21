@@ -22,7 +22,7 @@ boundary, so the same code drives blocking `ureq` natively and `fetch` on
 
 ```bash
 cargo test                  # offline test suite; must never touch the network
-cargo clippy --all-targets  # zero warnings
+cargo clippy --all-targets  # zero warnings, clippy::pedantic
 cargo fmt --all
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
