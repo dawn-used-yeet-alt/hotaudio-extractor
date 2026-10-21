@@ -28,7 +28,8 @@ cargo run --example decrypt_offline -- audio.hax keys.json track.m4a
 ## Workflow
 
 - `cargo clippy --all-targets` must stay at zero warnings; CI enforces it with
-  `-D warnings`.
+  `-D warnings`. `Cargo.toml` denies the `clippy::pedantic` group, so the extra
+  lints apply to both targets; an `#[allow]` needs a reason.
 - `cargo fmt --all` must be clean; CI checks it.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` must be clean; CI checks it.
   Doc links must resolve, including from public items to private ones.
