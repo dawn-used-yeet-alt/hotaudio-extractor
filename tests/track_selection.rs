@@ -101,9 +101,8 @@ async fn load_handshake_rejects_an_unknown_track() {
     .await;
 
     // `Handshake` is not `Debug`, so `expect_err` is unavailable here.
-    let err = match result {
-        Ok(_) => panic!("an unknown track must fail"),
-        Err(err) => err,
+    let Err(err) = result else {
+        panic!("an unknown track must fail");
     };
     assert!(err.to_string().contains("9999"), "got {err}");
 }

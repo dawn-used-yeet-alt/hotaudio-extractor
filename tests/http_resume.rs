@@ -220,8 +220,7 @@ fn reports_progress_monotonically() {
     let samples = seen.lock().expect("lock").clone();
     assert!(
         samples.len() >= 2,
-        "expected streaming progress, got {:?}",
-        samples
+        "expected streaming progress, got {samples:?}"
     );
     // Loaded must never go backwards, and must finish at the body length.
     assert!(
@@ -276,9 +275,8 @@ fn errors_when_the_body_is_shorter_than_content_length() {
     server.join().expect("server thread");
 
     // `FullResponse` is not `Debug`, so `expect_err` is unavailable here.
-    let err = match result {
-        Ok(_) => panic!("a short body must not be accepted"),
-        Err(err) => err,
+    let Err(err) = result else {
+        panic!("a short body must not be accepted");
     };
     let msg = err.to_string();
     assert!(msg.contains("incomplete"), "got {msg}");
