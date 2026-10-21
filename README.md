@@ -2,7 +2,7 @@
 
 Save audio from [hotaudio.net](https://hotaudio.net) as a playable `.m4a`. Paste a track link, get a file.
 
-> [!NOTE]
+> [!CAUTION]
 > Made for personal archiving. It hosts nothing and isn't affiliated with hotaudio.net.
 > Only download what you have the right to, and follow the site's terms and your local law.
 
