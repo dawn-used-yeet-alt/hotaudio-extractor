@@ -89,3 +89,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Strict lints for the whole crate, on both targets. `priority = -1` lets an
+# individual `#[allow]` override the group without also having to disable it in
+# every invocation; CI still turns warnings into errors.
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
