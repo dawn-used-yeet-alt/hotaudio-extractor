@@ -1144,6 +1144,9 @@ mod tests {
 
     /// A minimal fragmented MP4 whose one fragment sums to `ms` milliseconds at
     /// 48 kHz, for the `--verify` tests.
+    // `moov` and `moof` are the box types the fixture is built from; renaming
+    // them would make the fixture harder to check against the spec.
+    #[allow(clippy::similar_names)]
     fn fragmented_mp4(ms: u32) -> Vec<u8> {
         fn bx(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
             let mut out = ((8 + body.len()) as u32).to_be_bytes().to_vec();

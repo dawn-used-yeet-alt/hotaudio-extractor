@@ -242,7 +242,7 @@ pub fn list_tracks(html: &str) -> Option<Vec<(String, String, String)>> {
     let mut ids: Vec<String> = state
         .order
         .iter()
-        .map(|n| n.to_string())
+        .map(ToString::to_string)
         .filter(|id| state.tracks.contains_key(id))
         .collect();
     for id in state.tracks.keys() {

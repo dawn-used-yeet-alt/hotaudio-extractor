@@ -1,6 +1,6 @@
 //! Protocol primitives: hex/base64, SHA-256, X25519 and ChaCha20-Poly1305.
 //!
-//! Thin, allocation-conscious wrappers over RustCrypto. The bulk `.hax` decrypt
+//! Thin, allocation-conscious wrappers over `RustCrypto`. The bulk `.hax` decrypt
 //! uses the in-place AEAD API so each segment slice moves exactly once.
 
 use std::fmt;
