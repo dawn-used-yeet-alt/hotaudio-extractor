@@ -58,6 +58,12 @@ Docs live in [`docs/`](docs/README.md), split by reader:
 - [Contributing](CONTRIBUTING.md), and the full
   [documentation index](docs/README.md)
 
+## Plug
+If your goal is to just stream audios from GWA(or adjacant subreddits) check out [Dawngasm](https://github.com/dawn-used-yeet-alt/Dawngasm).
+It's a TUI app to do just that. It supports Whyp, Hotaudio, Audiochan and Soundgasm.  
+It runs on my database off all the posts ever posted on these subreddits.
+It lags behind ~1 day though.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
