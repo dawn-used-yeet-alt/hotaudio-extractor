@@ -36,6 +36,20 @@ cargo test --target wasm32-unknown-unknown
 cargo clippy --target wasm32-unknown-unknown --all-targets
 ```
 
+The bindings are a separate workspace (`bindings/`) with its own lockfile, so
+they are checked from that directory. They are native-only:
+
+```bash
+cd bindings
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo deny check
+cd ..
+scripts/build-bindings.sh        # generate Kotlin, Swift, Python and Ruby
+scripts/build-python.sh          # stage the Python package and wheel
+```
+
 The live acceptance suite is `live/` — a separate workspace, never built by
 `cargo test`, run daily by `.github/workflows/live.yml`. By hand:
 
@@ -56,10 +70,13 @@ cargo run --release --manifest-path live/Cargo.toml -- \
 - `src/http/` — `Client` + shared policy, one transport per target
 - `src/clock.rs` — clocks and sleeping, per target
 - `src/wasm.rs` — the `wasm-bindgen` surface, `wasm32` only
-- `scripts/` — signer-recovery tooling and `build-wasm.sh`, the wasm packager;
+- `bindings/` — separate native-only workspace: `hotaudio-ffi` (the UniFFI
+  surface), a pinned `uniffi-bindgen`, and the Android TLS helper
+- `scripts/` — signer-recovery tooling, `build-wasm.sh`, and the binding
+  generators (`build-bindings.sh`, `build-python.sh`);
   `vendor/nozzle.js` — the pinned player bundle
 - `live/` — the live acceptance suite (its own workspace)
-- `docs/` — architecture, protocol, maintenance, migration, browser
+- `docs/` — architecture, protocol, maintenance, migration, browser, bindings
 
 ## Rules
 
@@ -99,6 +116,19 @@ cargo run --release --manifest-path live/Cargo.toml -- \
 - `bytecode.rs`, `src/signer/env.rs` (`PINNED_NOZZLE_VERSION` + `ENV_HASHES`) and
   `scripts/shim.ts` are one pinned contract. Move them together, in the order
   `docs/MAINTENANCE.md` gives.
+
+**Bindings are a separate workspace.**
+
+- `bindings/` mirrors the wasm surface over UniFFI; the protocol stays in the
+  core. Do not reimplement pipeline steps in `hotaudio-ffi` — it only marshals
+  types, adapts progress/cancel and walks the filesystem.
+- The binding API is blocking. The native pipeline is already synchronous at its
+  boundary; do not make the exports async to match the browser.
+- UniFFI is MPL-2.0 and is not a core dependency. Keep the license and
+  duplicate-version policy in `bindings/deny.toml`, not the root one. Both
+  files stay enforced by `.github/workflows/bindings.yml`.
+- `bindings/Cargo.lock` pins the generator to the runtime; regenerate it
+  deliberately and move `hotaudio-ffi`, `uniffi.toml` and the scripts together.
 
 **Deliberate non-goals.** Do not "improve" these without re-measuring; the
 measurements live in `docs/ARCHITECTURE.md`.

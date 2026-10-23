@@ -107,7 +107,7 @@ implementation, so the Rust version can be maintained standalone.
 cargo build --release      # binary at target/release/hotaudio-download
 ```
 
-Requires a current stable Rust (edition 2024, MSRV 1.85). Runtime dependencies
+Requires a current stable Rust (edition 2024, MSRV 1.87). Runtime dependencies
 are the RustCrypto crates plus `ureq`; there is no bundled JavaScript engine,
 because the signer is native. The crate is `hotaudio-rs` and is not published to
 crates.io, so build from a clone of this repository rather than installing it.

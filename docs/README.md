@@ -3,7 +3,7 @@
 This book has three parts, by reader:
 
 1. **Use it**: [INSTALL.md](INSTALL.md) · [CLI.md](CLI.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-2. **Build on it**: [LIBRARY.md](LIBRARY.md) (Rust) · [BROWSER.md](BROWSER.md) (wasm)
+2. **Build on it**: [LIBRARY.md](LIBRARY.md) (Rust) · [BINDINGS.md](BINDINGS.md) (Kotlin, Swift, Python, Ruby) · [BROWSER.md](BROWSER.md) (wasm)
 3. **Keep it alive**: [ARCHITECTURE.md](ARCHITECTURE.md) · [PROTOCOL.md](PROTOCOL.md) · [MAINTENANCE.md](MAINTENANCE.md)
 
 Plus one frozen page: [MIGRATION.md](MIGRATION.md), the one-time port away
@@ -20,6 +20,7 @@ longer updated.
 | Fix a failing install | [INSTALL.md](INSTALL.md#after-unpacking) |
 | Fix a failing download | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Call the protocol from Rust | [LIBRARY.md](LIBRARY.md) |
+| Call the protocol from Kotlin, Swift, Python or Ruby | [BINDINGS.md](BINDINGS.md) |
 | Stream audio in a web page | [BROWSER.md](BROWSER.md) |
 | Understand a design choice | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Read or implement the wire protocol | [PROTOCOL.md](PROTOCOL.md) |
@@ -43,6 +44,9 @@ The split:
   rather than repeating.
 - **LIBRARY.md** is the Rust API quickstart: options, streaming, offline
   decryption, cancellation, errors. It points at rustdoc for the details.
+- **BINDINGS.md** is the UniFFI surface: the blocking API shared by Kotlin,
+  Swift, Python and Ruby, the per-language packaging recipes, Android TLS
+  initialization and the mobile background-download split.
 - **BROWSER.md** is the wasm build: packaging, MediaSource playback, and the
   same-origin proxy a page needs (the crate ships none, on purpose).
 - **ARCHITECTURE.md** explains the design and carries the measurements behind

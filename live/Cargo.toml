@@ -3,7 +3,7 @@ name = "hotaudio-live-tests"
 version = "0.1.0"
 edition = "2024"
 # Matches the crate under test, which is the floor for the whole tree.
-rust-version = "1.85"
+rust-version = "1.87"
 publish = false
 
 # Its own workspace, so the crate's `cargo build`, `cargo clippy --all-targets`

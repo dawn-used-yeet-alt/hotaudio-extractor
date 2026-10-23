@@ -13,7 +13,10 @@
 //! caller.
 
 use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 
 use crate::crypto::{self, Error, Result};
 use crate::hax::{Hax0, KeyTree};
@@ -55,19 +58,38 @@ pub type ProgressSink<'a> = Option<ProgressFn<'a>>;
 /// mid-decrypt, so a cancelled run leaves a consistent partial state rather than
 /// a torn one. The CLI's temp-file sink relies on that — it discards the
 /// in-progress file on drop, so a Ctrl-C never leaves a corrupt `.m4a`.
+#[cfg(target_arch = "wasm32")]
+type CancelFn = Rc<dyn Fn() -> bool>;
+#[cfg(not(target_arch = "wasm32"))]
+type CancelFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
 #[derive(Clone)]
-pub struct Cancel(Rc<dyn Fn() -> bool>);
+pub struct Cancel(CancelFn);
 
 impl Cancel {
     /// Build a token that is cancelled whenever `is_cancelled` returns `true`.
     ///
-    /// Backed by `Rc` rather than `Arc`, so the token is not `Send`/`Sync`. That
-    /// is deliberate: the browser backs it with an `AbortSignal`, which is not
-    /// `Send`, and the pipeline is single-threaded on both targets. The native
-    /// Ctrl-C flag is a `static` the handler thread writes and the polling
-    /// closure reads — the token itself never crosses a thread.
+    /// On native the token is `Send + Sync`, so it can be created on one thread
+    /// (a UI thread, a `Task.detached`, a Python caller) and moved to the worker
+    /// that runs the pipeline. On `wasm32` it stays non-`Send`: the browser
+    /// backs it with an `AbortSignal`, which is not `Send`, and the page's
+    /// event loop is single-threaded anyway.
+    ///
+    /// The closure runs on every check, so it must be cheap: an atomic load or
+    /// an `AbortSignal` getter, not a lock or an allocation.
+    #[cfg(target_arch = "wasm32")]
     pub fn new(is_cancelled: impl Fn() -> bool + 'static) -> Self {
         Self(Rc::new(is_cancelled))
+    }
+
+    /// Build a token that is cancelled whenever `is_cancelled` returns `true`.
+    ///
+    /// The native token is `Send + Sync` so bindings can create it on one
+    /// thread and pass it to the worker running the pipeline; see the
+    /// `wasm32` constructor for that target's `AbortSignal`-backed variant.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(is_cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(is_cancelled))
     }
 
     /// Whether the caller has asked the download to stop.
@@ -1241,14 +1263,23 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn cancel_reads_the_current_value_not_a_snapshot() {
-        let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel = {
             let flag = flag.clone();
-            Cancel::new(move || flag.get())
+            Cancel::new(move || flag.load(std::sync::atomic::Ordering::SeqCst))
         };
         assert!(!cancel.is_cancelled());
-        flag.set(true);
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(cancel.check(), Err(Error::Cancelled)));
+    }
+
+    // The native token is what lets a binding create the handle on a UI thread
+    // and hand it to the worker running the blocking pipeline.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancel_is_send_and_sync_on_native() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Cancel>();
     }
 
     // A token set before the run must stop it at the first check, before the

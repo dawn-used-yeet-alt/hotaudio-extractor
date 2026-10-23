@@ -23,13 +23,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       # The installed toolchain is newer than the MSRV, so a bare `cargo`
-      # invocation cannot catch accidental use of features gated after 1.85.
-      # Several dependencies also declare 1.85 as their own MSRV, so this is
+      # invocation cannot catch accidental use of features gated after 1.87.
+      # Several dependencies also declare 1.87 as their own MSRV, so this is
       # the floor for the tree, not just for this crate.
       - name: Check MSRV
         run: |
-          rustup toolchain install 1.85 --profile minimal
-          cargo +1.85 check --locked --all-targets
+          rustup toolchain install 1.87 --profile minimal
+          cargo +1.87 check --locked --all-targets
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -149,14 +149,14 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       # Same reasoning as the MSRV check above: the installed toolchain is newer
-      # than the floor, so a bare `cargo` cannot catch a feature gated after 1.85.
+      # than the floor, so a bare `cargo` cannot catch a feature gated after 1.87.
       - name: Check MSRV
         run: |
-          # The target must be added to the 1.85 toolchain specifically. The
+          # The target must be added to the 1.87 toolchain specifically. The
           # `dtolnay/rust-toolchain` step above installs it for `stable`, which
-          # is a separate toolchain, and `+1.85` does not inherit it.
-          rustup toolchain install 1.85 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.85 check --locked --target wasm32-unknown-unknown --lib
+          # is a separate toolchain, and `+1.87` does not inherit it.
+          rustup toolchain install 1.87 --profile minimal --target wasm32-unknown-unknown
+          cargo +1.87 check --locked --target wasm32-unknown-unknown --lib
       - name: Clippy
         run: cargo clippy --locked --target wasm32-unknown-unknown --all-targets -- -D warnings
       # The runner is not on the image and `cargo install` would rebuild the

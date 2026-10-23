@@ -1,0 +1,221 @@
+name: bindings
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bindings-${{ github.ref }}
+  cancel-in-progress: true
+
+# The Kotlin/Swift/Python/Ruby surface is a separate workspace with its own
+# lockfile and license policy. It compiles the same core crate, so a change that
+# only breaks the bindings (an FFI-visible type, a feature gate, the Android JNI
+# export) has to fail here rather than at the first downstream consumer.
+jobs:
+  rust:
+    name: bindings rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings
+      # Same bar as the core: formatted, clippy-clean (pedantic), tested and
+      # documented. `--all-targets` includes the CDylib smoke tests.
+      - name: Format
+        run: cargo fmt --manifest-path bindings/Cargo.toml --all --check
+      - name: Clippy
+        run: cargo clippy --manifest-path bindings/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path bindings/Cargo.toml --locked
+      - name: Docs
+        run: cargo doc --manifest-path bindings/Cargo.toml --locked --no-deps -p hotaudio-ffi
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # UniFFI is MPL-2.0 and is only in the bindings graph. The core's
+      # `deny.toml` stays permissive-only; this workspace carries its own copy.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check advisories, licenses, bans and sources
+        run: |
+          cd bindings
+          cargo deny check
+
+  # Generate all four bindings from one library build, then execute real code in
+  # the three runtimes that can be hosted on Linux (Kotlin/JVM, Python, Ruby).
+  # Swift is typechecked on macOS below; that is the most a Linux runner can do.
+  languages:
+    name: languages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the scripts parse
+        run: bash -n scripts/build-bindings.sh scripts/build-python.sh
+      - name: Build the library and generate bindings
+        run: scripts/build-bindings.sh
+      - name: Check the generated files
+        run: |
+          set -euo pipefail
+          for f in \
+            bindings/out/net/hotaudio/extractor/hotaudio_ffi.kt \
+            bindings/out/Hotaudio.swift \
+            bindings/out/HotaudioFFI.h \
+            bindings/out/HotaudioFFI.modulemap \
+            bindings/out/hotaudio_ffi.py \
+            bindings/out/hotaudio_ffi.rb; do
+            test -s "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          grep -q "package net.hotaudio.extractor" \
+            bindings/out/net/hotaudio/extractor/hotaudio_ffi.kt
+          # The UDL-free interface has to reach the generated code, not just the
+          # scaffold: a missing `#[uniffi::export]` shows up as a missing symbol.
+          grep -q "signPayloadAt" bindings/out/net/hotaudio/extractor/hotaudio_ffi.kt
+          grep -q "sign_payload_at" bindings/out/hotaudio_ffi.py
+          grep -q "sign_payload_at" bindings/out/hotaudio_ffi.rb
+          grep -q "signPayloadAt" bindings/out/Hotaudio.swift
+
+      # Kotlin is generated as plain JVM/JNA code, so a JVM smoke test exercises
+      # the real ABI without an Android device. The compiler and JNA are pinned
+      # because the generated code is tied to neither, only to the ABI.
+      - name: Install Kotlin
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/kotlin.zip" \
+            https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
+          unzip -q "$RUNNER_TEMP/kotlin.zip" -d "$RUNNER_TEMP"
+          curl -fsSL -o "$RUNNER_TEMP/jna.jar" \
+            https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+      - name: Kotlin smoke test
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/KotlinSmoke.kt" <<'KT'
+          import net.hotaudio.extractor.*
+
+          private const val PAYLOAD = """{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}"""
+          private const val SIGNATURE = "9:00000000e5c208341868b259118ea157"
+
+          fun main() {
+              val signature = signPayloadAt(PAYLOAD, 0.0)
+              check(signature == SIGNATURE) { "signature: $signature" }
+              check(version().isNotEmpty()) { "empty version" }
+              check(listTracks("<html><body>not a track page</body></html>").isEmpty())
+              println("kotlin smoke OK")
+          }
+          KT
+          "$RUNNER_TEMP/kotlinc/bin/kotlinc" \
+            -classpath "$RUNNER_TEMP/jna.jar" -include-runtime \
+            -d "$RUNNER_TEMP/kotlin-smoke.jar" \
+            bindings/out/net/hotaudio/extractor/*.kt "$RUNNER_TEMP/KotlinSmoke.kt"
+          java -cp "$RUNNER_TEMP/kotlin-smoke.jar:$RUNNER_TEMP/jna.jar" \
+            -Djna.library.path="$PWD/bindings/target/debug" \
+            KotlinSmokeKt
+
+      # Ruby is generated from the same interface; `ffi` is the only runtime
+      # dependency. Treat it as the scripting path, but prove it still loads.
+      - name: Ruby smoke test
+        run: |
+          set -euo pipefail
+          export GEM_HOME="$RUNNER_TEMP/gems"
+          export GEM_PATH="$GEM_HOME"
+          gem install ffi --no-document
+          LD_LIBRARY_PATH="$PWD/bindings/target/debug" \
+            ruby -I bindings/out -r hotaudio_ffi -e '
+              payload = %q({"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1})
+              signature = HotaudioFfi.sign_payload_at(payload, 0.0)
+              abort "signature: #{signature}" unless signature == "9:00000000e5c208341868b259118ea157"
+              abort "empty version" if HotaudioFfi.version.empty?
+              abort "expected no tracks" unless HotaudioFfi.list_tracks("<html></html>").empty?
+              puts "ruby smoke OK"
+            '
+
+      # The Python script stages the package and builds the wheel; installing it
+      # into a fresh venv proves the wheel carries both the ctypes module and the
+      # shared library where the module looks for them.
+      - name: Python package and smoke test
+        run: |
+          set -euo pipefail
+          scripts/build-python.sh
+          ls bindings/out/python/dist/*.whl
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet bindings/out/python/dist/*.whl
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          from hotaudio_ffi import list_tracks, sign_payload_at, version
+
+          payload = '{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}'
+          signature = sign_payload_at(payload, 0.0)
+          assert signature == "9:00000000e5c208341868b259118ea157", signature
+          assert version(), "empty version"
+          assert list_tracks("<html></html>") == []
+          print("python smoke OK")
+          PY
+
+  # `cargo check` is enough for the Android-only branch: it compiles the JNI
+  # export and the platform verifier call. `ring` still builds its C/asm at
+  # check time, so the NDK clang has to be on the compiler path; the full `.so`
+  # recipe lives in docs/BINDINGS.md.
+  android:
+    name: android check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings
+      - name: Check the Android target
+        env:
+          CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          RANLIB_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+        run: cargo check --manifest-path bindings/Cargo.toml --locked --target aarch64-linux-android -p hotaudio-ffi
+
+  # iOS is the other shipped native target. Compile the staticlib branch and
+  # typecheck the generated Swift against the C module map, which is exactly the
+  # pair the XCFramework recipe hands to SwiftPM.
+  apple:
+    name: apple check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings
+      - name: Check the iOS target
+        run: cargo check --manifest-path bindings/Cargo.toml --locked --target aarch64-apple-ios -p hotaudio-ffi
+      - name: Generate and typecheck the Swift bindings
+        run: |
+          set -euo pipefail
+          scripts/build-bindings.sh
+          # `swiftc -I` alone does not pick up `<name>.modulemap`; Clang only
+          # searches for `module.modulemap` in a directory. Point it at the
+          # generated map explicitly, as SwiftPM's recipe does.
+          swiftc -typecheck \
+            -I bindings/out \
+            -Xcc -fmodule-map-file="$PWD/bindings/out/HotaudioFFI.modulemap" \
+            bindings/out/Hotaudio.swift

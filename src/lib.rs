@@ -109,13 +109,23 @@ pub const HOTAUDIO_API_BASE: &str = "https://hotaudio.net";
 
 /// Emit a non-fatal diagnostic.
 ///
-/// Native writes to stderr; `wasm32` has no stderr, so it goes to
+/// Native writes to stderr and `wasm32` has no stderr, so it goes to
 /// `console.warn`. Centralised so both transports report the same way.
+///
+/// Enabling the `log` feature routes the same message through the `log` facade
+/// instead. That is what a mobile or FFI host needs: Android's stderr is not
+/// logcat and iOS's is not `os_log`, so the binding crate installs a listener
+/// the host can forward to the platform logger.
 pub(crate) fn warn(msg: &str) {
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(msg));
-    #[cfg(not(target_arch = "wasm32"))]
-    eprintln!("warning: {msg}");
+    #[cfg(feature = "log")]
+    log::warn!(target: "hotaudio", "{msg}");
+    #[cfg(not(feature = "log"))]
+    {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(msg));
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("warning: {msg}");
+    }
 }
 
 /// Match canonical hotaudio share links.

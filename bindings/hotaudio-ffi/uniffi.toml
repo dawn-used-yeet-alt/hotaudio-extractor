@@ -1,0 +1,16 @@
+[bindings.kotlin]
+# Android package. The generated Kotlin is plain JVM code (JNA), so the same
+# package works in an Android module and in a JVM test harness.
+package_name = "net.hotaudio.extractor"
+
+[bindings.swift]
+# Produces Hotaudio.swift, HotaudioFFI.h and HotaudioFFI.modulemap.
+module_name = "Hotaudio"
+
+[bindings.python]
+# In library mode UniFFI derives this from the cdylib filename; naming it makes
+# the packaged module independent of how cargo suffixes the artifact.
+cdylib_name = "hotaudio_ffi"
+
+[bindings.ruby]
+cdylib_name = "hotaudio_ffi"

@@ -1,0 +1,58 @@
+# Supply-chain policy for the bindings workspace.
+#
+# Separate from the root `deny.toml` because this workspace compiles the
+# protocol core as a dependency but adds the binding generator, whose tree is
+# MPL-2.0 (UniFFI and its UDL parser). The core stays permissive-only; a binding
+# consumer is expected to accept the generator's license, and the test suite
+# never links the generator into the shipped artifact.
+[graph]
+# The binding crate ships for the mobile targets, plus the desktop hosts its
+# tests run on. Resolve all of them so a target-specific dependency is audited.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
+
+[advisories]
+# `basic-toml` is unmaintained (RUSTSEC-2026-0374) and reachable only through
+# UniFFI's generator (askama), never through the library or the generated
+# bindings. Upstream has not moved askama off it yet.
+ignore = ["RUSTSEC-2026-0374"]
+
+[licenses]
+# The same permissive set as the core, plus MPL-2.0 for UniFFI (`uniffi`,
+# `uniffi_*`, `weedle2`). MPL-2.0 is file-level copyleft: it applies to the
+# generator's own source, not to the bindings it emits or the core it calls.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+skip = [
+    # `ring` 0.17 has not moved off getrandom 0.2; the core's x25519 stack and
+    # the wasm CSPRNG are on 0.4.
+    { crate = "getrandom@0.2.17", reason = "ring 0.17 has not updated to getrandom 0.4" },
+    # UniFFI's proc macros are on syn 2; askama, clap and serde are on syn 3.
+    # Both are compile-time only.
+    { crate = "syn@2.0.119", reason = "uniffi_macros is pinned to syn 2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
