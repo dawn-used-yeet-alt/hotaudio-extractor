@@ -1,0 +1,33 @@
+[package]
+name = "hotaudio-ffi"
+description = "UniFFI bindings over the hotaudio-rs protocol core: Kotlin, Swift, Python and Ruby."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "hotaudio_ffi"
+# `cdylib` for Kotlin/JNA, Python/ctypes and Ruby/FFI; `staticlib` for the iOS
+# XCFramework. `lib` so the crate's own tests and the bindgen binary can use it.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+# `default-features = false` keeps `clap`, the signal handler and the completions
+# generator out of an app's dependency graph. `log` routes the core's warnings
+# through this crate's listener (see `init_logging`).
+hotaudio = { package = "hotaudio-rs", path = "../..", default-features = false, features = ["log"] }
+uniffi = { workspace = true, default-features = false }
+thiserror = { workspace = true }
+log = "0.4"
+
+# Android's rustls verifier calls into the JVM's X509TrustManager, so the host
+# must hand it the app Context once before the first HTTPS request. That
+# handoff is the one thing UniFFI cannot generate; see `init_android_tls`.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", default-features = false }
+rustls-platform-verifier = { version = "0.7", default-features = false }

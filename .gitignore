@@ -1,5 +1,7 @@
 # Rust build output and downloaded media
 /target/
+/bindings/target/
+/bindings/out/
 /live/target/
 /live/Cargo.lock
 *.m4a

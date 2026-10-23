@@ -1,0 +1,26 @@
+[package]
+name = "uniffi-bindgen"
+description = "Generates the Kotlin, Swift, Python and Ruby bindings for hotaudio-ffi."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+# The CLI pulls clap and cargo-metadata, so it is only built on demand:
+# `cargo run -p uniffi-bindgen`. The FFI library itself depends on the minimal
+# UniFFI runtime, not the generator.
+required-features = ["generator"]
+
+[features]
+default = ["generator"]
+generator = ["uniffi/cli"]
+
+[dependencies]
+uniffi = { workspace = true }

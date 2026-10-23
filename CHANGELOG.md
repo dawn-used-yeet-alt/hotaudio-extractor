@@ -6,6 +6,23 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Kotlin, Swift, Python and Ruby bindings.** A new `bindings/` workspace adds
+  a [UniFFI](https://mozilla.github.io/uniffi-rs/) surface over the protocol
+  core: page listing, the page/listen key split, streamed and buffered
+  downloads, offline decryption, signing, cancellation, progress and host
+  logging. The bindings are blocking and native-only; `docs/BINDINGS.md` covers
+  packaging, Android TLS initialization and the mobile background-download
+  split. The generator is pinned in `bindings/Cargo.lock`, and the workspace
+  carries its own license/duplicate policy because UniFFI is MPL-2.0.
+- **`log` feature.** The library's non-fatal diagnostics can now route through
+  the `log` facade instead of stderr, so a host (the bindings, in particular)
+  can forward them to its platform logger.
+- **`cli` feature.** The CLI's parser, signal handler, completions and man-page
+  dependencies are optional; `default = ["cli"]` keeps `cargo run` working, and
+  library consumers can depend on the crate with `default-features = false`.
+
 ### Changed
 
 - **Clippy `pedantic` is enforced.** `Cargo.toml` now denies the group on both

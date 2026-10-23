@@ -476,6 +476,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "js-sys",
+ "log",
  "serde",
  "serde_json",
  "sha2",

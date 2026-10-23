@@ -51,6 +51,7 @@ Docs live in [`docs/`](docs/README.md), split by reader:
 - Install and use: [Install](docs/INSTALL.md), [Command line](docs/CLI.md),
   [Troubleshooting](docs/TROUBLESHOOTING.md)
 - Build on the crate: [Library (Rust)](docs/LIBRARY.md),
+  [Bindings (Kotlin, Swift, Python, Ruby)](docs/BINDINGS.md),
   [Browser / wasm](docs/BROWSER.md)
 - Keep it working: [Architecture](docs/ARCHITECTURE.md),
   [Protocol](docs/PROTOCOL.md), [Maintenance](docs/MAINTENANCE.md)

@@ -20,6 +20,11 @@ ignore = []
 # Apache-2.0 cover almost everything, BSD/ISC/Zlib/0BSD/Unlicense come from the
 # HTTP and crypto crates, Unicode-3.0 is an `icu` transitive, and
 # CDLA-Permissive-2.0 is a webpki/rustls data crate.
+#
+# MPL-2.0 is here for the bindings workspace only: UniFFI, its UDL parser and
+# the generator it produces are MPL-2.0. The core crate does not depend on any
+# of them, and the bindings workspace carries its own copy of this policy in
+# `bindings/deny.toml`.
 allow = [
     "0BSD",
     "Apache-2.0",
@@ -27,6 +32,7 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    "MPL-2.0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
@@ -46,6 +52,10 @@ skip = [
     # curve25519-dalek's proc macro is on syn 2; wasm-bindgen's and serde's are
     # on syn 3. Both are compile-time only.
     { crate = "syn@2.0.119", reason = "curve25519-dalek-derive is pinned to syn 2" },
+    # `ring` 0.17 targets windows-sys 0.52; rustls-platform-verifier targets
+    # 0.61. They are different Windows ABI generations, so there is no single
+    # version to converge on.
+    { crate = "windows-sys@0.52.0", reason = "ring 0.17 is on windows-sys 0.52" },
 ]
 
 [sources]
