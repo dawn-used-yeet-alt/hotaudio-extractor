@@ -20,7 +20,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 # `default-features = false` keeps `clap`, the signal handler and the completions
 # generator out of an app's dependency graph. `log` routes the core's warnings
 # through this crate's listener (see `init_logging`).
-hotaudio = { package = "hotaudio-rs", path = "../..", default-features = false, features = ["log"] }
+hotaudio = { package = "hotaudio-rs", version = "1.2.2", path = "../..", default-features = false, features = ["log"] }
 uniffi = { workspace = true, default-features = false }
 thiserror = { workspace = true }
 log = "0.4"

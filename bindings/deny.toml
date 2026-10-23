@@ -17,7 +17,10 @@ targets = [
 ]
 
 [advisories]
-ignore = []
+# `basic-toml` is unmaintained (RUSTSEC-2026-0374) and reachable only through
+# UniFFI's generator (askama), never through the library or the generated
+# bindings. Upstream has not moved askama off it yet.
+ignore = ["RUSTSEC-2026-0374"]
 
 [licenses]
 # The same permissive set as the core, plus MPL-2.0 for UniFFI (`uniffi`,
@@ -46,10 +49,6 @@ skip = [
     # UniFFI's proc macros are on syn 2; askama, clap and serde are on syn 3.
     # Both are compile-time only.
     { crate = "syn@2.0.119", reason = "uniffi_macros is pinned to syn 2" },
-    # `ring` 0.17 uses windows-sys 0.52; rustls-platform-verifier and tempfile
-    # use 0.61. Both are Windows-only and selected by different major windows
-    # releases, so there is no single version to converge on.
-    { crate = "windows-sys@0.52.0", reason = "ring 0.17 is on windows-sys 0.52" },
 ]
 
 [sources]
