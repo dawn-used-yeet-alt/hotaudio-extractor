@@ -7,7 +7,7 @@ members = ["hotaudio-ffi", "uniffi-bindgen"]
 # binding generator is a separate concern with its own (MPL-2.0) dependency
 # tree, its own release cadence and its own CI. See `docs/BINDINGS.md`.
 #
-# The bindings track stable Rust rather than the core's 1.85 floor: UniFFI's
+# The bindings track stable Rust rather than the core's 1.87 floor: UniFFI's
 # codegen is a build-time tool, not code that ships inside the library.
 [workspace.package]
 version = "0.1.0"

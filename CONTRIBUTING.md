@@ -33,7 +33,7 @@ cargo run --example decrypt_offline -- audio.hax keys.json track.m4a
 - `cargo fmt --all` must be clean; CI checks it.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` must be clean; CI checks it.
   Doc links must resolve, including from public items to private ones.
-- Run `cargo test` before committing. CI also builds against the MSRV (1.85).
+- Run `cargo test` before committing. CI also builds against the MSRV (1.87).
 - The third-party notice bundled into release archives is generated at release
   time from the tag's `Cargo.lock` (`.github/workflows/release.yml`), so there
   is nothing to regenerate when dependencies change. `deny.toml` (cargo-deny in

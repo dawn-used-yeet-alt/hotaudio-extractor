@@ -1,16 +1,16 @@
-//! Blocking UniFFI bindings over the hotaudio protocol core.
+//! Blocking `UniFFI` bindings over the hotaudio protocol core.
 //!
 //! The protocol is implemented once, in the `hotaudio` crate. This crate is a
-//! thin translation layer: it owns the types UniFFI can represent (owned
+//! thin translation layer: it owns the types `UniFFI` can represent (owned
 //! strings, records, a flat error) and the thread hand-off, and nothing else.
-//! Kotlin, Swift, Python and Ruby are generated from this file by UniFFI; the
+//! Kotlin, Swift, Python and Ruby are generated from this file by `UniFFI`; the
 //! same functions are available in all four.
 //!
 //! # Blocking, not async
 //!
 //! The native pipeline is synchronous under the hood: its `async` boundary is
 //! `Poll::Ready` on the first poll (see `hotaudio::exec`). Exposing that as
-//! UniFFI async would add an executor plus coroutines/concurrency machinery and
+//! `UniFFI` async would add an executor plus coroutines/concurrency machinery and
 //! make the callback and lifetime problems worse for no benefit. Every function
 //! here blocks, so call it from a background thread:
 //!
@@ -32,7 +32,7 @@
 //!
 //! Every entry point wraps its body in `catch_unwind` and turns a panic into
 //! [`FfiError::Panic`]. A panic must never unwind into the JVM, the Swift
-//! runtime or CPython.
+//! runtime or `CPython`.
 //!
 //! # Android
 //!
@@ -46,7 +46,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 #![deny(missing_docs)]
-// UniFFI owns every exported argument: a `String` or `Vec<u8>` arrives as a
+// `UniFFI` owns every exported argument: a `String` or `Vec<u8>` arrives as a
 // freshly lowered buffer, so taking it by value is the ABI, not a missed
 // borrow. Internal helpers follow the same shape for consistency.
 #![allow(clippy::needless_pass_by_value)]
@@ -69,27 +69,31 @@ use hotaudio::download::{
 use hotaudio::http::Client;
 use hotaudio::{clock, listen};
 
-/// UniFFI's error surface.
+/// `UniFFI`'s error surface.
 ///
-/// `code` is stable and suitable for programmatic handling; `message` is for
+/// `code` is stable and suitable for programmatic handling; `detail` is for
 /// humans and may change. A cancelled call uses `code == "cancelled"` rather
 /// than becoming a separate variant, so callers can treat it like any other
 /// failure without losing the distinction.
+///
+/// The field is `detail` rather than `message` because Kotlin exceptions
+/// already inherit `Throwable.message`; a subclass field with that name does
+/// not compile.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum FfiError {
     /// The protocol, transport or local filesystem failed.
-    #[error("{message}")]
+    #[error("{detail}")]
     Failed {
         /// Stable machine-readable category (`http`, `listen`, `auth`, `io`, …).
         code: String,
         /// Human-readable detail.
-        message: String,
+        detail: String,
     },
     /// A panic was caught at the FFI boundary.
-    #[error("internal panic: {message}")]
+    #[error("internal panic: {detail}")]
     Panic {
         /// The panic payload, when it was a string.
-        message: String,
+        detail: String,
     },
 }
 
@@ -108,7 +112,7 @@ impl From<CoreError> for FfiError {
         };
         Self::Failed {
             code: code.to_string(),
-            message: error.to_string(),
+            detail: error.to_string(),
         }
     }
 }
@@ -117,7 +121,7 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for FfiError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         Self::Failed {
             code: "callback".to_string(),
-            message: error.to_string(),
+            detail: error.to_string(),
         }
     }
 }
@@ -127,7 +131,7 @@ fn guarded<T>(body: impl FnOnce() -> Result<T, FfiError>) -> Result<T, FfiError>
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(result) => result,
         Err(payload) => Err(FfiError::Panic {
-            message: panic_message(payload.as_ref()),
+            detail: panic_message(payload.as_ref()),
         }),
     }
 }
@@ -145,14 +149,14 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 fn io_error(error: std::io::Error) -> FfiError {
     FfiError::Failed {
         code: "io".to_string(),
-        message: error.to_string(),
+        detail: error.to_string(),
     }
 }
 
 fn sign_error(error: hotaudio::signer::SignError) -> FfiError {
     FfiError::Failed {
         code: "sign".to_string(),
-        message: error.to_string(),
+        detail: error.to_string(),
     }
 }
 
@@ -182,7 +186,7 @@ pub struct KeyEnvelope {
 /// Options for the downloading entry points.
 ///
 /// Pass `None` for the defaults. Every field is optional in spirit; the record
-/// exists because UniFFI records are the portable way to express named
+/// exists because `UniFFI` records are the portable way to express named
 /// arguments across four languages.
 #[derive(Clone, Debug, Default, uniffi::Record)]
 pub struct DownloadOptions {
@@ -256,6 +260,11 @@ pub struct Progress {
 #[uniffi::export(foreign)]
 pub trait ProgressListener: Send + Sync {
     /// Called with a throttled progress report.
+    ///
+    /// # Errors
+    ///
+    /// An error is ignored: progress is advisory, and a listener must not be
+    /// able to fail a download.
     fn on_progress(&self, progress: Progress) -> Result<(), FfiError>;
 }
 
@@ -267,6 +276,10 @@ pub trait ProgressListener: Send + Sync {
 #[uniffi::export(foreign)]
 pub trait LogListener: Send + Sync {
     /// Called for each warning. `level` is currently always `warn`.
+    ///
+    /// # Errors
+    ///
+    /// An error is ignored: logging must not affect the download.
     fn on_log(&self, level: String, message: String) -> Result<(), FfiError>;
 }
 
@@ -285,7 +298,8 @@ pub struct CancellationToken {
 #[uniffi::export]
 impl CancellationToken {
     /// A fresh, uncancelled token.
-    // UniFFI constructors return `Arc<Self>`; the lint cannot know that.
+    #[must_use]
+    // `UniFFI` constructors return `Arc<Self>`; the lint cannot know that.
     #[allow(clippy::new_ret_no_self)]
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
@@ -309,8 +323,8 @@ impl CancellationToken {
 }
 
 impl CancellationToken {
-    fn to_cancel(token: &Option<Arc<Self>>) -> Option<Cancel> {
-        let token = Arc::clone(token.as_ref()?);
+    fn to_cancel(token: Option<&Arc<Self>>) -> Option<Cancel> {
+        let token = Arc::clone(token?);
         Some(Cancel::new(move || token.is_cancelled()))
     }
 }
@@ -501,7 +515,7 @@ pub fn download_to_file(
         warn_if_not_canonical(&page_url);
         let options = options.unwrap_or_default();
         let initial_keys = parse_keys(options.initial_keys_json.as_deref())?;
-        let cancel = CancellationToken::to_cancel(&cancel);
+        let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
 
         let client = Client::api();
@@ -561,7 +575,7 @@ pub fn download_bytes(
         warn_if_not_canonical(&page_url);
         let options = options.unwrap_or_default();
         let initial_keys = parse_keys(options.initial_keys_json.as_deref())?;
-        let cancel = CancellationToken::to_cancel(&cancel);
+        let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
 
         let api = Client::api();
@@ -608,7 +622,7 @@ pub fn download_cached_to_file(
 ) -> Result<TrackInfo, FfiError> {
     guarded(|| {
         let saved = download::parse_saved_keys(&keys_json)?;
-        let cancel = CancellationToken::to_cancel(&cancel);
+        let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
         let client = Client::bulk();
         let downloaded = hotaudio::block_on(download::download_cached(
@@ -772,7 +786,7 @@ pub fn init_logging(listener: Arc<dyn LogListener>) -> Result<(), FfiError> {
     guarded(|| {
         *LOG_LISTENER.write().map_err(|_| FfiError::Failed {
             code: "logging".to_string(),
-            message: "the log listener lock is poisoned".to_string(),
+            detail: "the log listener lock is poisoned".to_string(),
         })? = Some(listener);
         LOGGER_INIT.call_once(|| {
             if log::set_logger(&LOGGER).is_ok() {
@@ -790,8 +804,8 @@ pub fn init_logging(listener: Arc<dyn LogListener>) -> Result<(), FfiError> {
 /// request. Call this from `Application.onCreate` (or the first activity)
 /// through the Kotlin helper shipped in `bindings/android/HotaudioTls.kt`.
 ///
-/// This is a JNI export, not a UniFFI function: it is the one initialization
-/// step UniFFI cannot generate, and it exists only on Android.
+/// This is a JNI export, not a `UniFFI` function: it is the one initialization
+/// step `UniFFI` cannot generate, and it exists only on Android.
 ///
 /// # Safety
 ///

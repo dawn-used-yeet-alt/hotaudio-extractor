@@ -163,8 +163,9 @@ jobs:
           PY
 
   # `cargo check` is enough for the Android-only branch: it compiles the JNI
-  # export and the platform verifier call without needing an NDK linker or a
-  # device. A full `.so` build lives in the Android recipe in docs/BINDINGS.md.
+  # export and the platform verifier call. `ring` still builds its C/asm at
+  # check time, so the NDK clang has to be on the compiler path; the full `.so`
+  # recipe lives in docs/BINDINGS.md.
   android:
     name: android check
     runs-on: ubuntu-latest
@@ -173,10 +174,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: bindings
       - name: Check the Android target
+        env:
+          CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          RANLIB_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
         run: cargo check --manifest-path bindings/Cargo.toml --locked --target aarch64-linux-android -p hotaudio-ffi
 
   # iOS is the other shipped native target. Compile the staticlib branch and
@@ -199,4 +209,10 @@ jobs:
         run: |
           set -euo pipefail
           scripts/build-bindings.sh
-          swiftc -typecheck -I bindings/out bindings/out/Hotaudio.swift
+          # `swiftc -I` alone does not pick up `<name>.modulemap`; Clang only
+          # searches for `module.modulemap` in a directory. Point it at the
+          # generated map explicitly, as SwiftPM's recipe does.
+          swiftc -typecheck \
+            -I bindings/out \
+            -Xcc -fmodule-map-file="$PWD/bindings/out/HotaudioFFI.modulemap" \
+            bindings/out/Hotaudio.swift

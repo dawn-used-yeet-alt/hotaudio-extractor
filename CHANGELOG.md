@@ -25,6 +25,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- **The MSRV is now 1.87.** `ctutils` 0.4.4 fixes RUSTSEC-2026-0385 (a
+  non-constant-time mask generation used by the Poly1305 path), and 0.4.4 is
+  the first fixed release; it requires Rust 1.87. The root lockfile moves to
+  0.4.5, and CI checks the new floor on both native and wasm.
+- **Native cancellation is `Send + Sync`.** On native targets the
+  `download::Cancel` closure can now be created on one thread and used by the
+  worker running the pipeline; the browser keeps the single-threaded `Rc`
+  closure. This is what lets the bindings cancel from a UI thread.
 - **Clippy `pedantic` is enforced.** `Cargo.toml` now denies the group on both
   targets, so CI rejects the extra lints it enables. Lossy numeric casts stay
   allowed crate-wide: the signer mirrors JavaScript number semantics, and the

@@ -50,10 +50,11 @@ and the offline decrypts hold the container and the plaintext in memory
 
 Every fallible call throws/raises `FfiError`:
 
-- `Failed { code, message }`: `code` is stable (`http`, `listen`, `auth`,
+- `Failed { code, detail }`: `code` is stable (`http`, `listen`, `auth`,
   `decode`, `state`, `protocol`, `sign`, `io`, `cancelled`, `callback`), and
-  `message` is for humans.
-- `Panic { message }`: a Rust panic was caught at the boundary. This is a bug;
+  `detail` is for humans. It is named `detail` rather than `message` because
+  Kotlin exceptions already inherit `Throwable.message`.
+- `Panic { detail }`: a Rust panic was caught at the boundary. This is a bug;
   the process does not unwind into the JVM, Swift or Python.
 
 A cancellation is `Failed` with `code == "cancelled"`.

@@ -133,7 +133,7 @@ cd hotaudio-extractor
 cargo build --release   # -> target/release/hotaudio-download
 ```
 
-Requires stable Rust (edition 2024, MSRV 1.85).
+Requires stable Rust (edition 2024, MSRV 1.87).
 
 ## Next steps
 

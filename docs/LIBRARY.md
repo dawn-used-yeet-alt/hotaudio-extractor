@@ -13,7 +13,7 @@ crates.io, so depend on a git path:
 hotaudio = { git = "https://github.com/dawn-used-yeet-alt/hotaudio-extractor" }
 ```
 
-Rust 1.85 or newer is required (the repository's MSRV).
+Rust 1.87 or newer is required (the repository's MSRV).
 
 ## Running a download
 

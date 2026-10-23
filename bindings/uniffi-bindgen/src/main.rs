@@ -1,4 +1,4 @@
-//! The pinned UniFFI generator for the bindings workspace.
+//! The pinned `UniFFI` generator for the bindings workspace.
 //!
 //! `cargo run -p uniffi-bindgen -- generate --language …` keeps codegen in the
 //! lockfile with the runtime, rather than relying on a globally installed

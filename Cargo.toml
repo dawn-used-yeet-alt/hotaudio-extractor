@@ -4,7 +4,7 @@ version = "1.2.2"
 edition = "2024"
 # Also the floor for the dependency tree: several RustCrypto and ureq crates
 # declare the same MSRV. CI checks against this version.
-rust-version = "1.85"
+rust-version = "1.87"
 description = "hotaudio.net audio extractor: page handshake, VM-based request signing, X25519 listen key exchange, HAX0 decrypt."
 license = "MIT"
 readme = "README.md"
