@@ -77,7 +77,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 /// Returns [`Error::Decode`] if the input has odd length or a non-hex digit.
 #[inline]
 pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(Error::Decode("hex string of odd length"));
     }
     hex::decode(s).map_err(|_| Error::Decode("hex string"))

@@ -51,7 +51,7 @@ mod tests {
     fn bytecode_is_even_and_non_trivial() {
         // The program is 1314 entries: 657 two-byte instructions.
         assert_eq!(PROGRAM_LEN, 1314);
-        assert_eq!(PROGRAM_LEN % 2, 0);
+        assert!(PROGRAM_LEN.is_multiple_of(2));
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

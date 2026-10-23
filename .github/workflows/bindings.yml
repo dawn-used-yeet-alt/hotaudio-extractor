@@ -122,8 +122,9 @@ jobs:
             -classpath "$RUNNER_TEMP/jna.jar" -include-runtime \
             -d "$RUNNER_TEMP/kotlin-smoke.jar" \
             bindings/out/net/hotaudio/extractor/*.kt "$RUNNER_TEMP/KotlinSmoke.kt"
-          java -Djna.library.path="$PWD/bindings/target/debug" \
-            -jar "$RUNNER_TEMP/kotlin-smoke.jar"
+          java -cp "$RUNNER_TEMP/kotlin-smoke.jar:$RUNNER_TEMP/jna.jar" \
+            -Djna.library.path="$PWD/bindings/target/debug" \
+            KotlinSmokeKt
 
       # Ruby is generated from the same interface; `ffi` is the only runtime
       # dependency. Treat it as the scripting path, but prove it still loads.

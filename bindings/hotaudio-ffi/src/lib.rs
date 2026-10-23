@@ -38,7 +38,7 @@
 //!
 //! `ureq` verifies TLS with the platform verifier. On Android that verifier
 //! calls the JVM and must be initialized with the app `Context` before the first
-//! HTTPS request; call [`init_android_tls`] from `Application.onCreate`. iOS,
+//! HTTPS request; call `init_android_tls` from `Application.onCreate`. iOS,
 //! desktop and Python need no equivalent call.
 //!
 //! The functions and types below are exported to the generated bindings; the
