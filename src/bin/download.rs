@@ -252,6 +252,31 @@ mod code {
     pub const CANCELLED: u8 = 130;
 }
 
+/// Resolve the browser-clearance pair: flags, then environment, then config.
+///
+/// A cookie without its matching User-Agent is almost always a failed attempt,
+/// so warn while still letting the run proceed (the user may know better).
+#[cfg(not(target_arch = "wasm32"))]
+fn identity(cli: &Cli, config: &Config) -> (Option<String>, Option<String>) {
+    let cookie = cli
+        .cookie
+        .clone()
+        .or_else(|| env_value("HOTAUDIO_COOKIE"))
+        .or_else(|| config.cookie.clone());
+    let user_agent = cli
+        .user_agent
+        .clone()
+        .or_else(|| env_value("HOTAUDIO_USER_AGENT"))
+        .or_else(|| config.user_agent.clone());
+    if cookie.is_some() && user_agent.is_none() {
+        eprintln!(
+            "warning: a cookie is set without a matching User-Agent; a cf_clearance \
+             cookie is rejected unless the browser's exact User-Agent is sent too"
+        );
+    }
+    (cookie, user_agent)
+}
+
 /// The exit code for a pipeline failure, by [`Error`] class.
 fn exit_code(e: &Error) -> u8 {
     match e {
@@ -362,23 +387,7 @@ fn run() -> ExitCode {
     };
     let progress_json = cli.progress.as_deref() == Some("json");
 
-    // Flags win over the per-run environment, which wins over the config file.
-    let cookie = cli
-        .cookie
-        .clone()
-        .or_else(|| env_value("HOTAUDIO_COOKIE"))
-        .or_else(|| config.cookie.clone());
-    let user_agent = cli
-        .user_agent
-        .clone()
-        .or_else(|| env_value("HOTAUDIO_USER_AGENT"))
-        .or_else(|| config.user_agent.clone());
-    if cookie.is_some() && user_agent.is_none() {
-        eprintln!(
-            "warning: a cookie is set without a matching User-Agent; a cf_clearance \
-             cookie is rejected unless the browser's exact User-Agent is sent too"
-        );
-    }
+    let (cookie, user_agent) = identity(&cli, &config);
 
     let sources = match collect_sources(&cli) {
         Ok(s) => s,
