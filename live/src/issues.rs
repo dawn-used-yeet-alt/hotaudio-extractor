@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::report::Check;
+use crate::checks::first_line;
+use crate::report::{Check, comp};
 
 /// File or update one issue per failing component. `repo` is `owner/name`.
 pub fn file(
@@ -23,7 +24,10 @@ pub fn file(
     crate_rev: Option<&str>,
 ) -> Result<usize, String> {
     let mut by_component: BTreeMap<String, Vec<&Check>> = BTreeMap::new();
-    for check in checks.iter().filter(|c| !c.ok) {
+    for check in checks
+        .iter()
+        .filter(|c| !c.ok && c.component != comp::ENVIRONMENT)
+    {
         by_component
             .entry(check.component.clone())
             .or_default()
@@ -177,9 +181,9 @@ fn run_with_body(args: &[&str], body: &str, what: &str) -> Result<(), String> {
 }
 
 fn summarize(detail: &str) -> String {
-    let one = detail.lines().next().unwrap_or("").trim();
+    let one = first_line(detail);
     if one.chars().count() <= 80 {
-        one.to_string()
+        one
     } else {
         let mut s: String = one.chars().take(77).collect();
         s.push_str("...");

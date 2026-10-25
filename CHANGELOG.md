@@ -22,6 +22,14 @@ All notable changes to this project are documented here. Format follows
 - **`cli` feature.** The CLI's parser, signal handler, completions and man-page
   dependencies are optional; `default = ["cli"]` keeps `cargo run` working, and
   library consumers can depend on the crate with `default-features = false`.
+- **Cloudflare challenges are a distinct outcome.** The HTTP layer recognises
+  `cf-mitigated: challenge` (and challenge page bodies) and reports
+  `Error::Challenge`; the CLI exits 3 with a link to
+  [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md). `--cookie` / `--user-agent` (and
+  `HOTAUDIO_COOKIE` / `HOTAUDIO_USER_AGENT`) reuse a browser clearance, which
+  Cloudflare binds to the network and the browser's exact User-Agent.
+  `Client::with_cookie` and `Client::with_user_agent` expose the same pair to
+  library hosts.
 
 ### Changed
 
@@ -51,6 +59,21 @@ All notable changes to this project are documented here. Format follows
 - **The release page is a release page again.** `release-notes.md` had grown
   into a near-copy of the README; it is now a short header (install one-liner,
   one usage example, links) above GitHub's generated changelog.
+- **The User-Agent is configurable.** The default remains the minimal
+  `Mozilla/5.0`, but `--user-agent` exists to match the browser that earned a
+  `cf_clearance` cookie. The site's gate is network/reputation based, not a
+  fixed Chrome-UA rule.
+- **The live suite separates environment from product failures.** A Cloudflare
+  challenge is reported under the `environment` component, skips the network
+  phases, and neither files an issue nor fails the scheduled run; the full
+  suite runs again as soon as the site is reachable.
+
+### Fixed
+
+- **Live issue titles no longer contain progress output.** The suite splits
+  stderr on `\r` as well as `\n` and filters progress fragments, and its CLI
+  runs use `--quiet`, so an issue title and body are the error rather than the
+  progress bar.
 
 ## [1.2.2] - 2026-10-16
 

@@ -82,6 +82,8 @@ fn run() -> Result<ExitCode, String> {
         api_base: hotaudio::HOTAUDIO_API_BASE.to_string(),
         cli: cfg.cli.clone(),
         workdir: cfg.workdir.clone(),
+        cookie: env("HOTAUDIO_COOKIE"),
+        user_agent: env("HOTAUDIO_USER_AGENT"),
     };
 
     let started = hotaudio::clock::unix_secs();
@@ -91,6 +93,7 @@ fn run() -> Result<ExitCode, String> {
     // this file instead of the URL.
     let page_path = cfg.workdir.join("page.html");
     let live = hotaudio::block_on(checks::run_live(&mut runner, &ctx));
+    let environment_blocked = runner.environment_failed();
     let page_saved = live.as_ref().and_then(|live| {
         std::fs::write(&page_path, &live.html)
             .ok()
@@ -98,7 +101,14 @@ fn run() -> Result<ExitCode, String> {
     });
 
     if cfg.heavy {
-        if let Some(live) = &live {
+        if environment_blocked {
+            runner.ok(
+                report::comp::CLI,
+                "online run",
+                "skipped: the site is challenging this network",
+                Vec::new(),
+            );
+        } else if let Some(live) = &live {
             if let Some(artifacts) = checks::run_cli_online(&mut runner, &ctx, live) {
                 checks::run_offline(&mut runner, &ctx, &artifacts);
                 checks::run_cached(&mut runner, &ctx, &artifacts);
@@ -115,7 +125,7 @@ fn run() -> Result<ExitCode, String> {
                 Vec::new(),
             );
         }
-        if cfg.keysonly {
+        if cfg.keysonly && !runner.environment_failed() {
             checks::run_keys_only(&mut runner, &ctx);
         }
     }
@@ -142,8 +152,26 @@ fn run() -> Result<ExitCode, String> {
         println!("\nreport: {}", path.display());
     }
 
-    let failed = report.failed > 0;
-    if failed && cfg.file_issues {
+    // A challenge and a DNS failure are conditions of the network, not defects
+    // in the crate. Keep them in the report, but do not file product issues or
+    // fail the scheduled run for them: the run reruns the full suite as soon as
+    // the site is reachable again.
+    let environment_failed = report
+        .checks
+        .iter()
+        .any(|c| !c.ok && c.component == report::comp::ENVIRONMENT);
+    let product_failed = report
+        .checks
+        .iter()
+        .any(|c| !c.ok && c.component != report::comp::ENVIRONMENT);
+    if environment_failed && !product_failed {
+        eprintln!(
+            "environment: the site is not reachable for this network; \
+             this is not a crate failure"
+        );
+    }
+
+    if product_failed && cfg.file_issues {
         match issues::file(
             &report.checks,
             &report.url,
@@ -156,7 +184,7 @@ fn run() -> Result<ExitCode, String> {
         }
     }
 
-    Ok(if failed {
+    Ok(if product_failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -300,6 +328,9 @@ fn print_help() {
          \x20 --repo <OWNER/NAME> Issue target (default: {DEFAULT_REPO})\n\
          \x20 --label <LABEL>    Issue label (default: {DEFAULT_LABEL})\n\
          \x20 --list             List the component ids and exit\n\
-         \x20 -h, --help         Show this help"
+         \x20 -h, --help         Show this help\n\
+         \n\
+         Environment:\n\
+         \x20 HOTAUDIO_COOKIE, HOTAUDIO_USER_AGENT  Reuse a browser clearance"
     );
 }

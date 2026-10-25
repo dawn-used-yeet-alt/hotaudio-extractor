@@ -9,6 +9,16 @@ for a newer version, or open an issue with what you saw.
 [coldvideo-downloader](https://github.com/rebelonion/coldvideo-downloader) is the
 slower-but-stable alternative: it does not track the site's internals.
 
+## It says “site challenge” / “Just a moment…”
+
+hotaudio.net is behind Cloudflare, and Cloudflare has decided this network
+looks automated. The extractor cannot answer an interactive challenge, but you
+can pass it in a browser and reuse the resulting `cf_clearance` cookie. The
+cookie only works with the browser's exact User-Agent on the same network.
+
+The two-minute guide, with per-browser steps for copying both values, is in
+[CLOUDFLARE.md](CLOUDFLARE.md).
+
 ## A download fails or the audio looks truncated
 
 Transfers resume themselves after dropped connections, so many failures are
@@ -42,7 +52,7 @@ instructions they belong with.
 
 Failures separate into these classes by exit code:
 
-- `3` transport error
+- `3` transport or Cloudflare-challenge error
 - `4` protocol error
 
 plus `2` for bad input, `5` for the local filesystem, and `130` for Ctrl-C.

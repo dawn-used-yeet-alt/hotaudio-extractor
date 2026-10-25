@@ -2,7 +2,7 @@
 
 This book has three parts, by reader:
 
-1. **Use it**: [INSTALL.md](INSTALL.md) · [CLI.md](CLI.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+1. **Use it**: [INSTALL.md](INSTALL.md) · [CLI.md](CLI.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [CLOUDFLARE.md](CLOUDFLARE.md)
 2. **Build on it**: [LIBRARY.md](LIBRARY.md) (Rust) · [BINDINGS.md](BINDINGS.md) (Kotlin, Swift, Python, Ruby) · [BROWSER.md](BROWSER.md) (wasm)
 3. **Keep it alive**: [ARCHITECTURE.md](ARCHITECTURE.md) · [PROTOCOL.md](PROTOCOL.md) · [MAINTENANCE.md](MAINTENANCE.md)
 
@@ -19,6 +19,7 @@ longer updated.
 | Save keys and redownload offline | [CLI.md](CLI.md#keys-and-working-offline) |
 | Fix a failing install | [INSTALL.md](INSTALL.md#after-unpacking) |
 | Fix a failing download | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Pass a Cloudflare challenge | [CLOUDFLARE.md](CLOUDFLARE.md) |
 | Call the protocol from Rust | [LIBRARY.md](LIBRARY.md) |
 | Call the protocol from Kotlin, Swift, Python or Ruby | [BINDINGS.md](BINDINGS.md) |
 | Stream audio in a web page | [BROWSER.md](BROWSER.md) |
@@ -42,6 +43,9 @@ The split:
 - **TROUBLESHOOTING.md** is about download failure: what is transient, what
   means the site changed, what exit codes mean for scripts. It links out
   rather than repeating.
+- **CLOUDFLARE.md** owns the challenge workaround: getting `cf_clearance` and
+  the matching User-Agent out of a browser, the ways the pair goes stale, and
+  why a CI runner cannot reuse a developer's clearance.
 - **LIBRARY.md** is the Rust API quickstart: options, streaming, offline
   decryption, cancellation, errors. It points at rustdoc for the details.
 - **BINDINGS.md** is the UniFFI surface: the blocking API shared by Kotlin,

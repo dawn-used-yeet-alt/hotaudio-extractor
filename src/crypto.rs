@@ -25,6 +25,14 @@ pub enum Error {
     Protocol(String),
     /// Transport failure.
     Http(String),
+    /// Cloudflare answered with a challenge page instead of the origin.
+    ///
+    /// Not a protocol change: an interactive challenge is a gate for a browser
+    /// and cannot be answered by an HTTP client. Retrying immediately only
+    /// fetches the same page, so callers should surface this as an environment
+    /// condition and try again later (or after passing the challenge in a
+    /// browser on the same network).
+    Challenge(String),
     /// Signing failed.
     Sign(String),
     /// A local filesystem operation failed.
@@ -48,6 +56,7 @@ impl fmt::Display for Error {
             Error::Listen(m) => write!(f, "listen API: {m}"),
             Error::Protocol(m) => write!(f, "protocol: {m}"),
             Error::Http(m) => write!(f, "http: {m}"),
+            Error::Challenge(m) => write!(f, "site challenge: {m}"),
             Error::Sign(m) => write!(f, "signer: {m}"),
             Error::Io(m) => write!(f, "io: {m}"),
             Error::Cancelled => write!(f, "cancelled"),

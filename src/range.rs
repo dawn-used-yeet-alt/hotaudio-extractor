@@ -77,6 +77,9 @@ impl RangeSource for HttpRangeSource<'_> {
                 None,
             )
             .await?;
+        if let Some(detail) = res.challenge() {
+            return Err(Error::Challenge(format!("range fetch: {detail}")));
+        }
         match res.status {
             // Honour the range.
             206 => Ok(res.body),

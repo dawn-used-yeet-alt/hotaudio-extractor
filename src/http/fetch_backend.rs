@@ -22,7 +22,7 @@ use crate::http::{FullResponse, Head, Request};
 
 /// Header names `fetch` silently drops because they are forbidden: the browser
 /// sets them itself, and a page cannot override them.
-const FORBIDDEN: [&str; 3] = ["user-agent", "origin", "referer"];
+const FORBIDDEN: [&str; 4] = ["user-agent", "origin", "referer", "cookie"];
 
 pub(super) struct Transport {
     timeout_ms: Option<u64>,

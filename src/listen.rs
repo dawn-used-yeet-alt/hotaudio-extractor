@@ -217,6 +217,9 @@ pub async fn load_handshake(
     let resp = client
         .request("GET", page_url, &[("User-Agent", crate::HOTAUDIO_UA)], None)
         .await?;
+    if let Some(detail) = resp.challenge() {
+        return Err(Error::Challenge(format!("track page: {detail}")));
+    }
     if !(200..300).contains(&resp.status) {
         return Err(Error::Http(format!("track page returned {}", resp.status)));
     }
@@ -336,6 +339,11 @@ pub async fn listen(
     ];
     let resp: FullResponse = client.request("POST", &url, &headers, Some(&body)).await?;
 
+    if let Some(detail) = resp.challenge() {
+        return Err(Error::Challenge(format!(
+            "listen API for first={first}: {detail}"
+        )));
+    }
     if !(200..300).contains(&resp.status) {
         let snippet = String::from_utf8_lossy(&resp.body);
         let snippet: String = snippet.chars().take(300).collect();

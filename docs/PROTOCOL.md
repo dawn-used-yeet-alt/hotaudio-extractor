@@ -55,9 +55,15 @@ Content-Type: application/vnd.hotaudio.crypt+json
 X-Signature: <signature>
 X-Key: <client ephemeral public key, hex>
 User-Agent: Mozilla/5.0
+Cookie: cf_clearance=...        # optional: a browser clearance
 Origin: https://hotaudio.net
 Referer: https://hotaudio.net/
 ```
+
+The default `User-Agent` is `Mozilla/5.0`. It can be overridden to match a
+browser when reusing that browser's `cf_clearance` cookie; Cloudflare binds the
+clearance to the exact user agent that earned it. See
+[CLOUDFLARE.md](CLOUDFLARE.md).
 
 The `?key=` query repeats the page URL's `key` parameter verbatim for private
 and unlisted tracks.
@@ -102,6 +108,11 @@ Status handling mirrors the player: `401` is retried once, then reported as
 "bad sig"; `403` is fatal ("refresh page"). These are the statuses the retry
 policy covers (measured in [ARCHITECTURE.md](ARCHITECTURE.md#reliability):
 401 being retryable is what makes a transient signature rejection recoverable).
+
+A `403` with `cf-mitigated: challenge` (or a challenge page body) is not the
+origin rejecting the request: it is Cloudflare gating the network before the
+origin sees it. The crate reports that as `Error::Challenge` and the CLI exits
+3 with a guide link; no protocol change can answer an interactive challenge.
 
 ### The `.hax` URL
 

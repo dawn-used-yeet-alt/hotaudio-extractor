@@ -220,7 +220,9 @@ or in `docs/PROTOCOL.md` are the point of naming them.
 - **Concurrency.** Sequential by design. The server serialises per track
   (paging note above), and the parallel-range measurement says adding
   connections does not increase throughput.
-- **Stealth.** The user agent is the bare `Mozilla/5.0` the site requires;
-  there is deliberately no flag to change it. This is an interoperability
-  tool, not a scraper that hides itself. On `wasm32` the browser forbids
-  setting the header at all, so the crate drops it rather than spoofing.
+- **Stealth.** The default user agent is the bare `Mozilla/5.0`; `--user-agent`
+  exists only to match the browser that earned a `cf_clearance` cookie. There
+  is no fingerprint rotation, challenge solving or proxy farming. This is an
+  interoperability tool, not a scraper that hides itself. On `wasm32` the
+  browser forbids setting the header at all, so the crate drops it rather than
+  spoofing.

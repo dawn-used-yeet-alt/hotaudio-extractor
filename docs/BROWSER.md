@@ -181,9 +181,9 @@ Measured against the live site:
 1. `hotaudio.net` and `cdn.hotaudio.net` send no `Access-Control-Allow-Origin`,
    and the cross-origin preflight is refused: `OPTIONS` returns 404 or 405.
 2. `User-Agent` is a forbidden header: `fetch` will not let a page set it. The
-   site answers Chrome user agents with 403, which is where the native build's
-   pinned `Mozilla/5.0` (see [PROTOCOL.md](PROTOCOL.md#3-listen-request))
-   comes from.
+   native build defaults to `Mozilla/5.0` (see
+   [PROTOCOL.md](PROTOCOL.md#3-listen-request)) and can match a browser's exact
+   UA when reusing that browser's clearance; a page can choose neither.
 
 So a page cannot reach hotaudio directly, however correct the crate is. Put
 your own origin in front. This project deliberately ships no proxy: one is
@@ -203,9 +203,10 @@ await downloadTrackWith(
 
 ### What a compliant proxy must do
 
-1. **Rewrite `User-Agent` to `Mozilla/5.0`.** The browser cannot, and
-   Cloudflare 403s Chrome user agents. This is the single most common way a
-   hand-rolled proxy breaks.
+1. **Send a stable `User-Agent`.** The browser cannot set one, so the proxy
+   must. `Mozilla/5.0` is the native default; if the proxy reuses a browser
+   clearance, it must send that browser's exact UA (and the clearance cookie).
+   Rotating UAs is what gets a proxy challenged.
 2. **Add CORS headers and answer the preflight.** Echo
    `Access-Control-Allow-Origin`, and answer `OPTIONS` with `x-signature`,
    `x-key` and `content-type` allow-listed, or every listen call fails before
@@ -252,7 +253,7 @@ keys are wanted.
 
 | Symptom | Cause |
 | --- | --- |
-| 403 from Cloudflare, or a challenge page | `User-Agent` not rewritten (rule 1) |
+| 403 from Cloudflare, or a challenge page | the proxy's egress is challenged, or its `User-Agent` is missing/changed (rule 1) |
 | CORS error in the console, nothing reaches the crate | preflight not answered (rule 2) |
 | Every segment 416s or re-downloads | `Range` dropped or answered `200` (rule 3) |
 | Proxy memory spikes to track size | body buffered rather than streamed (rule 4) |

@@ -82,11 +82,30 @@ destination.
 --retries 5 --timeout 60           # more retries, longer per-attempt timeout
 --delay 500                        # ms between requests; politeness, not correctness
 --api-base https://mirror.example  # talk to a mirror, or override the listen API
+--cookie 'cf_clearance=...'        # reuse a browser's Cloudflare clearance
+--user-agent 'Mozilla/5.0 (...)'   # the exact UA that earned that clearance
 ```
 
 Transfers resume themselves across dropped connections, and a dropped body is
 retried from the last byte rather than the beginning. `--delay` spaces listen
 and key-paging requests when bulk-downloading.
+
+### Cloudflare challenges
+
+If the site answers with `cf-mitigated: challenge`, the CLI exits 3 and prints a
+link to [CLOUDFLARE.md](CLOUDFLARE.md). Passing the challenge in a browser gives
+you a `cf_clearance` cookie, but Cloudflare binds it to the network and the
+browser's exact User-Agent. Pass **both**:
+
+```bash
+hotaudio-download "$URL" \
+  --cookie 'cf_clearance=...' \
+  --user-agent 'Mozilla/5.0 (...) ...'
+```
+
+`HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` set the same values per run; flags
+win over the environment, which wins over the config file. The extractor never
+solves or bypasses a challenge itself.
 
 The flags are native-transport concerns. The wasm build has no flag of this
 kind: a page cannot choose its proxy, so proxying there belongs to the host.
@@ -103,7 +122,11 @@ Defaults can live in `~/.config/hotaudio/config.toml`, a path given with
 output_dir = "/home/you/Music"
 retries = 5
 timeout = 60
+cookie = "cf_clearance=..."
+user_agent = "Mozilla/5.0 (...) ..."
 ```
+
+The cookie and user agent are a pair; see [CLOUDFLARE.md](CLOUDFLARE.md).
 
 ## Exit codes
 
@@ -113,7 +136,7 @@ For scripts. `--json` prints a machine-readable result line.
 | --- | --- |
 | 0 | success |
 | 2 | bad input (unknown flag, conflicting options, bad config) |
-| 3 | network or transport error |
+| 3 | network, transport or Cloudflare-challenge error |
 | 4 | protocol error (handshake, decryption, signer) |
 | 5 | local filesystem error |
 | 130 | cancelled with Ctrl-C |

@@ -161,10 +161,13 @@ Client defaults are overridable per instance: `Client::with_retries` for the
 retry policy (three attempts, 500 ms doubling backoff plus jitter capped at
 10 s, retrying network errors and statuses `{401, 408, 425, 429, 500, 502,
 503, 504}`, honouring `Retry-After` on 429), `Client::with_timeout_ms` for
-per-attempt timeout, `Client::with_proxy` for an HTTP(S) CONNECT tunnel.
-Standard `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables are
-honoured on the native backend, and the proxy setting is a documented no-op on
-wasm.
+per-attempt timeout, `Client::with_proxy` for an HTTP(S) CONNECT tunnel,
+`Client::with_cookie` for a raw `Cookie` header, and `Client::with_user_agent`
+for the `User-Agent`. The last two are a pair when reusing a browser's
+Cloudflare clearance: the cookie only works with the exact user agent that
+earned it ([CLOUDFLARE.md](CLOUDFLARE.md)). Standard
+`ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables are honoured on the
+native backend, and the proxy setting is a documented no-op on wasm.
 
 ## Errors
 
@@ -179,6 +182,7 @@ Variants reachable from the library surface:
 | `Listen(String)` | The listen API rejected the request |
 | `Protocol(String)` | A required field was missing or unusable |
 | `Http(String)` | Transport failure |
+| `Challenge(String)` | Cloudflare challenge instead of the origin; an environment condition, not a protocol change |
 | `Sign(String)` | Signing failed |
 | `Cancelled` | The cancel token was set; not a failure |
 
