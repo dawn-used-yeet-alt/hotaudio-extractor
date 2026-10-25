@@ -263,9 +263,9 @@ pub async fn run_live(r: &mut Runner, ctx: &Ctx) -> Option<Live> {
                 (
                     "cookie",
                     if ctx.cookie.is_some() {
-                        "configured"
+                        "configured".to_string()
                     } else {
-                        "none"
+                        "none".to_string()
                     },
                 ),
             ]),
@@ -594,7 +594,7 @@ pub fn run_cli_online(r: &mut Runner, ctx: &Ctx, live: &Live) -> Option<Artifact
     let audio = ctx.workdir.join("track.m4a");
     let keys = ctx.workdir.join("keys.json");
     let hax = ctx.workdir.join("track.hax");
-    let mut args = vec![
+    let args = vec![
         ctx.url.clone(),
         "--out".into(),
         path(&audio),
@@ -1131,7 +1131,7 @@ pub fn run_streaming(r: &mut Runner, ctx: &Ctx, art: &Artifacts, page_html: &Pat
 /// `--keys-only`: the page plus a single listen, no container.
 pub fn run_keys_only(r: &mut Runner, ctx: &Ctx) {
     let keys = ctx.workdir.join("branch.json");
-    let mut args = vec![
+    let args = vec![
         "--keys-only".into(),
         "--save-keys".into(),
         path(&keys),
