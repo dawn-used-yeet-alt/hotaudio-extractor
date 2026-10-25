@@ -125,6 +125,52 @@ impl FullResponse {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
+
+    /// Describe a Cloudflare challenge response, if this is one.
+    ///
+    /// The documented marker is `cf-mitigated: challenge`; the body check
+    /// covers a proxy that strips it. A challenge is an environment condition,
+    /// not a protocol failure: no HTTP client can answer an interactive gate,
+    /// and retrying it only fetches the same page.
+    #[must_use]
+    pub fn challenge(&self) -> Option<String> {
+        if !is_challenge_header(&self.headers) && !is_challenge_body(self.status, &self.body) {
+            return None;
+        }
+        Some(challenge_detail(self.status, self.header("cf-ray")))
+    }
+}
+
+/// True when Cloudflare marked this response as a challenge.
+fn is_challenge_header(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("cf-mitigated") && v.trim().eq_ignore_ascii_case("challenge")
+    })
+}
+
+/// True for the HTML body of a challenge page, when the header is unavailable.
+///
+/// Only 403/503 can be a challenge gate, and only a small prefix is scanned:
+/// challenge pages are a few KiB, while origin error bodies are not.
+fn is_challenge_body(status: u16, body: &[u8]) -> bool {
+    if status != 403 && status != 503 {
+        return false;
+    }
+    let prefix = &body[..body.len().min(8192)];
+    let text = String::from_utf8_lossy(prefix);
+    text.contains("Just a moment...")
+        || text.contains("cf_chl_opt")
+        || text.contains("Enable JavaScript and cookies to continue")
+}
+
+/// `"Cloudflare challenge (HTTP 403, cf-ray ...)"`, with the ray when present.
+fn challenge_detail(status: u16, ray: Option<&str>) -> String {
+    match ray {
+        Some(ray) if !ray.is_empty() => {
+            format!("Cloudflare challenge (HTTP {status}, cf-ray {ray})")
+        }
+        _ => format!("Cloudflare challenge (HTTP {status})"),
+    }
 }
 
 /// Rewrites a request URL before it is sent. The seam for CDNs, mirrors and
@@ -145,6 +191,14 @@ pub struct Client {
     backend: backend::Transport,
     retry: Retry,
     rewrite: Option<UrlRewrite>,
+    /// Overrides the per-request `User-Agent` when set. Needed when a
+    /// `cf_clearance` cookie was issued to a browser: Cloudflare binds the
+    /// clearance to the user agent that earned it.
+    user_agent: Option<String>,
+    /// A raw `Cookie` header sent with every request. This is how a caller
+    /// reuses a browser's challenge clearance; the crate never obtains one
+    /// itself.
+    cookie: Option<String>,
 }
 
 impl Client {
@@ -167,7 +221,60 @@ impl Client {
             backend: backend::Transport::new(timeout_ms),
             retry: Retry::default(),
             rewrite: None,
+            user_agent: None,
+            cookie: None,
         }
+    }
+
+    /// Send `ua` as the `User-Agent` on every request, overriding any
+    /// per-request value.
+    ///
+    /// Set this to the browser's user agent when supplying that browser's
+    /// `cf_clearance` cookie with [`Client::with_cookie`]: Cloudflare binds a
+    /// clearance to the user agent that earned it.
+    #[must_use]
+    pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
+        self.user_agent = Some(ua.into());
+        self
+    }
+
+    /// Send `cookie` as the raw `Cookie` header on every request.
+    ///
+    /// The crate never solves a challenge itself; a caller that passed one in a
+    /// browser can hand the resulting cookie (typically `cf_clearance=...`) to
+    /// the client. Cookies may carry credentials, so they are never logged.
+    ///
+    /// On `wasm32` the browser forbids setting this header, so the transport
+    /// drops it; cookie handling belongs to the host's `fetch` there.
+    #[must_use]
+    pub fn with_cookie(mut self, cookie: impl Into<String>) -> Self {
+        self.cookie = Some(cookie.into());
+        self
+    }
+
+    /// Per-request headers after applying the client-wide user agent and
+    /// cookie. A client-wide value replaces a same-named per-request header;
+    /// everything else is passed through.
+    fn headers<'a>(
+        &'a self,
+        request: &[(&'a str, &'a str)],
+        extra: &[(&'a str, &'a str)],
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut headers: Vec<(&str, &str)> = Vec::with_capacity(request.len() + extra.len() + 2);
+        let replace_ua = self.user_agent.is_some();
+        let replace_cookie = self.cookie.is_some();
+        headers.extend(request.iter().copied().filter(|(name, _)| {
+            (!replace_ua || !name.eq_ignore_ascii_case("user-agent"))
+                && (!replace_cookie || !name.eq_ignore_ascii_case("cookie"))
+        }));
+        if let Some(ua) = self.user_agent.as_deref() {
+            headers.push(("User-Agent", ua));
+        }
+        headers.extend(extra.iter().copied());
+        if let Some(cookie) = self.cookie.as_deref() {
+            headers.push(("Cookie", cookie));
+        }
+        headers
     }
 
     /// Replace the retry policy (attempts and backoff).
@@ -263,10 +370,12 @@ impl Client {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<FullResponse> {
+        let url = self.url(url);
+        let merged = self.headers(headers, &[]);
         let req = Request {
             method,
-            url: &self.url(url),
-            headers,
+            url: &url,
+            headers: &merged,
             body,
         };
         let mut last: Option<Error> = None;
@@ -352,14 +461,16 @@ impl Client {
             let started = clock::monotonic_ms();
             let resume_at = buf.len();
             let range = format!("bytes={resume_at}-");
-            let mut request_headers: Vec<(&str, &str)> = headers.to_vec();
-            if resume_at > 0 {
-                request_headers.push(("Range", range.as_str()));
-            }
+            let extra: Vec<(&str, &str)> = if resume_at > 0 {
+                vec![("Range", range.as_str())]
+            } else {
+                Vec::new()
+            };
+            let merged = self.headers(headers, &extra);
             let req = Request {
                 method: "GET",
                 url: &url,
-                headers: &request_headers,
+                headers: &merged,
                 body: None,
             };
 
@@ -380,6 +491,12 @@ impl Client {
                 }
             };
             let code = head.status;
+
+            // A challenge gate is not a container: returning it as a short
+            // transfer would retry (and refetch the gate). Surface it directly.
+            if let Some(detail) = head.challenge() {
+                return Err(Error::Challenge(detail));
+            }
 
             // A ranged request that runs past the end yields 416; the body is
             // already complete, so accept it rather than discarding work.
@@ -499,6 +616,21 @@ pub(crate) struct Head {
     pub content_length: Option<u64>,
 }
 
+impl Head {
+    /// The header-only challenge check: a streaming caller has not read the
+    /// body yet, and dropping it is the right response anyway.
+    fn challenge(&self) -> Option<String> {
+        is_challenge_header(&self.headers).then(|| {
+            let ray = self
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("cf-ray"))
+                .map(|(_, v)| v.as_str());
+            challenge_detail(self.status, ray)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +679,68 @@ mod tests {
         for status in [200, 301, 400, 403, 404, 451] {
             assert!(!is_retryable(status), "{status} should not be retryable");
         }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn challenge_detection_uses_the_header_then_the_body() {
+        let header = FullResponse {
+            status: 403,
+            headers: vec![
+                ("Cf-Mitigated".into(), "challenge".into()),
+                ("cf-ray".into(), "abc".into()),
+            ],
+            body: Vec::new(),
+        };
+        assert_eq!(
+            header.challenge().as_deref(),
+            Some("Cloudflare challenge (HTTP 403, cf-ray abc)")
+        );
+
+        let body = FullResponse {
+            status: 503,
+            headers: Vec::new(),
+            body: b"<title>Just a moment...</title>".to_vec(),
+        };
+        assert!(body.challenge().is_some());
+
+        // A plain origin 403 must stay a normal HTTP failure.
+        let origin = FullResponse {
+            status: 403,
+            headers: Vec::new(),
+            body: b"forbidden".to_vec(),
+        };
+        assert!(origin.challenge().is_none());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn client_headers_pair_the_cookie_with_the_user_agent() {
+        let client = Client::api()
+            .with_user_agent("Brave/156")
+            .with_cookie("cf_clearance=abc");
+        let merged = client.headers(
+            &[("User-Agent", "Mozilla/5.0"), ("Accept", "*/*")],
+            &[("Range", "bytes=0-")],
+        );
+        assert!(merged.contains(&("User-Agent", "Brave/156")));
+        assert!(!merged.contains(&("User-Agent", "Mozilla/5.0")));
+        assert!(merged.contains(&("Cookie", "cf_clearance=abc")));
+        assert!(merged.contains(&("Accept", "*/*")));
+        assert!(merged.contains(&("Range", "bytes=0-")));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn client_without_overrides_keeps_the_callers_user_agent() {
+        let client = Client::api();
+        let merged = client.headers(&[("User-Agent", "Mozilla/5.0")], &[]);
+        assert!(merged.contains(&("User-Agent", "Mozilla/5.0")));
+        assert!(
+            !merged
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+        );
     }
 
     /// Proxies are the native transport's concern: on `wasm32`

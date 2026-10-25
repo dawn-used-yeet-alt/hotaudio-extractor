@@ -40,13 +40,33 @@ pub mod comp {
     pub const STREAMING: &str = "streaming";
     /// The crypto primitives.
     pub const CRYPTO: &str = "crypto";
+    /// The site or network, not the crate: a Cloudflare challenge, DNS failure
+    /// or other condition no code change can answer. Never filed as a product
+    /// issue.
+    pub const ENVIRONMENT: &str = "environment";
     /// The CLI's flags, modes and exit codes.
     pub const CLI: &str = "cli";
 
     /// Every id, for `--list`.
     pub const ALL: &[&str] = &[
-        PAGE, PAGE_STATE, TRACKS, HANDSHAKE, SIGNER, LISTEN, HAX_URL, CONTAINER, PAGING, DECRYPT,
-        VERIFY, KEYS, OFFLINE, CACHED, STREAMING, CRYPTO, CLI,
+        PAGE,
+        PAGE_STATE,
+        TRACKS,
+        HANDSHAKE,
+        SIGNER,
+        LISTEN,
+        HAX_URL,
+        CONTAINER,
+        PAGING,
+        DECRYPT,
+        VERIFY,
+        KEYS,
+        OFFLINE,
+        CACHED,
+        STREAMING,
+        CRYPTO,
+        ENVIRONMENT,
+        CLI,
     ];
 }
 

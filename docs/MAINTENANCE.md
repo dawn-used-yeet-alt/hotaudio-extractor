@@ -33,14 +33,15 @@ component tells you what to look at:
 
 | Component | Fails when | Usual cause |
 | --- | --- | --- |
-| `page` | 403 | User-Agent was changed. Must stay `Mozilla/5.0`. |
+| `environment` | Cloudflare challenge, DNS failure, no route | The network, not the crate. Never files a product issue. |
+| `page` | 403 | Cloudflare challenge (`cf-mitigated: challenge`) or a real origin 403. Check the header before changing anything. |
 | `page-state` | `no __ha_state` | Page layout changed. |
 | `page-state` | `truncated bencode` / auth error | State key derivation changed. |
 | `handshake` | anything | Server key format changed. |
 | `signer` | `unexpected signature shape` | VM opcode semantics drifted. See below. |
 | `signer` | rejected listen despite a fresh capture | Pinned bytecode/env is stale. |
 | `listen` | 401 bad signature | Stale capture. Re-run `recapture.ts`. |
-| `listen` | 403 | User-Agent was changed. |
+| `listen` | 403 | Cloudflare challenge or a real origin rejection; same check as `page`. |
 | `listen` | non-crypt body | Response envelope changed. |
 | `hax-url` | issued != derived | CDN layout moved. |
 | `container` | `not a HAX0 container`, bencode errors | Container magic, header or metadata keys changed. |
@@ -221,7 +222,9 @@ copyrighted audio: key material and headers only.
   overwrite unless the recovered program actually differs.
 - `cargo clippy --all-targets` and `RUSTDOCFLAGS="-D warnings" cargo doc
   --no-deps` must both stay clean; CI enforces them.
-- `crate::HOTAUDIO_UA` must remain `Mozilla/5.0`; Cloudflare 403s Chrome user
-  agents. There is deliberately no CLI flag to change it.
+- `crate::HOTAUDIO_UA` is the default `Mozilla/5.0`. `--user-agent` overrides it
+  only to match the browser that earned a `cf_clearance` cookie; Cloudflare
+  binds a clearance to the exact User-Agent. The default stays minimal because
+  the site's gate is network/reputation based, not a fixed Chrome-UA rule.
 - Key paging stays sequential by design: the server serialises per track, so
   concurrency adds load without reducing wall time ([PROTOCOL.md](PROTOCOL.md#7-rate-limiting-and-politeness)).

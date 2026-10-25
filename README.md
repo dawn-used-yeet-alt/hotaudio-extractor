@@ -49,7 +49,8 @@ config file all exist; [docs/CLI.md](docs/CLI.md) covers them, and
 Docs live in [`docs/`](docs/README.md), split by reader:
 
 - Install and use: [Install](docs/INSTALL.md), [Command line](docs/CLI.md),
-  [Troubleshooting](docs/TROUBLESHOOTING.md)
+  [Troubleshooting](docs/TROUBLESHOOTING.md),
+  [Cloudflare challenges](docs/CLOUDFLARE.md)
 - Build on the crate: [Library (Rust)](docs/LIBRARY.md),
   [Bindings (Kotlin, Swift, Python, Ruby)](docs/BINDINGS.md),
   [Browser / wasm](docs/BROWSER.md)

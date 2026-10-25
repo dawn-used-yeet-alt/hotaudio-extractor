@@ -1,9 +1,15 @@
 name: live
 
-# Daily end-to-end run against the real site: exercises the crate and the
+# Daily live run against the real site: exercises the crate and the
 # `hotaudio-download` binary, then files one issue per broken component.
 # Runners are 403'd directly, so egress goes through Cloudflare WARP in proxy
 # mode. Everything is built from this checkout, never a release.
+#
+# WARP's fresh address passes the page, handshake and first-listen phases. A
+# full download crosses the site's challenge threshold after roughly 20-115
+# key pages, regardless of pacing, so it only completes with a browser
+# clearance on a stable egress. A challenge is reported as `environment` and
+# never files or fails a product check.
 
 on:
   schedule:
@@ -11,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: Run the full suite (uncheck for page + handshake only)
+        description: Run the full download too (needs a clearance on this egress)
         type: boolean
         default: true
 
@@ -87,6 +93,13 @@ jobs:
           HTTP_PROXY: http://127.0.0.1:40000
           HOTAUDIO_REV: ${{ steps.rev.outputs.rev }}
           HOTAUDIO_LIVE_URL: ${{ vars.HOTAUDIO_LIVE_URL }}
+          # Optional, and only useful when the egress IP is stable: a
+          # `cf_clearance` cookie is bound to the IP and User-Agent that earned
+          # it. With WARP's rotating IPs a developer's cookie will not pass.
+          # On a self-hosted runner with a fixed egress, a browser clearance
+          # makes the full download possible.
+          HOTAUDIO_COOKIE: ${{ secrets.HOTAUDIO_COOKIE }}
+          HOTAUDIO_USER_AGENT: ${{ secrets.HOTAUDIO_USER_AGENT }}
         run: |
           "$GITHUB_WORKSPACE/target/release/hotaudio-live-tests" \
             --cli "$GITHUB_WORKSPACE/target/release/hotaudio-download" \

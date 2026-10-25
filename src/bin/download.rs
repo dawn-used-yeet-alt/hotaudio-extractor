@@ -34,19 +34,36 @@ const BIN_NAME: &str = "hotaudio-download";
 /// argument's own documentation.
 #[cfg(not(target_arch = "wasm32"))]
 const AFTER_HELP: &str = "\
-The user agent is fixed at Mozilla/5.0 and is not configurable: the site returns
-403 for Chrome user agents on the track page and the listen endpoint.
+The default User-Agent is Mozilla/5.0. When hotaudio.net answers with a
+Cloudflare challenge, open the track page in a browser on this machine, pass the
+challenge, then copy the browser's `cf_clearance` cookie and its exact
+User-Agent and retry:
+  --cookie 'cf_clearance=...' --user-agent 'Mozilla/5.0 (...)'
+Cloudflare binds the clearance to both the network and the exact User-Agent.
+`HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` set the same two values; flags win.
+Guide: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md
 
 Exit status:
-  0 success; 1 unclassified failure; 2 bad input or unknown flag; 3 network or
-  transport failure; 4 protocol, listen, decryption or signer failure; 5 local
-  filesystem failure; 130 cancelled (Ctrl-C).
+  0 success; 1 unclassified failure; 2 bad input or unknown flag; 3 network,
+  transport or site-challenge failure; 4 protocol, listen, decryption or signer
+  failure; 5 local filesystem failure; 130 cancelled (Ctrl-C).
 
 Config file:
   A flat TOML file of 'key = value' lines. Recognised keys: output_dir,
-  filename_template, api_base, proxy, retries, timeout (seconds), delay
-  (milliseconds). Command-line flags override the file; an absent default file
-  is not an error.";
+  filename_template, api_base, proxy, cookie, user_agent, retries, timeout
+  (seconds), delay (milliseconds). Command-line flags override the file; an
+  absent default file is not an error.";
+
+/// Printed after a [`Error::Challenge`] so the next attempt can actually pass
+/// the gate: the cookie and the user agent are a pair, not independent options.
+const CHALLENGE_HINT: &str = "\
+hint: hotaudio.net is asking this network to pass a browser challenge.
+      Open the track page in a browser on this machine, pass the challenge,
+      then copy its `cf_clearance` cookie and exact User-Agent and retry:
+        --cookie 'cf_clearance=...' --user-agent 'Mozilla/5.0 (...)'
+      The clearance is bound to both the network and the exact User-Agent.
+      Step-by-step guide:
+      https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md";
 
 /// The command line, as clap sees it.
 ///
@@ -155,6 +172,16 @@ struct Cli {
     #[arg(long, value_name = "URL")]
     proxy: Option<String>,
 
+    /// Send this Cookie header with every request; after clearing a Cloudflare
+    /// challenge in a browser, pass its `cf_clearance` cookie here
+    #[arg(long, value_name = "COOKIE")]
+    cookie: Option<String>,
+
+    /// User-Agent to send (default Mozilla/5.0); match the browser that earned
+    /// the `--cookie` clearance
+    #[arg(long, value_name = "UA")]
+    user_agent: Option<String>,
+
     /// Retry a failed request up to N times (default 2)
     #[arg(long, value_name = "N")]
     retries: Option<usize>,
@@ -225,10 +252,35 @@ mod code {
     pub const CANCELLED: u8 = 130;
 }
 
+/// Resolve the browser-clearance pair: flags, then environment, then config.
+///
+/// A cookie without its matching User-Agent is almost always a failed attempt,
+/// so warn while still letting the run proceed (the user may know better).
+#[cfg(not(target_arch = "wasm32"))]
+fn identity(cli: &Cli, config: &Config) -> (Option<String>, Option<String>) {
+    let cookie = cli
+        .cookie
+        .clone()
+        .or_else(|| env_value("HOTAUDIO_COOKIE"))
+        .or_else(|| config.cookie.clone());
+    let user_agent = cli
+        .user_agent
+        .clone()
+        .or_else(|| env_value("HOTAUDIO_USER_AGENT"))
+        .or_else(|| config.user_agent.clone());
+    if cookie.is_some() && user_agent.is_none() {
+        eprintln!(
+            "warning: a cookie is set without a matching User-Agent; a cf_clearance \
+             cookie is rejected unless the browser's exact User-Agent is sent too"
+        );
+    }
+    (cookie, user_agent)
+}
+
 /// The exit code for a pipeline failure, by [`Error`] class.
 fn exit_code(e: &Error) -> u8 {
     match e {
-        Error::Http(_) => code::NETWORK,
+        Error::Http(_) | Error::Challenge(_) => code::NETWORK,
         Error::Io(_) => code::IO,
         Error::Cancelled => code::CANCELLED,
         Error::Auth
@@ -335,6 +387,8 @@ fn run() -> ExitCode {
     };
     let progress_json = cli.progress.as_deref() == Some("json");
 
+    let (cookie, user_agent) = identity(&cli, &config);
+
     let sources = match collect_sources(&cli) {
         Ok(s) => s,
         Err(e) => {
@@ -367,6 +421,8 @@ fn run() -> ExitCode {
         track_id: cli.track,
         api_base: cli.api_base.or(config.api_base),
         proxy: cli.proxy.or(config.proxy),
+        cookie,
+        user_agent,
         retry: retry_for(cli.retries, config.retries),
         api_timeout_ms,
         delay_ms: delay_ms(cli.delay, config.delay_ms),
@@ -387,6 +443,9 @@ fn run() -> ExitCode {
                 eprintln!("cancelled");
             } else {
                 eprintln!("error: {e}");
+                if matches!(&e, Error::Challenge(_)) {
+                    eprintln!("{CHALLENGE_HINT}");
+                }
             }
             ExitCode::from(exit_code(&e))
         }
@@ -412,6 +471,10 @@ struct Run {
     track_id: Option<String>,
     api_base: Option<String>,
     proxy: Option<String>,
+    /// Raw `Cookie` header for a browser clearance (`cf_clearance`).
+    cookie: Option<String>,
+    /// `User-Agent` override; must match the browser that earned `cookie`.
+    user_agent: Option<String>,
     /// Retry policy for every client the run builds.
     retry: Retry,
     /// Per-attempt API timeout override; `None` keeps the 30 s default.
@@ -543,6 +606,9 @@ async fn execute(r: Run) -> Result<(), Error> {
         let tracks = if is_url(source) {
             let client = api_client(net_of(&r))?;
             let resp = client.request("GET", source, &[], None).await?;
+            if let Some(detail) = resp.challenge() {
+                return Err(Error::Challenge(format!("track page: {detail}")));
+            }
             if !resp.ok() {
                 return Err(Error::Http(format!("page returned {}", resp.status)));
             }
@@ -904,6 +970,10 @@ async fn fetch_online(
 #[derive(Clone, Copy)]
 struct Net<'a> {
     proxy: Option<&'a str>,
+    /// Raw `Cookie` header for a browser clearance.
+    cookie: Option<&'a str>,
+    /// `User-Agent` override; must match the browser that earned `cookie`.
+    user_agent: Option<&'a str>,
     /// Per-attempt API timeout; `None` keeps [`Client::api`]'s 30 s default.
     api_timeout_ms: Option<u64>,
     retry: Retry,
@@ -915,6 +985,8 @@ struct Net<'a> {
 fn net_of(r: &Run) -> Net<'_> {
     Net {
         proxy: r.proxy.as_deref(),
+        cookie: r.cookie.as_deref(),
+        user_agent: r.user_agent.as_deref(),
         api_timeout_ms: r.api_timeout_ms,
         retry: r.retry,
         delay_ms: r.delay_ms,
@@ -958,15 +1030,29 @@ fn api_client(net: Net<'_>) -> Result<Client, Error> {
         Some(ms) => Client::with_timeout_ms(Some(ms)),
         None => Client::api(),
     };
-    let client = apply_proxy(client, net.proxy)?;
+    let client = apply_identity(apply_proxy(client, net.proxy)?, net);
     Ok(client.with_retries(net.retry))
 }
 
 /// The bulk-transfer client for `net`: `--retries` and `--proxy` applied, but
 /// never `--timeout` (the container keeps its deliberate no-timeout).
 fn bulk_client(net: Net<'_>) -> Result<Client, Error> {
-    let client = apply_proxy(Client::bulk(), net.proxy)?;
+    let client = apply_identity(apply_proxy(Client::bulk(), net.proxy)?, net);
     Ok(client.with_retries(net.retry))
+}
+
+/// Apply the browser clearance and the User-Agent that earned it.
+///
+/// The two travel together: Cloudflare binds `cf_clearance` to the requesting
+/// user agent, so forwarding the cookie alone just fetches another challenge.
+fn apply_identity(mut client: Client, net: Net<'_>) -> Client {
+    if let Some(cookie) = net.cookie {
+        client = client.with_cookie(cookie);
+    }
+    if let Some(ua) = net.user_agent {
+        client = client.with_user_agent(ua);
+    }
+    client
 }
 
 /// Apply `--proxy` to `client`; without it the transport honors the standard
@@ -1019,6 +1105,9 @@ async fn run_all_tracks(r: &Run, report: download::ProgressFn<'_>) -> Result<(),
     let html = if is_url(source) {
         let client = api_client(net_of(r))?;
         let resp = client.request("GET", source, &[], None).await?;
+        if let Some(detail) = resp.challenge() {
+            return Err(Error::Challenge(format!("track page: {detail}")));
+        }
         if !resp.ok() {
             return Err(Error::Http(format!("page returned {}", resp.status)));
         }
@@ -1322,6 +1411,8 @@ struct Config {
     filename_template: Option<String>,
     api_base: Option<String>,
     proxy: Option<String>,
+    cookie: Option<String>,
+    user_agent: Option<String>,
     retries: Option<usize>,
     timeout_secs: Option<u64>,
     delay_ms: Option<u64>,
@@ -1381,6 +1472,8 @@ impl Config {
                 }
                 "api_base" => config.api_base = Some(parse_string(value, key, line_no)?),
                 "proxy" => config.proxy = Some(parse_string(value, key, line_no)?),
+                "cookie" => config.cookie = Some(parse_string(value, key, line_no)?),
+                "user_agent" => config.user_agent = Some(parse_string(value, key, line_no)?),
                 "retries" => {
                     let retries = parse_uint(value, key, line_no)?;
                     config.retries = Some(usize::try_from(retries).map_err(|_| {
@@ -1392,13 +1485,20 @@ impl Config {
                 other => {
                     return Err(format!(
                         "line {line_no}: unknown key '{other}' (expected output_dir, \
-                         filename_template, api_base, proxy, retries, timeout or delay)"
+                         filename_template, api_base, proxy, cookie, user_agent, retries, \
+                         timeout or delay)"
                     ));
                 }
             }
         }
         Ok(config)
     }
+}
+
+/// An environment variable, treating an empty value as unset — CI passes an
+/// unset secret through as the empty string.
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 /// The default config location: `$HOTAUDIO_CONFIG`, else `config.toml` under
@@ -2373,6 +2473,8 @@ mod tests {
              filename_template = \"{index} - {title}\"\n\
              api_base = \"https://example.test\"\n\
              proxy = \"http://127.0.0.1:8080\"\n\
+             cookie = \"cf_clearance=abc\"\n\
+             user_agent = \"Mozilla/5.0 (X11; Linux x86_64) Chrome/156.0.0.0\"\n\
              retries = 4\n\
              timeout = 60\n\
              delay = 250\n",
@@ -2382,6 +2484,11 @@ mod tests {
         assert_eq!(cfg.filename_template.as_deref(), Some("{index} - {title}"));
         assert_eq!(cfg.api_base.as_deref(), Some("https://example.test"));
         assert_eq!(cfg.proxy.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(cfg.cookie.as_deref(), Some("cf_clearance=abc"));
+        assert_eq!(
+            cfg.user_agent.as_deref(),
+            Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/156.0.0.0")
+        );
         assert_eq!(cfg.retries, Some(4));
         assert_eq!(cfg.timeout_secs, Some(60));
         assert_eq!(cfg.delay_ms, Some(250));
@@ -2422,6 +2529,10 @@ proxy = "a\\b\tc"
     #[test]
     fn exit_codes_distinguish_failure_classes() {
         assert_eq!(exit_code(&Error::Http("x".into())), code::NETWORK);
+        assert_eq!(
+            exit_code(&Error::Challenge("cloudflare".into())),
+            code::NETWORK
+        );
         assert_eq!(exit_code(&Error::Io("x".into())), code::IO);
         assert_eq!(exit_code(&Error::Protocol("x".into())), code::PROTOCOL);
         assert_eq!(exit_code(&Error::Sign("x".into())), code::PROTOCOL);

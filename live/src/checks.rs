@@ -15,7 +15,7 @@ use std::process::Command;
 use hotaudio::crypto::KeyMap;
 use hotaudio::hax::{Hax0, KeyTree};
 use hotaudio::http::Client;
-use hotaudio::{HOTAUDIO_UA, download, listen, mp4, signer};
+use hotaudio::{Error, HOTAUDIO_UA, download, listen, mp4, signer};
 
 use crate::report::{Check, Requests, comp};
 
@@ -25,6 +25,11 @@ pub struct Ctx {
     pub api_base: String,
     pub cli: PathBuf,
     pub workdir: PathBuf,
+    /// A browser clearance, when the environment supplies one. The CLI
+    /// subprocess reads the same variables, so library and binary agree.
+    pub cookie: Option<String>,
+    /// The exact User-Agent that earned `cookie`.
+    pub user_agent: Option<String>,
 }
 
 /// Accumulates checks and the request budget.
@@ -80,6 +85,16 @@ impl Runner {
     #[must_use]
     pub fn failed(&self) -> usize {
         self.checks.iter().filter(|c| !c.ok).count()
+    }
+
+    /// True when a failure names the environment, not the crate. Used to skip
+    /// the rest of the network phases and to keep the run green when the site
+    /// is challenging everyone.
+    #[must_use]
+    pub fn environment_failed(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| !c.ok && c.component == comp::ENVIRONMENT)
     }
 }
 
@@ -165,12 +180,31 @@ fn path(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn first_line(s: &str) -> String {
-    s.lines()
-        .find(|l| !l.trim().is_empty())
+/// The first line worth putting in an issue title.
+///
+/// The CLI's human progress reporter uses carriage returns, so `str::lines`
+/// alone treats a whole progress sequence as one line. Split both terminators,
+/// then skip the progress fragments: an issue title must be the error, not
+/// `fetching: 99.8%decrypting: ...`.
+pub(crate) fn first_line(s: &str) -> String {
+    s.split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find(|line| {
+            !line.starts_with("fetching:")
+                && !line.starts_with("decrypting:")
+                && !line.starts_with("resolving:")
+                && !line.starts_with("{\"phase\"")
+        })
         .unwrap_or("")
-        .trim()
         .to_string()
+}
+
+/// True when a CLI failure was a Cloudflare challenge rather than a crate bug.
+fn challenge_in(stderr: &str) -> bool {
+    stderr.contains("site challenge:")
+        || stderr.contains("Cloudflare challenge")
+        || stderr.contains("Just a moment...")
 }
 
 fn tail(s: &str, n: usize) -> String {
@@ -187,18 +221,57 @@ fn tail(s: &str, n: usize) -> String {
 /// Fetch the page once and verify the protocol contracts that need the live
 /// site: page, page state, tracks, handshake, signer and the first listen.
 pub async fn run_live(r: &mut Runner, ctx: &Ctx) -> Option<Live> {
-    let client = Client::api();
+    let client = match (&ctx.cookie, &ctx.user_agent) {
+        (Some(cookie), Some(ua)) => Client::api()
+            .with_cookie(cookie.as_str())
+            .with_user_agent(ua.as_str()),
+        (Some(cookie), None) => Client::api().with_cookie(cookie.as_str()),
+        (None, Some(ua)) => Client::api().with_user_agent(ua.as_str()),
+        (None, None) => Client::api(),
+    };
     let resp = match client
         .request("GET", &ctx.url, &[("User-Agent", HOTAUDIO_UA)], None)
         .await
     {
         Ok(resp) => resp,
         Err(e) => {
-            r.fail(comp::PAGE, "fetch track page", e.to_string(), Vec::new());
+            // `request` returns `Ok` for every HTTP status, so an `Err` here is
+            // a transport failure (DNS, connect, TLS, timeout), not a page
+            // verdict. That is the network's condition, not the crate's.
+            let component = match &e {
+                Error::Http(_) | Error::Challenge(_) => comp::ENVIRONMENT,
+                _ => comp::PAGE,
+            };
+            r.fail(component, "fetch track page", e.to_string(), Vec::new());
             return None;
         }
     };
     r.requests.page += 1;
+    if let Some(detail) = resp.challenge() {
+        r.fail(
+            comp::ENVIRONMENT,
+            "site reachable",
+            format!("{detail}; the site is challenging this network"),
+            ev(vec![
+                ("status", resp.status.to_string()),
+                (
+                    "cf-mitigated",
+                    resp.header("cf-mitigated").unwrap_or("-").to_string(),
+                ),
+                ("cf-ray", resp.header("cf-ray").unwrap_or("-").to_string()),
+                ("body", snippet(&resp.body)),
+                (
+                    "cookie",
+                    if ctx.cookie.is_some() {
+                        "configured".to_string()
+                    } else {
+                        "none".to_string()
+                    },
+                ),
+            ]),
+        );
+        return None;
+    }
     if !resp.ok() {
         r.fail(
             comp::PAGE,
@@ -336,8 +409,13 @@ pub async fn run_live(r: &mut Runner, ctx: &Ctx) -> Option<Live> {
             resp
         }
         Err(e) => {
+            let component = if matches!(&e, Error::Challenge(_)) {
+                comp::ENVIRONMENT
+            } else {
+                comp::LISTEN
+            };
             r.fail(
-                comp::LISTEN,
+                component,
                 "initial listen",
                 e.to_string(),
                 ev(vec![
@@ -526,7 +604,7 @@ pub fn run_cli_online(r: &mut Runner, ctx: &Ctx, live: &Live) -> Option<Artifact
         path(&hax),
         "--verify".into(),
         "--json".into(),
-        "--verbose".into(),
+        "--quiet".into(),
     ];
     let out = match run_cli(ctx, &args) {
         Ok(out) => out,
@@ -536,8 +614,13 @@ pub fn run_cli_online(r: &mut Runner, ctx: &Ctx, live: &Live) -> Option<Artifact
         }
     };
     if out.code != 0 {
+        let component = if challenge_in(&out.stderr) {
+            comp::ENVIRONMENT
+        } else {
+            comp::DECRYPT
+        };
         r.fail(
-            comp::DECRYPT,
+            component,
             "online run",
             format!("exit {} · {}", out.code, first_line(&out.stderr)),
             ev(vec![("stderr", tail(&out.stderr, 400))]),
@@ -888,6 +971,7 @@ pub fn run_offline(r: &mut Runner, ctx: &Ctx, art: &Artifacts) {
         path(&audio),
         "--verify".into(),
         "--json".into(),
+        "--quiet".into(),
     ];
     match run_cli(ctx, &args) {
         Ok(out) if out.code == 0 => {
@@ -952,6 +1036,7 @@ pub fn run_cached(r: &mut Runner, ctx: &Ctx, art: &Artifacts) {
         path(&audio),
         "--verify".into(),
         "--json".into(),
+        "--quiet".into(),
     ];
     match run_cli(ctx, &args) {
         Ok(out) if out.code == 0 => {
@@ -973,12 +1058,19 @@ pub fn run_cached(r: &mut Runner, ctx: &Ctx, art: &Artifacts) {
                 );
             }
         }
-        Ok(out) => r.fail(
-            comp::CACHED,
-            "cached decrypt",
-            format!("exit {} · {}", out.code, first_line(&out.stderr)),
-            ev(vec![("stderr", tail(&out.stderr, 400))]),
-        ),
+        Ok(out) => {
+            let component = if challenge_in(&out.stderr) {
+                comp::ENVIRONMENT
+            } else {
+                comp::CACHED
+            };
+            r.fail(
+                component,
+                "cached decrypt",
+                format!("exit {} · {}", out.code, first_line(&out.stderr)),
+                ev(vec![("stderr", tail(&out.stderr, 400))]),
+            );
+        }
         Err(e) => r.fail(comp::CACHED, "cached decrypt", e, Vec::new()),
     }
 }
@@ -993,6 +1085,7 @@ pub fn run_streaming(r: &mut Runner, ctx: &Ctx, art: &Artifacts, page_html: &Pat
         path(&audio),
         "--verify".into(),
         "--json".into(),
+        "--quiet".into(),
         path(page_html),
     ];
     match run_cli(ctx, &args) {
@@ -1018,12 +1111,19 @@ pub fn run_streaming(r: &mut Runner, ctx: &Ctx, art: &Artifacts, page_html: &Pat
                 );
             }
         }
-        Ok(out) => r.fail(
-            comp::STREAMING,
-            "streamed CLI run",
-            format!("exit {} · {}", out.code, first_line(&out.stderr)),
-            ev(vec![("stderr", tail(&out.stderr, 400))]),
-        ),
+        Ok(out) => {
+            let component = if challenge_in(&out.stderr) {
+                comp::ENVIRONMENT
+            } else {
+                comp::STREAMING
+            };
+            r.fail(
+                component,
+                "streamed CLI run",
+                format!("exit {} · {}", out.code, first_line(&out.stderr)),
+                ev(vec![("stderr", tail(&out.stderr, 400))]),
+            );
+        }
         Err(e) => r.fail(comp::STREAMING, "streamed CLI run", e, Vec::new()),
     }
 }
@@ -1036,6 +1136,7 @@ pub fn run_keys_only(r: &mut Runner, ctx: &Ctx) {
         "--save-keys".into(),
         path(&keys),
         "--json".into(),
+        "--quiet".into(),
         ctx.url.clone(),
     ];
     match run_cli(ctx, &args) {
@@ -1060,12 +1161,19 @@ pub fn run_keys_only(r: &mut Runner, ctx: &Ctx) {
                 ),
             }
         }
-        Ok(out) => r.fail(
-            comp::LISTEN,
-            "--keys-only",
-            format!("exit {} · {}", out.code, first_line(&out.stderr)),
-            ev(vec![("stderr", tail(&out.stderr, 400))]),
-        ),
+        Ok(out) => {
+            let component = if challenge_in(&out.stderr) {
+                comp::ENVIRONMENT
+            } else {
+                comp::LISTEN
+            };
+            r.fail(
+                component,
+                "--keys-only",
+                format!("exit {} · {}", out.code, first_line(&out.stderr)),
+                ev(vec![("stderr", tail(&out.stderr, 400))]),
+            );
+        }
         Err(e) => r.fail(comp::LISTEN, "--keys-only", e, Vec::new()),
     }
 }

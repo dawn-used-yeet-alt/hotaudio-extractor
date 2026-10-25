@@ -19,6 +19,7 @@ longer updated.
 | Save keys and redownload offline | [CLI.md](CLI.md#keys-and-working-offline) |
 | Fix a failing install | [INSTALL.md](INSTALL.md#after-unpacking) |
 | Fix a failing download | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Pass a Cloudflare challenge | [CLOUDFLARE.md](CLOUDFLARE.md): browser clearance, stale pairs, CI limits |
 | Call the protocol from Rust | [LIBRARY.md](LIBRARY.md) |
 | Call the protocol from Kotlin, Swift, Python or Ruby | [BINDINGS.md](BINDINGS.md) |
 | Stream audio in a web page | [BROWSER.md](BROWSER.md) |

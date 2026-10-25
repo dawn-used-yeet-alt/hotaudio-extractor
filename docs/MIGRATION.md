@@ -22,7 +22,8 @@ exists — see [What is gone](#what-is-gone).
   exactly as before, so `keys.json` files are interchangeable.
 - CLI flag spellings: `--out`, `--save-keys`, `--keys`, `--hax`, `--hax-url`,
   `--track`, `--api-base`, `--list-tracks`.
-- The `Mozilla/5.0` user agent requirement, and the reason for it.
+- The default `Mozilla/5.0` user agent. It is now overridable with
+  `--user-agent` to match a browser's Cloudflare clearance.
 
 ## CLI
 
@@ -63,7 +64,7 @@ Options map as follows:
 | TypeScript | Rust |
 | --- | --- |
 | `fetchFn` | inject an `ureq::Agent` instead; nothing else is configurable |
-| `userAgent` | fixed at `HOTAUDIO_UA` (see below) |
+| `userAgent` | default `HOTAUDIO_UA`; `Client::with_user_agent` or CLI `--user-agent` |
 | `apiBase` | `DownloadOptions::api_base` |
 | `timeoutMs` | per client: `Client::api()` (30 s) vs `Client::bulk()` (none); override with `Client::with_timeout_ms` |
 | `onProgress` | `DownloadOptions::on_progress`, a `&mut dyn FnMut(Progress)` |
@@ -82,9 +83,10 @@ Options map as follows:
 - **`fetchWithRetry` / `isRetryableStatus` as public API.** The behaviour is
   preserved inside `http::request`, and the policy is now the `http::Retry`
   value applied with `Client::with_retries`; `http::is_retryable` is still public.
-- **Configurable user agent.** Hard-coded to `Mozilla/5.0` on purpose. The
-  TypeScript default was load-bearing (Cloudflare 403s Chrome UAs) and
-  overriding it broke the extractor, so the option was misleading.
+- **Configurable user agent as a free-form setting.** The initial native port
+  hard-coded `Mozilla/5.0`, because an arbitrary UA broke the extractor. It is
+  back as `--user-agent`, but with one purpose: matching the browser that
+  earned a `cf_clearance` cookie. The default stays `Mozilla/5.0`.
 
 ## Tooling
 

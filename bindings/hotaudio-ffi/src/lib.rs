@@ -106,6 +106,7 @@ impl From<CoreError> for FfiError {
             CoreError::Listen(_) => "listen",
             CoreError::Protocol(_) => "protocol",
             CoreError::Http(_) => "http",
+            CoreError::Challenge(_) => "challenge",
             CoreError::Sign(_) => "sign",
             CoreError::Io(_) => "io",
             CoreError::Cancelled => "cancelled",

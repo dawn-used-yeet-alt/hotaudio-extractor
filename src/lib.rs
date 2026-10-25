@@ -94,14 +94,17 @@ pub use exec::block_on;
 
 /// Default User-Agent for page and API requests.
 ///
-/// Cloudflare returns HTTP 403 (`cf-mitigated: challenge`) for Chrome
-/// user-agents on the track page and the listen endpoint. The bare
-/// `Mozilla/5.0` token is accepted, so it must not be "improved".
+/// The site may gate a network with a Cloudflare challenge
+/// (`cf-mitigated: challenge`) rather than reject a particular user agent. The
+/// bare `Mozilla/5.0` token stays the default because it is minimal and has
+/// been accepted on clean networks; a caller that passed a challenge in a
+/// browser can match that browser's exact user agent with
+/// [`http::Client::with_user_agent`] when reusing its `cf_clearance` cookie.
 ///
-/// `fetch` forbids a page from setting `User-Agent` (or `Origin`, or
-/// `Referer`), so on `wasm32` this header is not sent at all and the browser
-/// sends its own — which the site answers with 403. That is one of the reasons
-/// a browser deployment needs a proxy in front; see `docs/ARCHITECTURE.md`.
+/// `fetch` forbids a page from setting `User-Agent` (or `Origin`, `Referer` or
+/// `Cookie`), so on `wasm32` these headers are not sent at all. That is one of
+/// the reasons a browser deployment needs a proxy in front; see
+/// `docs/ARCHITECTURE.md`.
 pub const HOTAUDIO_UA: &str = "Mozilla/5.0";
 
 /// Base URL for the encrypted listen handshake.
