@@ -1,26 +1,26 @@
-# Cloudflare challenges: reusing a browser clearance
+# Cloudflare challenges
 
-hotaudio.net is behind Cloudflare. When Cloudflare decides a network looks
-automated, it answers with a **challenge page** (`HTTP 403`,
-`cf-mitigated: challenge`, `Just a moment...`) instead of the track page or the
-listen API.
+hotaudio.net sits behind Cloudflare. If your network looks automated, Cloudflare
+may send a challenge page instead of the track or the listen response. The usual
+signs are HTTP 403, a `cf-mitigated: challenge` header, and a body that says
+"Just a moment...". A 200 response with that header is a challenge too.
 
-The extractor cannot answer an interactive challenge. A browser can, and it then
-stores a `cf_clearance` cookie. You can hand that cookie to the extractor, but
-Cloudflare binds the clearance to **the network that earned it and the exact
-User-Agent of the browser**. Both must match, or the cookie is ignored and you
-get another challenge.
+The downloader cannot solve the challenge. Your browser can. Once you pass it,
+Cloudflare stores a `cf_clearance` cookie. You can give that cookie to the
+downloader, but it only works with the exact User-Agent of the browser that
+earned it, from the same network. Cloudflare ties the clearance to the IP
+address and the UA.
 
-The CLI prints a link to this guide when it detects a challenge.
+When the CLI sees a challenge, it exits with status 3 and prints a link to this
+page.
 
-## 30-second version
+## Quick version
 
 1. Open the track page in your normal browser and pass the challenge.
-2. Open DevTools → **Application** → **Cookies** → `https://hotaudio.net` →
-   copy the **Value** of `cf_clearance`.
-3. In the DevTools **Console**, run `copy(navigator.userAgent)` (or type
-   `navigator.userAgent` and copy it).
-4. Run the extractor **on the same machine and network**:
+2. Open DevTools. Go to **Application** > **Storage** > **Cookies**, select
+   `https://hotaudio.net`, and copy the value of `cf_clearance`.
+3. In the **Console**, run `copy(navigator.userAgent)`.
+4. Run the downloader on the same machine and network:
 
    ```bash
    hotaudio-download 'https://hotaudio.net/u/user/track' \
@@ -28,60 +28,60 @@ The CLI prints a link to this guide when it detects a challenge.
      --user-agent 'PASTE_THE_EXACT_USER_AGENT'
    ```
 
-Use single quotes: the User-Agent contains spaces and parentheses, and the
-cookie may contain `;`.
+Keep the single quotes. The User-Agent has spaces and parentheses, and the
+cookie can contain `;`.
 
-## Getting the cookie
+## Copy the cookie
 
-`cf_clearance` is `HttpOnly`, so `document.cookie` in the console will **not**
-show it. Use the browser's storage inspector or the Network panel.
+`cf_clearance` is `HttpOnly`, so typing `document.cookie` in the console will
+not show it. Use the storage inspector or the Network panel.
 
-### Brave / Chrome / Edge
+### Brave, Chrome, Edge
 
-1. Open the track page and wait until it loads normally.
-2. Press <kbd>F12</kbd> (or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd>).
-3. Open **Application** → **Storage** → **Cookies** →
+1. Open the track page and wait for it to load normally.
+2. Press <kbd>F12</kbd>, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd>.
+3. Open **Application** > **Storage** > **Cookies** >
    `https://hotaudio.net`.
-4. Click the `cf_clearance` row. Double-click its **Value** cell and copy the
-   whole value.
+4. Click the `cf_clearance` row, then double-click the **Value** cell and copy
+   the whole value.
 
-If the Application panel is hidden, click the `»` overflow menu in DevTools.
+If the Application tab is hidden, open the `»` overflow menu in DevTools.
 
 ### Firefox
 
-1. Open the track page and wait until it loads normally.
+1. Open the track page and wait for it to load normally.
 2. Press <kbd>F12</kbd>.
-3. Open **Storage** → **Cookies** → `https://hotaudio.net`.
+3. Open **Storage** > **Cookies** > `https://hotaudio.net`.
 4. Copy the **Value** of `cf_clearance`.
 
-### Alternative: copy the request header
+### Network panel instead
 
-1. Open DevTools → **Network**.
+1. Open DevTools and switch to **Network**.
 2. Reload the track page.
-3. Click the first request (the document itself).
-4. Under **Request Headers**, copy the `Cookie` value (for this site it is just
-   `cf_clearance=...`) and the `User-Agent` value.
+3. Click the first request, which is the page itself.
+4. Under **Request Headers**, copy the `Cookie` value and the `User-Agent`
+   value.
 
-That `Cookie` value is exactly what `--cookie` expects. Do not include the word
-`Cookie:` itself.
+The `Cookie` value is what `--cookie` expects. Do not include the word
+`Cookie:`.
 
-## Getting the exact User-Agent
+## Copy the User-Agent
 
-In the DevTools **Console** on the same tab:
+Run this in the **Console** on the same tab:
 
 ```js
 copy(navigator.userAgent)
 ```
 
-Paste it with <kbd>Ctrl</kbd>+<kbd>V</kbd>. In Firefox, `copy()` also works in
-the console; otherwise run `navigator.userAgent` and copy the string.
+Then paste it with <kbd>Ctrl</kbd>+<kbd>V</kbd>. If `copy()` is not available,
+run `navigator.userAgent` and copy the string by hand.
 
-Do not shorten, reformat or “clean up” the User-Agent. Changing even the browser
-version (`Chrome/156.0.0.0` → `Chrome/155.0.0.0`) makes the clearance invalid.
+Do not shorten or reformat it. Changing the browser version from
+`Chrome/156.0.0.0` to `Chrome/155.0.0.0` is enough to break the clearance.
 
-## Passing the pair
+## Use both values
 
-### Flags (one run)
+### One run
 
 ```bash
 hotaudio-download 'https://hotaudio.net/u/user/track' \
@@ -89,7 +89,7 @@ hotaudio-download 'https://hotaudio.net/u/user/track' \
   --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36'
 ```
 
-### Environment (per shell / CI job)
+### Shell or CI job
 
 ```bash
 export HOTAUDIO_COOKIE='cf_clearance=...'
@@ -97,67 +97,68 @@ export HOTAUDIO_USER_AGENT='Mozilla/5.0 (...) ...'
 hotaudio-download 'https://hotaudio.net/u/user/track'
 ```
 
-Flags win over the environment, which wins over the config file. Empty
-environment variables are treated as unset.
+Flags win over the environment, and the environment wins over the config file.
+An empty environment variable counts as unset.
 
-### Config file (persistent, on your machine)
+### Config file
 
-The default location is `~/.config/hotaudio/config.toml` (or
-`$XDG_CONFIG_HOME/hotaudio/config.toml`). Add:
+The default path is `~/.config/hotaudio/config.toml`, or
+`$XDG_CONFIG_HOME/hotaudio/config.toml`. Add both lines:
 
 ```toml
 cookie = "cf_clearance=..."
 user_agent = "Mozilla/5.0 (...) ..."
 ```
 
-Both must be in the same file. Command-line flags override them.
+Command-line flags still override the file.
 
-## Why it still fails sometimes
+## Why it stops working
 
-- **Different network.** The clearance belongs to the IP that passed the
-  challenge. Switching Wi-Fi, VPN, proxy or phone hotspot invalidates it.
-- **Different browser.** Each browser profile has its own clearance and its own
-  User-Agent. Use the same browser that passed the challenge.
-- **Different User-Agent.** An extension that changes the UA, a browser update,
-  or a hand-edited string is enough to invalidate it.
-- **Expired.** Cloudflare can expire a clearance at any time. Pass the challenge
-  again and copy the new value.
-- **The site is challenging browsers too.** If the page itself shows
-  “Just a moment…” even in a normal browser, the site is under attack or the
-  network is flagged. Solve it in the browser first. If it still challenges the
-  extractor, the site is blocking non-browser clients; retry later.
-- **A different cookie is needed.** Some Cloudflare configurations also set
-  `__cf_bm`. If the DevTools `Cookie` header contains more than
-  `cf_clearance`, pass the whole header value to `--cookie`.
+A clearance is short lived. It usually stops working for one of these reasons:
 
-The extractor does not solve, bypass or farm clearances. It only reuses a
-clearance you obtained by passing the challenge yourself.
+- You changed networks. The clearance belongs to the IP that passed the
+  challenge, so switching Wi-Fi, VPN, proxy, or phone hotspot invalidates it.
+- You used a different browser profile. Each profile has its own clearance and
+  its own User-Agent.
+- The browser updated, or an extension changed the UA.
+- Cloudflare expired the clearance. Pass the challenge again and copy the new
+  value.
+- The page still shows "Just a moment..." in your browser. In that case the
+  network is being challenged before the downloader is involved. Solve it in
+  the browser first, then try again later if the downloader is still blocked.
+- The request needs more than `cf_clearance`. Some Cloudflare setups also set
+  `__cf_bm`. If the browser's `Cookie` header has more than `cf_clearance`,
+  pass the whole header value to `--cookie`.
 
-## Security
+The downloader does not solve, bypass, or farm clearances. It only reuses one
+that you obtained yourself.
+
+## Keep it private
 
 `cf_clearance` is a credential for your current session and network. Treat it
 like a password:
 
-- do not commit it, paste it into an issue, or share it;
-- prefer the environment or a local config file over shell history;
-- remove it when you no longer need it;
-- generate a fresh one instead of reusing an old one.
+- Do not commit it, paste it into an issue, or share it.
+- Prefer the environment or a local config file over shell history.
+- Delete it when you are done.
+- Treat a copied `Cookie` header the same way. It may hold other session
+  cookies besides `cf_clearance`.
 
-## CI
+## CI and the live suite
 
-A clearance is bound to the IP that earned it. A cookie copied from a developer
-machine will not pass from a GitHub runner with a different egress IP. The
-scheduled live suite therefore treats a Cloudflare challenge as an **environment
-condition**, not a product failure: it reports it, skips the remaining network
-phases and does not file a product issue.
+A clearance is tied to the IP that earned it, so a cookie from your machine will
+not work on a GitHub runner with a different egress IP. The scheduled live suite
+treats a challenge as an environment condition. It reports the challenge, skips
+the rest of the network tests, and does not file a product issue.
 
-WARP's fresh address is enough for the page, handshake, signer and first-listen
-checks. A full download is different: the site starts challenging after roughly
-20-115 key pages, and pacing does not move that threshold, so a rotating
-GitHub-hosted runner cannot finish one. The suite still tries, and records how
-far it got before the challenge.
+A fresh WARP address is enough for the page, handshake, signer, and first listen
+checks. A full download is different. In testing, Cloudflare started
+challenging after roughly 20 to 115 key pages, and `--delay` values of 0, 500,
+and 1000 ms all hit the challenge. Pacing does not move that threshold, so a
+GitHub-hosted runner with a rotating address cannot finish a full download. The
+suite still tries, and records how far it got.
 
-If a runner has a stable egress IP, set the `HOTAUDIO_COOKIE` and
-`HOTAUDIO_USER_AGENT` secrets (or environment variables) from a clearance
-obtained on that same egress. A self-hosted runner on a trusted network is the
-only way to make the full download a real CI gate. Otherwise leave them unset.
+If you need the full download as a CI gate, run the live suite on a self-hosted
+runner with a stable egress IP, pass the challenge in a browser on that runner's
+network, and set `HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` from that browser.
+Otherwise, leave the two values unset and let the suite skip the blocked parts.

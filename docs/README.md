@@ -2,7 +2,7 @@
 
 This book has three parts, by reader:
 
-1. **Use it**: [INSTALL.md](INSTALL.md) · [CLI.md](CLI.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [CLOUDFLARE.md](CLOUDFLARE.md)
+1. **Use it**: [INSTALL.md](INSTALL.md) · [CLI.md](CLI.md) · [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 2. **Build on it**: [LIBRARY.md](LIBRARY.md) (Rust) · [BINDINGS.md](BINDINGS.md) (Kotlin, Swift, Python, Ruby) · [BROWSER.md](BROWSER.md) (wasm)
 3. **Keep it alive**: [ARCHITECTURE.md](ARCHITECTURE.md) · [PROTOCOL.md](PROTOCOL.md) · [MAINTENANCE.md](MAINTENANCE.md)
 
