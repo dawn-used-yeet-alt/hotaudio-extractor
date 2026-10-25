@@ -6,6 +6,10 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-25
+
+Bindings, Cloudflare challenge handling, and a slimmer default feature set.
+
 ### Added
 
 - **Kotlin, Swift, Python and Ruby bindings.** A new `bindings/` workspace adds
@@ -561,7 +565,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.1.0...v1.2.0
