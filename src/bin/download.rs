@@ -365,12 +365,14 @@ fn run() -> ExitCode {
     // Flags win over the per-run environment, which wins over the config file.
     let cookie = cli
         .cookie
+        .clone()
         .or_else(|| env_value("HOTAUDIO_COOKIE"))
-        .or(config.cookie);
+        .or_else(|| config.cookie.clone());
     let user_agent = cli
         .user_agent
+        .clone()
         .or_else(|| env_value("HOTAUDIO_USER_AGENT"))
-        .or(config.user_agent);
+        .or_else(|| config.user_agent.clone());
     if cookie.is_some() && user_agent.is_none() {
         eprintln!(
             "warning: a cookie is set without a matching User-Agent; a cf_clearance \
