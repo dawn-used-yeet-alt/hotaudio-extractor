@@ -34,6 +34,15 @@ hotaudio-download "https://hotaudio.net/u/user/track" ^
 
 Tip: you can also set `HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` in your shell, or put `cookie` and `user_agent` in `~/.config/hotaudio/config.toml`.
 
+## Android
+1. Install Firefox.
+2. Add the [Cookie Manager](https://addons.mozilla.org/en-US/firefox/addon/a-cookie-manager/) extension by [Rob W](https://github.com/Rob--W/cookie-manager).
+3. Go to hotaudio and clear the captcha and keep the tab open.
+4. Click the extension and in the extension's tab, search hotaudio.net.
+5. That's your cookie.
+6. Go to [what-is-my-user-agent](https://www.whatismybrowser.com/detect/what-is-my-user-agent/) and copy that.
+7. Copy the command from Linux part.
+
 ## Stopped working?
 
 Clearances are short lived and tied to your IP and browser. It breaks if you:
