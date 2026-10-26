@@ -19,14 +19,14 @@ hotaudio-download 'https://hotaudio.net/u/user/track' \
 ```
 
 ### Windows
-Powershell
+PowerShell
 ```pwsh
 hotaudio-download 'https://hotaudio.net/u/user/track' `
   --cookie 'cf_clearance=PASTE_VALUE' `
   --user-agent 'PASTE_USER_AGENT'
 ```
 Cmd
-```cmd
+```bat
 hotaudio-download "https://hotaudio.net/u/user/track" ^
   --cookie "cf_clearance=PASTE_VALUE" ^
   --user-agent "PASTE_USER_AGENT"
