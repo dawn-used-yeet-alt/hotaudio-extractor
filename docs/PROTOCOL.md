@@ -298,10 +298,11 @@ produces identical output.
 ### Output
 
 ```
-"9:" + big_endian_u32(floor(now_seconds)) + 24 lowercase hex chars (12 bytes)
+"10:" + big_endian_u32(floor(now_seconds)) + 24 lowercase hex chars (12 bytes)
 ```
 
-For example `9:6553f1006bc31e581c8825bd656a3c75` at `2023-11-14T22:13:20Z`.
+For example, `10:6553f100ca478156c426a5e23106d5af` at `2023-11-14T22:13:20Z`
+for the `{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}` payload.
 
 Because the 4-byte timestamp is embedded in cleartext, a server can bound
 signature freshness, and the 12-byte tag is truncated output rather than a

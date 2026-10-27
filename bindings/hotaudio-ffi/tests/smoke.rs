@@ -12,8 +12,8 @@ use hotaudio_ffi::{
     version,
 };
 
-const PAYLOAD: &str = r#"{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}"#;
-const SIGNATURE: &str = "9:00000000e5c208341868b259118ea157";
+const PAYLOAD: &str = r#"{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}"#;
+const SIGNATURE: &str = "10:000000006a389a76bb60f47800bb60f6";
 
 #[test]
 fn sign_payload_at_matches_the_core_vector() {

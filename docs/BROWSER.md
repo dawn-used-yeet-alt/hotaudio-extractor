@@ -259,7 +259,7 @@ keys are wanted.
 | Proxy memory spikes to track size | body buffered rather than streamed (rule 4) |
 | `fetch failed` immediately, no status | the proxy is unreachable, or its TLS is invalid |
 
-`signPayload` is the quickest pipeline check: if it returns a `9:`-prefixed
+`signPayload` is the quickest pipeline check: if it returns a `10:`-prefixed
 signature, the signer works in that environment and the problem is
 network-side.
 

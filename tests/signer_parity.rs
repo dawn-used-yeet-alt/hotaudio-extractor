@@ -52,11 +52,16 @@ fn wasm_sign_payload_at_matches_golden() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn signature_has_expected_shape() {
     let sig = signer::sign("{\"tid\":\"7\"}", 1_700_000_000.0).unwrap();
-    // "9:" + 8 hex digits of big-endian timestamp + 24 hex digits of tag.
-    assert!(sig.starts_with("9:6553f100"), "unexpected signature: {sig}");
-    assert_eq!(sig.len(), 2 + 8 + 24, "unexpected length: {sig}");
+    // "10:" + 8 hex digits of big-endian timestamp + 24 hex digits of tag.
     assert!(
-        sig[2..].chars().all(|c| c.is_ascii_hexdigit()),
+        sig.starts_with("10:6553f100"),
+        "unexpected signature: {sig}"
+    );
+    assert_eq!(sig.len(), 3 + 8 + 24, "unexpected length: {sig}");
+    let (prefix, tag) = sig.split_once(':').expect("signature has a prefix");
+    assert_eq!(prefix, "10", "unexpected format prefix: {sig}");
+    assert!(
+        tag.chars().all(|c| c.is_ascii_hexdigit()),
         "signature is not hex: {sig}"
     );
 }
@@ -74,8 +79,8 @@ fn timestamp_is_big_endian_seconds() {
         4_294_967_295.0,
     ] {
         let sig = signer::sign("x", ts).unwrap();
-        let hex = &sig[2..10];
-        let decoded = u32::from_str_radix(hex, 16).unwrap();
+        let (_, tag) = sig.split_once(':').expect("signature has a prefix");
+        let decoded = u32::from_str_radix(&tag[..8], 16).unwrap();
         // The signer floors the clock to whole seconds.
         assert_eq!(f64::from(decoded), ts.floor(), "ts={ts} sig={sig}");
     }
@@ -129,7 +134,7 @@ fn trace_reproduces_a_stable_instruction_count() {
     // change here means the bytecode, the opcode semantics or the environment
     // table drifted.
     let steps = signer::trace("{\"tid\":\"7\"}", 1_700_000_000.0).unwrap();
-    assert_eq!(steps.len(), 1570, "instruction count changed");
+    assert_eq!(steps.len(), 1576, "instruction count changed");
 
     // Every step is a `(opcode, operand, registers)` triple, and the recovered
     // program opens with a MOV.
