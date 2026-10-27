@@ -499,7 +499,7 @@ fn run_signer(r: &mut Runner) {
                     evidence,
                 );
             } else if signer::PINNED_NOZZLE_VERSION.is_empty()
-                || signer::ENV_HASHES.len() != 144
+                || signer::ENV_HASHES.is_empty()
                 || signer::PROGRAM.len() != signer::PROGRAM_LEN
             {
                 r.fail(

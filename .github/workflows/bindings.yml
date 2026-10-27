@@ -107,8 +107,8 @@ jobs:
           cat > "$RUNNER_TEMP/KotlinSmoke.kt" <<'KT'
           import net.hotaudio.extractor.*
 
-          private const val PAYLOAD = """{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}"""
-          private const val SIGNATURE = "9:00000000e5c208341868b259118ea157"
+          private const val PAYLOAD = """{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}"""
+          private const val SIGNATURE = "10:000000006a389a76bb60f47800bb60f6"
 
           fun main() {
               val signature = signPayloadAt(PAYLOAD, 0.0)
@@ -136,9 +136,9 @@ jobs:
           gem install ffi --no-document
           LD_LIBRARY_PATH="$PWD/bindings/target/debug" \
             ruby -I bindings/out -r hotaudio_ffi -e '
-              payload = %q({"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1})
+              payload = %q({"tid":"1","pid":"2","key":"k","tick":"t","first":-1})
               signature = HotaudioFfi.sign_payload_at(payload, 0.0)
-              abort "signature: #{signature}" unless signature == "9:00000000e5c208341868b259118ea157"
+              abort "signature: #{signature}" unless signature == "10:000000006a389a76bb60f47800bb60f6"
               abort "empty version" if HotaudioFfi.version.empty?
               abort "expected no tracks" unless HotaudioFfi.list_tracks("<html></html>").empty?
               puts "ruby smoke OK"
@@ -157,9 +157,9 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" - <<'PY'
           from hotaudio_ffi import list_tracks, sign_payload_at, version
 
-          payload = '{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}'
+          payload = '{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}'
           signature = sign_payload_at(payload, 0.0)
-          assert signature == "9:00000000e5c208341868b259118ea157", signature
+          assert signature == "10:000000006a389a76bb60f47800bb60f6", signature
           assert version(), "empty version"
           assert list_tracks("<html></html>") == []
           print("python smoke OK")

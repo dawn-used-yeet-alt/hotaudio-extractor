@@ -24,6 +24,7 @@ const root = path.resolve(import.meta.dir, '..');
  * code units rather than scalar values), and JSON escaping.
  */
 const payloads: string[] = [
+  '{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}',
   '{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":-1}',
   '{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":0}',
   '{"tid":"7","pid":"p1","key":"k1","tick":"t1","first":8}',

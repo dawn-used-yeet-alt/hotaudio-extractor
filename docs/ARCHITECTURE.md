@@ -66,7 +66,7 @@ description. Architecturally, the choice that matters is embedding the
 program instead of re-deriving "the algorithm":
 
 - It **matches behaviour**, because it is the same machine running the same
-  1,314-byte program; there is no risk of matching the shape but not the
+  1,326-byte program; there is no risk of matching the shape but not the
   behaviour.
 - It is **fast**: a signature costs about 0.2 ms against 200-500 ms for the
   eval'd bundle. Upstream docs noted the first signature in a process
@@ -75,11 +75,10 @@ program instead of re-deriving "the algorithm":
   opcodes, and `tests/data/signer_golden.json` pins it against the reference.
 
 The VM has no environment beyond a small static model (`global_member` /
-`member_lookup` in `vm.rs`): the pinned build reads `Date.stack` (absent,
-which routes through the bundle's `__FAB` error hook), `MediaSource`,
-`SourceBuffer`, `SourceBuffer.prototype` and `appendBuffer`, and probes the
-global for markers that must be absent. Everything else is pinned by the
-fingerprint table, which is why the probe stays small.
+`member_lookup` in `vm.rs`): the pinned build reads `MediaSource`,
+`SourceBuffer`, `SourceBuffer.prototype` and `appendBuffer`, instantiates
+`Date`, and probes the global for markers that must be absent. Everything else
+is pinned by the fingerprint table, which is why the probe stays small.
 
 ## Data flow and memory
 

@@ -209,30 +209,22 @@ segment, which is what the bound is for.
 ### What produces it
 
 No standard crypto primitive is evaluated. Upstream, the signature comes from
-evaluating `nozzle.js`, a ~106 KB obfuscated JavaScript bundle, inside a
+evaluating `nozzle.js`, a ~111 KB obfuscated JavaScript bundle, inside a
 fake-browser sandbox. Deobfuscating it showed the payload is a register
-machine running a 1,314-byte program (657 instructions, two bytes each). This
+machine running a 1,326-byte program (663 instructions, two bytes each). This
 crate implements that machine and embeds the program; see
 [ARCHITECTURE.md](ARCHITECTURE.md#the-signature-vm) for why the exact program
 is embedded rather than the algorithm re-derived.
 
 ### The program
 
-Recovered from the bundled expression:
-
-```
-n[e(82)] = n[e(87)] || w(e(177)) + w[e(101)](e(97), e(171)) + w(37) + w(e(260)) + w(e(172))
-```
-
-The VM normalises the program before running it:
-
-```js
-n[3] = [...bc].map(c => B(c.charCodeAt(0), "34", k(-36)))
-```
-
-`B` dispatches on a captured flag `re`; with `re === -36` it returns
-`n[0] - n[1]`, so each entry becomes `charCode - 34`. `src/signer/bytecode.rs`
-stores that already-decoded form.
+The program is built lazily inside the signer factory and assigned to its
+program register. Every build renames the surrounding locals, so
+`scripts/recapture.ts` anchors on the assignment's stable tail
+(`t[e(-47)]=t[t[e(8)]-e(-15)]||…+"E"`), forces the factory to run, and captures
+the value at the assignment site. The VM then normalises the string with
+`charCode - 34` before executing it. `src/signer/bytecode.rs` stores both the
+raw character codes and that decoded form.
 
 ### The machine
 
@@ -276,23 +268,27 @@ caught, is in [MAINTENANCE.md](MAINTENANCE.md#things-easy-to-get-wrong).
 
 ### The environment probe
 
-`op 126` builds an object from `ENV_HASHES` (144 keys, all values
-`undefined`). The program then tests membership with `op 118` and reads a few
-globals with `op 119`, building a fingerprint that depends on the *absence* of
-markers as much as on their presence. The observable surface:
+`op 126` builds the environment object. The VM materialises only the keys the
+program probes and the reference browser actually has (3 here), all mapped to
+`undefined`; probes for missing keys must stay false. The program then tests
+membership with `op 118` and reads a few globals with `op 119`, building a
+fingerprint that depends on the *absence* of markers as much as on their
+presence. The observable surface:
 
 | Property | Value |
 | --- | --- |
-| `Date` | function; `Date.stack` is `undefined`, which throws |
+| `Date` | function; `op 127` instantiates it for the timestamp |
 | `MediaSource` | `function MediaSource() { [native code] }` |
 | `SourceBuffer` | `function SourceBuffer() { [native code] }` |
 | `SourceBuffer.prototype` | `Symbol.toStringTag` = `SourceBuffer`, giving `[object SourceBuffer]` |
 | `appendBuffer` | `function appendBuffer() { [native code] }` |
 | `__ha_chunks` | absent; its absence is part of the fingerprint |
 
-The `Date.stack` throw is converted by the bundle's `__FAB` hook into a
-V8-formatted stack rooted at the pinned player URL, which is folded into the
-digest. `src/signer/env.rs::nozzle_stack` reproduces that stack verbatim.
+Earlier builds also read `Date.stack` and converted the resulting throw through
+a `__FAB` error hook. The pinned build performs neither: instrumenting both the
+probe and the hook records zero calls, so the stack string does not reach the
+digest. `src/signer/env.rs::nozzle_stack` is kept for the VM's error path, but
+it is not exercised by the current program.
 
 Verified: the signature is timezone-independent. `Date.toString()` includes a
 local timezone, so one might expect it to matter, but signing the same payload
@@ -302,10 +298,11 @@ produces identical output.
 ### Output
 
 ```
-"9:" + big_endian_u32(floor(now_seconds)) + 24 lowercase hex chars (12 bytes)
+"10:" + big_endian_u32(floor(now_seconds)) + 24 lowercase hex chars (12 bytes)
 ```
 
-For example `9:6553f1006bc31e581c8825bd656a3c75` at `2023-11-14T22:13:20Z`.
+For example, `10:6553f100ca478156c426a5e23106d5af` at `2023-11-14T22:13:20Z`
+for the `{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}` payload.
 
 Because the 4-byte timestamp is embedded in cleartext, a server can bound
 signature freshness, and the 12-byte tag is truncated output rather than a

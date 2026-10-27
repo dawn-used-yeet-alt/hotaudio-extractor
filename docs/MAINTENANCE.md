@@ -59,8 +59,8 @@ works in every test but is rejected by the server.
 
 | Artefact | Where | What it is |
 | --- | --- | --- |
-| Bytecode | `src/signer/bytecode.rs` | The 1,314-byte program the player VM runs |
-| Environment table | `src/signer/env.rs` → `ENV_HASHES` | Fingerprint property keys, 144 values |
+| Bytecode | `src/signer/bytecode.rs` | The 1,326-byte program the player VM runs |
+| Environment table | `src/signer/env.rs` → `ENV_HASHES` | Present fingerprint keys (3 in this build) |
 | Build id | `src/signer/env.rs` → `PINNED_NOZZLE_VERSION`, mirrored in `scripts/shim.ts` | Which player build the other two came from |
 
 The reference sandbox (`scripts/shim.ts`) evaluates the real bundle, so signer
@@ -107,7 +107,9 @@ changed, and you must redo the reverse-engineering: see
 Copy the fingerprint keys from the new build into `ENV_HASHES` in **both**
 `src/signer/env.rs` and `scripts/shim.ts`, and set `PINNED_NOZZLE_VERSION` in
 both files. The VM tests membership of these keys against its environment
-(`op 118`), so a wrong set yields a different digest.
+(`op 118`), so a wrong set yields a different digest. List only keys the
+program probes *and* the reference browser has; probed keys the browser lacks
+must be absent so their check stays false.
 
 ### 4. Let the server decide
 
@@ -160,8 +162,8 @@ Recorded here because each cost real debugging time during the port:
 
 - **`op 122` reads a register, not the literal operand.** It is
   `(reg[operand] >>> 0).toString(16).padStart(8, "0")`, unlike most opcodes.
-- **Program bytes are `charCode - 34`,** not raw character codes. The bundle
-  normalises with `B(c.charCodeAt(0), "34", k(-36))`.
+- **Program bytes are `charCode - 34`,** not raw character codes. The bundle's
+  decoder subtracts 34 from every character code before the machine runs it.
 - **`op 100`'s guard is a constant `true`.** It looks like
   `I.g[something.charAt(0)] == "h"`, but `I.g` is the literal string `"h"`, so
   the lookup lands on `String.prototype.charAt` and yields `"h"`.
