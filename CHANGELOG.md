@@ -6,6 +6,15 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signatures follow player build `wGUeBtfc`.** The site replaced the signer
+  program (1,326 bytes / 663 instructions) and stopped exposing both the
+  `__ENVHASHES` hook and the `__FAB` error path. The bytecode and environment
+  table are re-captured, and the reference sandbox now re-installs the hook and
+  exposes the signer, which current builds keep as a closure local. This fixes
+  `listen API: HTTP 401 for first=-1: bad signature` (#108).
+
 ## [2.0.0] - 2026-10-25
 
 Bindings, Cloudflare challenge handling, and a slimmer default feature set.

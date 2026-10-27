@@ -6,9 +6,9 @@
 //! decrypts the HAX0 container to playable `.m4a` bytes.
 //!
 //! The signer is the interesting part. Upstream, `X-Signature` comes from
-//! evaluating a ~106 KB obfuscated JavaScript bundle inside a fake-browser
+//! evaluating a ~111 KB obfuscated JavaScript bundle inside a fake-browser
 //! sandbox; the bundle's real payload turned out to be a register machine
-//! running a 1314-byte program. This crate re-implements that machine directly
+//! running a 1326-byte program. This crate re-implements that machine directly
 //! (see [`signer::vm`]), which is both exact — it is the same program, not a
 //! re-derivation of the algorithm — and roughly a thousand times faster than
 //! evaluating the bundle.

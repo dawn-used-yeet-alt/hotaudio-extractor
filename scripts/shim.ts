@@ -22,25 +22,15 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Player build the vendored bundle was captured from. Keep in sync with `src/signer/env.rs`. */
-export const PINNED_NOZZLE_VERSION = '1J1Db0bF';
+export const PINNED_NOZZLE_VERSION = 'wGUeBtfc';
 
 /**
  * Environment fingerprint keys the bundle expects. Keep in sync with
  * `ENV_HASHES` in `src/signer/env.rs` — the two are one pinned contract.
+ * Only keys that are present in the reference browser are listed; a missing
+ * key is what makes the program's `in` probe false.
  */
-export const ENV_HASHES: number[] = [
-  9472, 33069, 9084, 9085, 57851, 25490, 46091, 28291, 13145, 2878, 8555, 44083, 10887, 38236,
-  7249, 61600, 61601, 21079, 65206, 28519, 57055, 18301, 29794, 30151, 14479, 39651, 14155, 28841,
-  18059, 59124, 26231, 13572, 7712, 6080, 37657, 7209, 50231, 64739, 47332, 29853, 10603, 33310,
-  49480, 22244, 64840, 53430, 48772, 23468, 45776, 41458, 24698, 35444, 29598, 40767, 39109, 21105,
-  38039, 57910, 27319, 25094, 25095, 40753, 19740, 12481, 11193, 63331, 8136, 18593, 65385, 59325,
-  20517, 47784, 21111, 21112, 3360, 40205, 12144, 39336, 36756, 3897, 22416, 52312, 21932, 12602,
-  64563, 4482, 4483, 60981, 56984, 11461, 31421, 47071, 37700, 21413, 37485, 14017, 2152, 8207,
-  49364, 64326, 63370, 36180, 36558, 8067, 55050, 53466, 20627, 64140, 54601, 7552, 39085, 63748,
-  50674, 63769, 40586, 55676, 2580, 31582, 4568, 29827, 34347, 55828, 36058, 28599, 50902, 1093,
-  14079, 29919, 16026, 53704, 13880, 52260, 58917, 36220, 11372, 14269, 36711, 23013, 15463, 65015,
-  60357, 587, 61935, 2419,
-];
+export const ENV_HASHES: number[] = [2878, 21112, 33069];
 
 /** Path to the vendored bundle. */
 export const BUNDLE_PATH = path.join(here, '..', 'vendor', 'nozzle.js');
@@ -49,6 +39,34 @@ let cached: ((payload: string, tsSeconds?: number | null) => string) | null = nu
 let frozen: number | null = null;
 
 const NOZZLE_URL = `https://hotaudio.net/nozzle.js?v=${PINNED_NOZZLE_VERSION}`;
+
+/**
+ * Adapt the shipped bundle to the sandbox.
+ *
+ * The signer is a closure local in current builds, so expose it as
+ * `__lastDt` (older builds did this themselves). Current builds also dropped
+ * the `__ENVHASHES` hook: re-install it at the environment-probe site so the
+ * pinned key set is used instead of this process's global set, which cannot
+ * match a real browser.
+ */
+function patchBundle(source: string): string {
+  let patched = source;
+  if (!patched.includes('globalThis.__lastDt=Dt=')) {
+    patched = patched.replace('Ot=w(', 'globalThis.__lastDt=Ot=w(');
+    if (patched === source) throw new Error('could not expose the signer');
+  }
+
+  const envSite = 'for(O of t[e(53)])t[e(-34)][e(23)][O[t[e(8)]-e(9)]]=O[e(-63)]';
+  if (patched.includes(envSite)) {
+    patched = patched.replace(
+      envSite,
+      envSite +
+        ';if(globalThis.__ENVHASHES){t[e(-34)][e(23)]={};' +
+        'for(const __h of globalThis.__ENVHASHES)t[e(-34)][e(23)][__h]=void 0;}',
+    );
+  }
+  return patched;
+}
 
 /**
  * Build the sandbox and return the bundle's exposed signing function.
@@ -61,7 +79,7 @@ function setup(): (payload: string, tsSeconds?: number | null) => string {
   if (cached) return cached;
 
   const g: any = globalThis;
-  const NOZZLE_RAW = fs.readFileSync(BUNDLE_PATH, 'utf8');
+  const NOZZLE_RAW = patchBundle(fs.readFileSync(BUNDLE_PATH, 'utf8'));
 
   const STUB_STRINGS = new Map<any, string>();
   const nativeFn = (name: string) => {

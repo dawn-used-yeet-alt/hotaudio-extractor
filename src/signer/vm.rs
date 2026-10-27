@@ -1,9 +1,9 @@
 //! Register VM recovered from the pinned `nozzle.js` player build.
 //!
-//! `signHotaudioPayload` in the TypeScript original evaluates a 106 KB
+//! `signHotaudioPayload` in the TypeScript original evaluates a 111 KB
 //! obfuscated bundle inside a fake-browser sandbox and calls an exposed
 //! `Dt(payload)`. `Dt` turns out to be a **register machine interpreter**: it
-//! loads a 1314-byte program ([`PROGRAM`]) and runs 657 instructions against an
+//! loads a 1326-byte program ([`PROGRAM`]) and runs 663 instructions against an
 //! 80-slot register file. The bundle's obfuscation, environment probing and
 //! hashing are all inside that program, so this module re-implements the
 //! machine rather than the algorithm — which keeps it bit-exact by
@@ -270,7 +270,9 @@ fn global_member(key: &str) -> Option<Val> {
     // and is a real function object, so it is modelled as a constructor.
     let native = |display: &'static str, ctor: Ctor| Val::Native { display, ctor };
     Some(match key {
-        // `Date.stack` is undefined, which is what drives the `__FAB` path.
+        // `Date` remains a stub function. The pinned program only instantiates
+        // it (`op 127`) and never reads `.stack`; the absent member is kept for
+        // builds that do, where the read throws.
         "Date" => native("function HookedDate() { [native code] }", Ctor::Date),
         "MediaSource" => native("function MediaSource() { [native code] }", Ctor::Other),
         "SourceBuffer" => native("function SourceBuffer() { [native code] }", Ctor::Other),
@@ -305,17 +307,15 @@ fn member_lookup(recv: &Val, key: &str) -> Option<Val> {
             }
         }
         (Val::Native { .. } | Val::Object { .. }, "stack") => Val::Undef,
-        // The `__FAB` error object exposes the synthesised V8 stack that the
-        // bundle's error hook builds, which the program folds into the digest.
+        // The error object exposes a synthesised V8 stack for builds that fold
+        // it into the digest. The pinned program does not reach this path.
         (Val::Err, "stack") => Val::Str(Rc::new(nozzle_stack())),
         _ => return None,
     })
 }
 
-/// Build the `op 126` environment object: the 144 fingerprint keys, each mapped
-/// to `undefined`.
-/// Build the `op 126` environment object: the 144 fingerprint keys, each mapped
-/// to `undefined`.
+/// Build the `op 126` environment object: the fingerprint keys, each mapped to
+/// `undefined`.
 ///
 /// The key set is a compile-time constant, so it is materialised once and
 /// shared; the program only ever reads it with `op 118`.
@@ -552,7 +552,7 @@ fn run(
                     // for members the shim does not define, which is the point.
                     Val::Global => global_has(&key),
                     // `in` on a primitive throws; the VM's catch converts it to
-                    // the `__FAB` error value.
+                    // its error value.
                     _ => {
                         regs[R_STR] = Val::Err;
                         continue;
@@ -566,7 +566,8 @@ fn run(
                 let recv = clone_val(&regs[R_STR]);
                 let next = match &recv {
                     Val::Undef => {
-                        // `undefined.stack` → TypeError → `__FAB` error object.
+                        // `undefined.stack` throws; model the resulting error
+                        // object so a later `.stack` read can resolve.
                         regs[R_STR] = Val::Err;
                         continue;
                     }
