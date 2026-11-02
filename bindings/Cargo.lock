@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "hotaudio-rs"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "base64",
  "chacha20poly1305",

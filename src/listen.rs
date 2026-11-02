@@ -337,14 +337,22 @@ pub async fn listen(
         ("Origin", "https://hotaudio.net"),
         ("Referer", "https://hotaudio.net/"),
     ];
-    // A transport failure is otherwise context-free (`http: timeout: global`),
-    // and the live report keeps only the first line of stderr. Say which page
-    // stalled: the site tarpits paging requests long before it returns a
-    // challenge, so that line is the only evidence of which request was cut.
+    // A paging request that never gets an answer is the same gate as the 403:
+    // on a flagged network the site accepts it and stalls it, which the
+    // transport reports as a timeout. Paging only runs after the handshake and
+    // the initial listen succeeded on this client, so the network is known to
+    // be up; report a challenge so the CLI prints the clearance steps, and keep
+    // the transport symptom in the message. The initial call (`first = -1`) is
+    // exempt: it has no successful request behind it, so a transport error
+    // there really is the network.
     let resp: FullResponse = client
         .request("POST", &url, &headers, Some(&body))
         .await
         .map_err(|e| match e {
+            Error::Http(msg) if first >= 0 => Error::Challenge(format!(
+                "listen API for first={first}: {msg} \
+                 (Cloudflare stalls key paging before it serves its challenge)"
+            )),
             Error::Http(msg) => Error::Http(format!("listen API for first={first}: {msg}")),
             other => other,
         })?;

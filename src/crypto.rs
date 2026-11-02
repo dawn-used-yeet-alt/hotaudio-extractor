@@ -25,13 +25,19 @@ pub enum Error {
     Protocol(String),
     /// Transport failure.
     Http(String),
-    /// Cloudflare answered with a challenge page instead of the origin.
+    /// Cloudflare gated the request instead of letting the origin see it.
+    ///
+    /// Usually a challenge page (`403` with `cf-mitigated: challenge`). On a
+    /// flagged network the listen API instead accepts paging requests and never
+    /// answers them, which arrives as a transport timeout; that is the same gate
+    /// and the same remedy, so it is reported here rather than as a bare
+    /// transport error.
     ///
     /// Not a protocol change: an interactive challenge is a gate for a browser
     /// and cannot be answered by an HTTP client. Retrying immediately only
-    /// fetches the same page, so callers should surface this as an environment
-    /// condition and try again later (or after passing the challenge in a
-    /// browser on the same network).
+    /// fetches the same page (or stalls again), so callers should surface this
+    /// as an environment condition and try again later (or after passing the
+    /// challenge in a browser on the same network).
     Challenge(String),
     /// Signing failed.
     Sign(String),

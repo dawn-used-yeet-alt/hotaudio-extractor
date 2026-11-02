@@ -182,7 +182,7 @@ Variants reachable from the library surface:
 | `Listen(String)` | The listen API rejected the request |
 | `Protocol(String)` | A required field was missing or unusable |
 | `Http(String)` | Transport failure |
-| `Challenge(String)` | Cloudflare challenge instead of the origin; an environment condition, not a protocol change |
+| `Challenge(String)` | Cloudflare gate instead of the origin — a challenge page, or a stalled listen page; an environment condition, not a protocol change |
 | `Sign(String)` | Signing failed |
 | `Cancelled` | The cancel token was set; not a failure |
 

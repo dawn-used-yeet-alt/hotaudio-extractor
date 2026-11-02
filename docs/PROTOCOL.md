@@ -114,6 +114,15 @@ origin rejecting the request: it is Cloudflare gating the network before the
 origin sees it. The crate reports that as `Error::Challenge` and the CLI exits
 3 with a guide link; no protocol change can answer an interactive challenge.
 
+The same gate also shows up as silence. On a more heavily flagged network the
+listen API accepts paging requests and never answers them, which reaches the
+transport as a timeout after the retry budget. Paging only runs after the
+handshake and the first listen succeeded on the same client, so a stall there is
+reported as `Error::Challenge` too — with the transport symptom in the message —
+because the remedy (a browser clearance on the same network) is identical. The
+initial call is exempt: it has no successful request behind it, so a transport
+error there is reported as one.
+
 ### The `.hax` URL
 
 Derivable without a listen call:
