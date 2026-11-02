@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-11-02
+
 ### Added
 
 - **`install.sh` installs the shell completion.** After the binary it offers the
