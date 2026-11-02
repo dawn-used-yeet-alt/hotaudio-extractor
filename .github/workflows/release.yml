@@ -291,9 +291,18 @@ jobs:
         with:
           key: wasm-pkg
 
-      # No explicit version: the action installs the `wasm-bindgen` from
-      # Cargo.lock, which is what the build script checks the CLI against.
-      - uses: taiki-e/install-action@wasm-bindgen-cli
+      # Same lockfile-derived pin as CI: the build script refuses a CLI whose
+      # version differs from the `wasm-bindgen` in Cargo.lock.
+      - name: Pin wasm-bindgen to the lockfile
+        id: wasm-bindgen
+        run: |
+          want=$(awk '/^name = "wasm-bindgen"$/{getline; print; exit}' Cargo.lock \
+              | sed -n 's/^version = "\(.*\)"/\1/p')
+          test -n "$want"
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ steps.wasm-bindgen.outputs.version }}
 
       - name: Build the package
         run: ./scripts/build-wasm.sh pkg
