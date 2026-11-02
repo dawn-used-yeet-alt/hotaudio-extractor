@@ -8,10 +8,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
-- **A stalled listen request names its page.** A transport failure during key
-  paging used to reach the caller as a bare `http: timeout: global`. It now
-  carries the `first=<n>` it was paging, which is the only request identity the
-  live report keeps.
+- **A tarpitted key page now asks for a browser clearance.** On a flagged
+  network the site accepts listen paging requests and never answers them, so a
+  download died with `http: timeout: global`: a bare transport error with no
+  next step, when a fresh `cf_clearance` and matching User-Agent is exactly what
+  fixes it. Paging can only run after the handshake and the first listen
+  succeeded on the same client, so a stall there is reported as
+  `Error::Challenge` — it names the page (`listen API for first=831: …`) and
+  keeps the transport symptom in the message — and the CLI prints the clearance
+  steps. The initial call is still a plain transport error, because it has no
+  successful request behind it (#112).
 
 - **The live suite no longer reports a tarpit as a decrypt regression.** The
   site's bot management stalls key paging on a shared egress — the first paging

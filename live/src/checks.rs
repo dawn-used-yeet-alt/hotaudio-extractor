@@ -415,10 +415,12 @@ pub async fn run_live(r: &mut Runner, ctx: &Ctx) -> Option<Live> {
             resp
         }
         Err(e) => {
-            let component = if matches!(&e, Error::Challenge(_)) {
-                comp::ENVIRONMENT
-            } else {
-                comp::LISTEN
+            // The handshake just succeeded over this client, so a transport
+            // failure here is the network's condition, not the crate's — the
+            // same verdict the page fetch below gets.
+            let component = match &e {
+                Error::Http(_) | Error::Challenge(_) => comp::ENVIRONMENT,
+                _ => comp::LISTEN,
             };
             r.fail(
                 component,
