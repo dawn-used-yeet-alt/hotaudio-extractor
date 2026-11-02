@@ -15,7 +15,9 @@ curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/lat
 ```
 
 It picks the build for your platform and installs `hotaudio-download` to
-`~/.local/bin` (`$PREFIX/bin` on Termux).
+`~/.local/bin` (`$PREFIX/bin` on Termux). At the end it offers to install the
+shell completion for your `$SHELL` (bash, zsh or fish); answer `n` or pass
+`--no-completions` to skip.
 
 Windows, in PowerShell (x86-64 shown; use `windows-arm64` on ARM):
 

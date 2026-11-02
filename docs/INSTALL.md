@@ -13,6 +13,10 @@ checks it against the release's checksum file, and installs the binary to
 curl -fsSL https://github.com/dawn-used-yeet-alt/hotaudio-extractor/releases/latest/download/install.sh | sh
 ```
 
+At the end it offers to install the shell completion for `$SHELL` — answer `n`,
+pass `--no-completions`, or set `HOTAUDIO_SHELL=none` to skip it (see
+[Completions and man page](#completions-and-man-page) for where it goes).
+
 Prefer to do it by hand? Copy the block for your system.
 
 <!-- install:start -->
@@ -124,6 +128,28 @@ The `hotaudio-completions.tar.gz` archive holds bash, zsh, fish and PowerShell
 completions plus a man page. The binary prints the same files itself with
 `--completions <shell>` and `--man-page`, so you need not download the archive
 to get them.
+
+`install.sh` uses that and offers the completion for your shell during install.
+Where it puts each one, next to where the shell already looks:
+
+| Shell | Path |
+| --- | --- |
+| bash | `${XDG_DATA_HOME:-~/.local/share}/bash-completion/completions/hotaudio-download` |
+| zsh | `${ZDOTDIR:-~}/.zfunc/_hotaudio-download` |
+| fish | `${XDG_CONFIG_HOME:-~/.config}/fish/completions/hotaudio-download.fish` |
+
+bash and fish pick those up on their own (bash needs the `bash-completion`
+package). zsh only reads a directory on `fpath`, so the installer prints the
+line to add to `~/.zshrc` before `compinit`:
+
+```zsh
+fpath=(~/.zfunc $fpath)
+```
+
+Answer `n` at the prompt to skip, pass `--no-completions`, or pass
+`--completions bash|zsh|fish` to pick a shell without being asked. A piped
+install with no terminal does not ask and installs the completion for `$SHELL`.
+
 
 ## Build from source
 

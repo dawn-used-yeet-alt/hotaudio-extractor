@@ -6,6 +6,18 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`install.sh` installs the shell completion.** After the binary it offers the
+  completion for `$SHELL` with a `[Y/n]` prompt and writes it where that shell
+  already looks: `~/.local/share/bash-completion/completions`,
+  `~/.zfunc/_hotaudio-download` (plus the `fpath` line zsh needs) or
+  `~/.config/fish/completions` — nothing system-wide. `--completions [SHELL]`
+  skips the question and picks bash, zsh or fish; `--no-completions` and
+  `HOTAUDIO_SHELL=none` skip it; a piped install with no terminal takes the
+  default. The completion is printed by the binary that was just installed, so
+  it cannot drift from it.
+
 ## [2.1.1] - 2026-11-02
 
 ### Fixed
