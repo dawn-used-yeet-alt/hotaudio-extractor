@@ -8,6 +8,21 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- **A stalled listen request names its page.** A transport failure during key
+  paging used to reach the caller as a bare `http: timeout: global`. It now
+  carries the `first=<n>` it was paging, which is the only request identity the
+  live report keeps.
+
+- **The live suite no longer reports a tarpit as a decrypt regression.** The
+  site's bot management stalls key paging on a shared egress — the first paging
+  request after the container fetch can burn the whole API timeout without an
+  answer — and only later answers with the `cf-mitigated: challenge` this suite
+  already treats as `environment`. A CLI exit of 3 is the binary's own network
+  verdict (`Error::Http`/`Error::Challenge`), so `live/` now reads that as an
+  environment condition too. The protocol checks that can detect drift (page,
+  state, handshake, signer, first listen) run before the download and still fail
+  the run when they break (#112).
+
 - **Signatures follow player build `wGUeBtfc`.** The site replaced the signer
   program (1,326 bytes / 663 instructions) and stopped exposing both the
   `__ENVHASHES` hook and the `__FAB` error path. The bytecode and environment
