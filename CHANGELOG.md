@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-02
+
 ### Fixed
 
 - **A tarpitted key page now asks for a browser clearance.** On a flagged
