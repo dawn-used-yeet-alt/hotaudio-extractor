@@ -274,6 +274,23 @@ jobs:
           if HOTAUDIO_OS=MINGW64_NT-10.0 HOTAUDIO_ARCH=x86_64 sh scripts/install.sh --print >/dev/null 2>&1; then
             echo "::error::the installer claimed to support an unknown platform"; exit 1
           fi
+          # Completions are opt-out and shell-specific. The flags the docs
+          # promise must parse, and an unsupported shell must be refused rather
+          # than silently installing nothing.
+          sh scripts/install.sh --no-completions --print >/dev/null
+          sh scripts/install.sh --completions fish --print >/dev/null
+          HOTAUDIO_SHELL=zsh sh scripts/install.sh --completions=zsh --print >/dev/null
+          if sh scripts/install.sh --completions=tcsh --print >/dev/null 2>&1; then
+            echo "::error::the installer accepted an unsupported completion shell"; exit 1
+          fi
+          help=$(sh scripts/install.sh --help)
+          case "$help" in
+            *--no-completions*) ;;
+            *)
+              echo "::error::install.sh --help does not document --no-completions"
+              exit 1
+              ;;
+          esac
           sh -n scripts/install.sh
       # Windows has no shell script to parse, so the README spells its download
       # out by hand. Pin that too: every archive the README names must be one the
