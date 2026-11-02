@@ -162,9 +162,19 @@ jobs:
       # The runner is not on the image and `cargo install` would rebuild the
       # whole tree. The CLI version must match the `wasm-bindgen` in Cargo.lock
       # exactly: the runner rejects a test binary produced by a different one.
-      - uses: taiki-e/install-action@wasm-bindgen-cli
+      # The action has no `version` input and its `@wasm-bindgen-cli` shorthand
+      # installs the latest release, so the lockfile is the only pin that
+      # cannot drift the day upstream ships a version the lock has not taken.
+      - name: Pin wasm-bindgen to the lockfile
+        id: wasm-bindgen
+        run: |
+          want=$(awk '/^name = "wasm-bindgen"$/{getline; print; exit}' Cargo.lock \
+              | sed -n 's/^version = "\(.*\)"/\1/p')
+          test -n "$want"
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
         with:
-          version: 0.2.129
+          tool: wasm-bindgen-cli@${{ steps.wasm-bindgen.outputs.version }}
       # `wasm32-unknown-unknown` binaries cannot be exec'd; this runner executes
       # them through `wasm-bindgen`, which is what a page does.
       - name: Test
@@ -184,9 +194,18 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # With no explicit version the action installs the `wasm-bindgen` from
-      # Cargo.lock, which is the version the build script insists on.
-      - uses: taiki-e/install-action@wasm-bindgen-cli
+      # Same lockfile-derived pin as the browser job: the build script refuses a
+      # CLI whose version differs from the `wasm-bindgen` in Cargo.lock.
+      - name: Pin wasm-bindgen to the lockfile
+        id: wasm-bindgen
+        run: |
+          want=$(awk '/^name = "wasm-bindgen"$/{getline; print; exit}' Cargo.lock \
+              | sed -n 's/^version = "\(.*\)"/\1/p')
+          test -n "$want"
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ steps.wasm-bindgen.outputs.version }}
       - name: Build the package
         run: ./scripts/build-wasm.sh
       - name: Check the package

@@ -337,7 +337,17 @@ pub async fn listen(
         ("Origin", "https://hotaudio.net"),
         ("Referer", "https://hotaudio.net/"),
     ];
-    let resp: FullResponse = client.request("POST", &url, &headers, Some(&body)).await?;
+    // A transport failure is otherwise context-free (`http: timeout: global`),
+    // and the live report keeps only the first line of stderr. Say which page
+    // stalled: the site tarpits paging requests long before it returns a
+    // challenge, so that line is the only evidence of which request was cut.
+    let resp: FullResponse = client
+        .request("POST", &url, &headers, Some(&body))
+        .await
+        .map_err(|e| match e {
+            Error::Http(msg) => Error::Http(format!("listen API for first={first}: {msg}")),
+            other => other,
+        })?;
 
     if let Some(detail) = resp.challenge() {
         return Err(Error::Challenge(format!(

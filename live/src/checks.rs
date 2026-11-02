@@ -200,6 +200,12 @@ pub(crate) fn first_line(s: &str) -> String {
         .to_string()
 }
 
+/// The CLI's `code::NETWORK` exit status (`Error::Http` and `Error::Challenge`).
+///
+/// The binary owns that taxonomy (`src/bin/download.rs`); the suite reads the
+/// verdict instead of re-deriving it from stderr, which can only see the text.
+const CLI_NETWORK_EXIT: i32 = 3;
+
 /// True when a CLI failure was a Cloudflare challenge rather than a crate bug.
 fn challenge_in(stderr: &str) -> bool {
     stderr.contains("site challenge:")
@@ -614,7 +620,14 @@ pub fn run_cli_online(r: &mut Runner, ctx: &Ctx, live: &Live) -> Option<Artifact
         }
     };
     if out.code != 0 {
-        let component = if challenge_in(&out.stderr) {
+        // Exit 3 is the CLI's network bucket. The site's bot management tarpits
+        // key paging (a stall that ends in `http: timeout: global`) before it
+        // bothers returning the 403 challenge this suite already treats as
+        // environment; both are conditions of the egress, not the crate. The
+        // protocol half of the run (page, state, handshake, signer, first
+        // listen) has already passed above, so a transport failure here cannot
+        // be a protocol regression.
+        let component = if challenge_in(&out.stderr) || out.code == CLI_NETWORK_EXIT {
             comp::ENVIRONMENT
         } else {
             comp::DECRYPT
