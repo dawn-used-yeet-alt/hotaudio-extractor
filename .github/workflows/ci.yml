@@ -15,7 +15,7 @@ concurrency:
 jobs:
   rust:
     name: rust
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -66,7 +66,7 @@ jobs:
   # `cargo test` this needs network — it fetches the RustSec advisory database.
   deny:
     name: deny
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       # Prebuilt binary, so cargo-deny's own tree is not compiled here. Pinned
@@ -84,7 +84,7 @@ jobs:
   # current tree, so a broken tool fails here rather than at release time.
   licenses:
     name: licenses
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -127,7 +127,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -141,7 +141,7 @@ jobs:
   # a browser rather than merely compiled.
   wasm:
     name: wasm (browser)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -187,7 +187,7 @@ jobs:
   # before a tag exists, rather than during one.
   wasm-pkg:
     name: wasm package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -222,7 +222,7 @@ jobs:
   # self-contained and need no dependencies to parse.
   scripts:
     name: scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -240,7 +240,7 @@ jobs:
   # remember to bump a version in the install commands by hand.
   install:
     name: install docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Check the install block is current

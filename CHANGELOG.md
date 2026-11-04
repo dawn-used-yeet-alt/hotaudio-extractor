@@ -6,6 +6,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Linux x86_64 release binaries run on pre-AVX2 CPUs again.** When the GitHub
+  Actions `ubuntu-latest` runner image upgraded to Ubuntu 26.04 (`amd64v3`), the
+  host C toolchain defaulted to `-march=x86-64-v3`. This caused `ring`'s C
+  components (`curve25519.c`) to be compiled with unconditional AVX2 instructions,
+  crashing with `SIGILL (Illegal instruction)` on processors without AVX2 (such as
+  AMD Puma/Jaguar APUs and older Intel CPUs). The Ubuntu runners are now pinned to
+  `ubuntu-24.04`, `CFLAGS` explicitly enforces baseline `-march=x86-64 -mtune=generic`
+  for x86_64 Linux targets, and `linux-x86_64-static` is enabled for native smoke tests.
+
 ## [2.1.2] - 2026-11-02
 
 ### Added

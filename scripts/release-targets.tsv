@@ -17,14 +17,14 @@
 # matrix from it (the `plan` job) and scripts/install-block.sh renders the
 # download block in docs/INSTALL.md from it, so the built archives and the
 # documented archives cannot disagree.
-x86_64-unknown-linux-gnu	linux-x86_64	ubuntu-latest	true	Linux, Intel/AMD	true
+x86_64-unknown-linux-gnu	linux-x86_64	ubuntu-24.04	true	Linux, Intel/AMD	true
 aarch64-unknown-linux-gnu	linux-arm64	ubuntu-24.04-arm	true	Linux, ARM64	true
-x86_64-unknown-linux-musl	linux-x86_64-static	ubuntu-latest	false	Linux, static, Intel/AMD	false
+x86_64-unknown-linux-musl	linux-x86_64-static	ubuntu-24.04	true	Linux, static, Intel/AMD	false
 aarch64-unknown-linux-musl	linux-arm64-static	ubuntu-24.04-arm	true	Linux, static, ARM64	false
 x86_64-apple-darwin	macos-x86_64	macos-latest	false	macOS, Intel	true
 aarch64-apple-darwin	macos-arm64	macos-latest	true	macOS, Apple Silicon	true
 x86_64-pc-windows-msvc	windows-x86_64	windows-latest	true	Windows, Intel/AMD	true
 aarch64-pc-windows-msvc	windows-arm64	windows-latest	false	Windows, ARM64	false
 x86_64-pc-windows-gnu	windows-x86_64-gnu	windows-latest	false	Windows, MinGW	false
-aarch64-linux-android	android-arm64	ubuntu-latest	false	Android/Termux, most phones	true
-x86_64-linux-android	android-x86_64	ubuntu-latest	false	Android/Termux, emulators	false
+aarch64-linux-android	android-arm64	ubuntu-24.04	false	Android/Termux, most phones	true
+x86_64-linux-android	android-x86_64	ubuntu-24.04	false	Android/Termux, emulators	false
