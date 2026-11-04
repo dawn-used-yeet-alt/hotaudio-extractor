@@ -1,6 +1,6 @@
 [package]
 name = "hotaudio-rs"
-version = "2.1.2"
+version = "2.1.3"
 edition = "2024"
 # Also the floor for the dependency tree: several RustCrypto and ureq crates
 # declare the same MSRV. CI checks against this version.

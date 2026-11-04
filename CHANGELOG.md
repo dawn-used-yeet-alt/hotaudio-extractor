@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-11-04
+
 ### Fixed
 
 - **Linux x86_64 release binaries run on pre-AVX2 CPUs again.** When the GitHub
@@ -16,6 +18,12 @@ All notable changes to this project are documented here. Format follows
   AMD Puma/Jaguar APUs and older Intel CPUs). The Ubuntu runners are now pinned to
   `ubuntu-24.04`, `CFLAGS` explicitly enforces baseline `-march=x86-64 -mtune=generic`
   for x86_64 Linux targets, and `linux-x86_64-static` is enabled for native smoke tests.
+
+### Added
+
+- **Release artifacts are built and uploaded on pull requests.** A matrix build in
+  CI compiles and packages all 11 release targets on pull requests and manual dispatches,
+  allowing binary downloads and testing before merging.
 
 ## [2.1.2] - 2026-11-02
 
