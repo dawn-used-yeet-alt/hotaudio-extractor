@@ -307,3 +307,165 @@ jobs:
               || { echo "::error::README names $name, which is not in release-targets.tsv"; exit 1; }
           done
           echo "README archive names are current"
+
+  plan:
+    name: plan targets
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix=$(jq -R -s -c '
+            split("\n")
+            | map(select(length > 0 and (startswith("#") | not)))
+            | map(split("\t"))
+            | {include: map({
+                target: .[0], slug: .[1], os: .[2],
+                native: (.[3] == "true"),
+                label: .[4], featured: (.[5] == "true")
+              })}
+          ' scripts/release-targets.tsv)
+          echo "$matrix"
+          test "$(echo "$matrix" | jq '.include | length')" -gt 0
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.slug }}
+    needs: plan
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Verify mingw-w64
+        if: contains(matrix.target, 'windows-gnu')
+        shell: pwsh
+        run: |
+          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue)) {
+            Write-Error "x86_64-w64-mingw32-gcc not found on this runner"
+            exit 1
+          }
+
+      - uses: nttld/setup-ndk@v1
+        if: endsWith(matrix.target, '-android')
+        id: ndk
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+
+          case "$target" in
+            x86_64-*)
+              case "$target" in
+                *-windows-msvc) ;;
+                *) export CFLAGS="${CFLAGS:-} -march=x86-64 -mtune=generic" ;;
+              esac
+              ;;
+          esac
+
+          case "$target" in
+            *-linux-android)
+              bin="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+              case "$target" in
+                aarch64-linux-android)   abi=aarch64-linux-android ;;
+                x86_64-linux-android)    abi=x86_64-linux-android ;;
+                armv7-linux-androideabi) abi=armv7a-linux-androideabi ;;
+                *) echo "::error::unhandled android target $target"; exit 1 ;;
+              esac
+
+              clang="$bin/${abi}24-clang"
+              if [ ! -x "$clang" ]; then
+                echo "::error::NDK clang wrapper missing: $clang"
+                ls "$bin" | head -20 || true
+                exit 1
+              fi
+
+              ln -sf "$clang" "$bin/${abi}-clang"
+              ln -sf "$bin/${abi}24-clang++" "$bin/${abi}-clang++"
+              export PATH="$bin:$PATH"
+
+              var=$(printf '%s' "$target" | tr 'a-z-' 'A-Z_')
+              export "CARGO_TARGET_${var}_LINKER=$clang"
+              export "CARGO_TARGET_${var}_AR=$bin/llvm-ar"
+              export "CC_${var}=$clang"
+              export "AR_${var}=$bin/llvm-ar"
+              ;;
+          esac
+
+          cargo build --release --locked --target "$target"
+
+      - name: Inspect artifact
+        if: ${{ !matrix.native && runner.os != 'Windows' }}
+        shell: bash
+        run: file "target/${{ matrix.target }}/release/hotaudio-download"
+
+      - name: Smoke test
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="target/${{ matrix.target }}/release/hotaudio-download${{ runner.os == 'Windows' && '.exe' || '' }}"
+          "$exe" --help | head -3
+          "$exe" --help | grep -q -- "--stream-to"
+          if "$exe" --definitely-not-a-flag >/dev/null 2>&1; then
+            echo "::error::unknown flag was accepted"
+            exit 1
+          fi
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="hotaudio-download-${{ matrix.slug }}"
+          mkdir -p "$stage" dist
+          cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          tar -czf "dist/${stage}.tar.gz" "$stage"
+          rm -rf "$stage"
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = "hotaudio-download-${{ matrix.slug }}"
+          $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item $exe $stage
+          Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
+          Remove-Item -Recurse -Force $stage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.slug }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
