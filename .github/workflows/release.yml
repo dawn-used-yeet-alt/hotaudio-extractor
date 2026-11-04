@@ -21,7 +21,7 @@ jobs:
   # agree exactly with the version in Cargo.toml.
   check:
     name: verify tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
@@ -47,7 +47,7 @@ jobs:
   plan:
     name: plan targets
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -81,7 +81,7 @@ jobs:
   notices:
     name: third-party notices
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -174,6 +174,18 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
+
+          case "$target" in
+            x86_64-*)
+              # Enforce baseline x86-64 (v1) for C dependencies (e.g. ring) so
+              # that toolchains on newer distributions do not emit AVX2
+              # instructions into non-vectorized fallback paths.
+              case "$target" in
+                *-windows-msvc) ;;
+                *) export CFLAGS="${CFLAGS:-} -march=x86-64 -mtune=generic" ;;
+              esac
+              ;;
+          esac
 
           case "$target" in
             *-linux-android)
@@ -272,7 +284,7 @@ jobs:
   wasm:
     name: wasm package
     needs: [check, notices]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -331,7 +343,7 @@ jobs:
   completions:
     name: completions and man page
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -365,7 +377,7 @@ jobs:
   release:
     name: publish release
     needs: [check, build, wasm, completions]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # The installer is served from the release itself
       # (`/releases/latest/download/install.sh`), so it is published as an asset
@@ -414,7 +426,7 @@ jobs:
   install-docs:
     name: sync install docs
     needs: [check, release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
