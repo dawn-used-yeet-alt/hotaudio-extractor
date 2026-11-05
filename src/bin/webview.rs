@@ -16,14 +16,15 @@
 //! `docs/CLOUDFLARE.md`.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
-use tao::window::WindowBuilder;
-use wry::WebViewBuilder;
+use tao::window::{Window, WindowBuilder};
+use wry::{WebContext, WebView, WebViewBuilder};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -125,16 +126,47 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, u64), Strin
     Ok((url, timeout_secs))
 }
 
-fn run(url: &str, timeout: Duration) -> Result<String, String> {
-    // The event loop closure is `'static`, so own the URL before it is built.
-    let url = url.to_string();
-    let event_loop = EventLoop::new();
+/// Where the helper keeps the browser's cookie jar and cache.
+///
+/// Without a data directory WebKit keeps cookies in memory only: the clearance
+/// dies with the process, and the next run can then serve the track page from
+/// the HTTP cache without asking Cloudflare again, leaving no cookie to copy.
+fn data_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Application Support"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    base.map(|base| base.join("hotaudio-webview"))
+}
+
+/// Open the window and its webview on a persistent cookie jar and a fresh cache.
+///
+/// The page must come from the network: a cached track page hides a new
+/// challenge and leaves the helper with no clearance to report. The cache is
+/// disposable, so it is dropped before the context claims it; the cookie jar is
+/// what has to survive, and it needs the persistent data directory to do so.
+fn open(event_loop: &EventLoop<()>, url: &str) -> Result<(Window, WebContext, WebView), String> {
     let window = WindowBuilder::new()
         .with_title("hotaudio clearance")
         .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 800.0))
-        .build(&event_loop)
+        .build(event_loop)
         .map_err(|e| format!("cannot create the window: {e}"))?;
-    let builder = WebViewBuilder::new().with_url(url.as_str());
+
+    let data_directory = data_directory();
+    if let Some(directory) = data_directory.as_deref() {
+        // A cache left by a previous run can hold a track page that no longer
+        // has a valid clearance. Ignoring a failed removal is deliberate: a
+        // second helper instance may be using it, and the page can still be
+        // cleared from the challenge it shows.
+        let _ = std::fs::remove_dir_all(directory.join("WebKitCache"));
+    }
+    let mut context = WebContext::new(data_directory.as_deref());
+    let builder = WebViewBuilder::new_with_web_context(&mut context).with_url(url);
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let webview = builder
@@ -153,6 +185,15 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             .map_err(|e| format!("cannot create the webview: {e}"))?
     };
 
+    Ok((window, context, webview))
+}
+
+fn run(url: &str, timeout: Duration) -> Result<String, String> {
+    // The event loop closure is `'static`, so own the URL before it is built.
+    let url = url.to_string();
+    let event_loop = EventLoop::new();
+    let (window, context, webview) = open(&event_loop, &url)?;
+
     let (tx, rx) = mpsc::channel::<String>();
     let deadline = Instant::now() + timeout;
     let mut next_poll = Instant::now();
@@ -161,8 +202,10 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
     let mut last_snapshot: Option<Snapshot> = None;
 
     event_loop.run(move |event, _, control_flow| {
-        // Keeps the platform window alive alongside the webview it hosts.
+        // Keeps the platform window and its data context alive alongside the
+        // webview they host.
         let _window = &window;
+        let _context = &context;
 
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
@@ -285,9 +328,7 @@ fn finish(
     if snapshot.user_agent.is_empty() {
         return Err("the webview did not report a User-Agent".into());
     }
-    let cookies = webview
-        .cookies_for_url(page_url)
-        .map_err(|e| format!("cannot read the webview cookies: {e}"))?;
+    let cookies = cookies_for(webview, page_url)?;
     // The request header is `name=value` pairs, not `Cookie`'s display form
     // (which would also print attributes the request must not carry).
     let cookie = cookies
@@ -306,4 +347,36 @@ fn finish(
         "url": reported_url,
     })
     .to_string())
+}
+
+/// The browser's cookies for `url`, with a whole-jar fallback.
+///
+/// WebKitGTK has been observed returning an empty per-URL list while the jar
+/// itself held the clearance. This context is dedicated to the helper, so
+/// falling back to every hotaudio.net cookie is safe and still keeps an
+/// unrelated site's cookies out of the request header.
+fn cookies_for(
+    webview: &wry::WebView,
+    url: &str,
+) -> Result<Vec<wry::cookie::Cookie<'static>>, String> {
+    let cookies = webview
+        .cookies_for_url(url)
+        .map_err(|e| format!("cannot read the webview cookies: {e}"))?;
+    if !cookies.is_empty() {
+        return Ok(cookies);
+    }
+    let all = webview
+        .cookies()
+        .map_err(|e| format!("cannot read the webview cookies: {e}"))?;
+    Ok(all
+        .into_iter()
+        .filter(|cookie| {
+            cookie.domain().is_none_or(|domain| {
+                domain
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+                    .ends_with("hotaudio.net")
+            })
+        })
+        .collect())
 }

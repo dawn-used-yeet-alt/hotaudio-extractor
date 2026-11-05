@@ -39,6 +39,13 @@ All notable changes to this project are documented here. Format follows
   clearance is renewed too. A refresh is refused if it selects a different
   track.
 
+- **The webview helper reuses its cookie jar and never reports a cached page.**
+  The helper now keeps a persistent browser profile, so a passed challenge
+  survives the process that passed it, and deletes the page cache before every
+  run. A cached track page used to load without a Cloudflare challenge, leaving
+  the helper with no cookie to copy; it now always fetches the page from the
+  network when a clearance is needed.
+
 ### Changed
 
 - **Pinned player bundle follows build `A3ZqJBSY`.** The site re-minified

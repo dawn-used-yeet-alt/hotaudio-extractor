@@ -29,6 +29,13 @@ the window also finishes: it prints the browser's cookie and User-Agent, and if
 the page state was not captured the downloader re-fetches the page with that
 fresh clearance.
 
+The helper keeps its browser profile in the platform data directory
+(`~/.local/share/hotaudio-webview` on Linux, `%LOCALAPPDATA%` on Windows,
+`Application Support` on macOS), so a passed challenge can be reused on the next
+run. It drops the page cache before every run: a cached track page would
+otherwise hide a new challenge and leave the helper with no clearance to
+report.
+
 A run also re-handshakes by itself when key paging hits the site's per-tick
 key-window limit: the server answers with a challenge (or stalls the request),
 the downloader fetches a fresh page tick and resumes at the segment that
