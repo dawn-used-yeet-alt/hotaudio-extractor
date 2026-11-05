@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Player build the vendored bundle was captured from. Keep in sync with `src/signer/env.rs`. */
-export const PINNED_NOZZLE_VERSION = 'wGUeBtfc';
+export const PINNED_NOZZLE_VERSION = 'A3ZqJBSY';
 
 /**
  * Environment fingerprint keys the bundle expects. Keep in sync with
@@ -52,11 +52,13 @@ const NOZZLE_URL = `https://hotaudio.net/nozzle.js?v=${PINNED_NOZZLE_VERSION}`;
 function patchBundle(source: string): string {
   let patched = source;
   if (!patched.includes('globalThis.__lastDt=Dt=')) {
-    patched = patched.replace('Ot=w(', 'globalThis.__lastDt=Ot=w(');
+    patched = patched.replace('Dt=w(', 'globalThis.__lastDt=Dt=w(');
     if (patched === source) throw new Error('could not expose the signer');
   }
 
-  const envSite = 'for(O of t[e(53)])t[e(-34)][e(23)][O[t[e(8)]-e(9)]]=O[e(-63)]';
+  // The environment-probe site is re-minified on every build; this is the
+  // loop that copies the probed `[key, value]` pairs into the env object.
+  const envSite = 'for(_ of t[e(53)])t[e(-34)][e(23)][_[t[e(8)]-e(9)]]=_[e(-63)]';
   if (patched.includes(envSite)) {
     patched = patched.replace(
       envSite,
