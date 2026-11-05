@@ -218,7 +218,10 @@ impl Clearance {
     /// agent is worse than no cookie at all: Cloudflare answers it with another
     /// challenge instead of the page.
     pub fn set(&self, cookie: Option<String>, user_agent: Option<String>) {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.cookie = cookie;
         inner.user_agent = user_agent;
     }
@@ -226,19 +229,25 @@ impl Clearance {
     fn set_user_agent(&self, user_agent: impl Into<String>) {
         self.inner
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .user_agent = Some(user_agent.into());
     }
 
     fn set_cookie(&self, cookie: impl Into<String>) {
-        self.inner.write().unwrap_or_else(|e| e.into_inner()).cookie = Some(cookie.into());
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cookie = Some(cookie.into());
     }
 
     /// The pair a request sends, in the order every call site destructures:
     /// `(user_agent, cookie)`. Keeping one order is what makes a swap
     /// impossible; the two are only useful together.
     fn snapshot(&self) -> (Option<String>, Option<String>) {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (inner.user_agent.clone(), inner.cookie.clone())
     }
 }
@@ -330,7 +339,6 @@ impl Client {
     /// [`Client::clearance`]; passing them in keeps the read lock off the
     /// request path and lets a refresh land between attempts.
     fn headers<'a>(
-        &self,
         request: &[(&'a str, &'a str)],
         extra: &[(&'a str, &'a str)],
         user_agent: Option<&'a str>,
@@ -448,7 +456,7 @@ impl Client {
     ) -> Result<FullResponse> {
         let url = self.url(url);
         let (user_agent, cookie) = self.clearance.snapshot();
-        let merged = self.headers(headers, &[], user_agent.as_deref(), cookie.as_deref());
+        let merged = Self::headers(headers, &[], user_agent.as_deref(), cookie.as_deref());
         let req = Request {
             method,
             url: &url,
@@ -544,7 +552,7 @@ impl Client {
                 Vec::new()
             };
             let (user_agent, cookie) = self.clearance.snapshot();
-            let merged = self.headers(headers, &extra, user_agent.as_deref(), cookie.as_deref());
+            let merged = Self::headers(headers, &extra, user_agent.as_deref(), cookie.as_deref());
             let req = Request {
                 method: "GET",
                 url: &url,
@@ -798,7 +806,7 @@ mod tests {
             .with_user_agent("Brave/156")
             .with_cookie("cf_clearance=abc");
         let (user_agent, cookie) = client.clearance.snapshot();
-        let merged = client.headers(
+        let merged = Client::headers(
             &[("User-Agent", "Mozilla/5.0"), ("Accept", "*/*")],
             &[("Range", "bytes=0-")],
             user_agent.as_deref(),
@@ -816,7 +824,7 @@ mod tests {
     fn client_without_overrides_keeps_the_callers_user_agent() {
         let client = Client::api();
         let (user_agent, cookie) = client.clearance.snapshot();
-        let merged = client.headers(
+        let merged = Client::headers(
             &[("User-Agent", "Mozilla/5.0")],
             &[],
             user_agent.as_deref(),
@@ -841,7 +849,7 @@ mod tests {
 
         for client in [&api, &bulk] {
             let (user_agent, cookie) = client.clearance.snapshot();
-            let merged = client.headers(
+            let merged = Client::headers(
                 &[("User-Agent", "Mozilla/5.0")],
                 &[],
                 user_agent.as_deref(),

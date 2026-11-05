@@ -1127,6 +1127,7 @@ impl Run {
     /// browser clearance; otherwise the callback simply re-fetches the page,
     /// which is enough to reset the server's per-tick key-window budget. Local
     /// HTML has no page to refresh, so it gets no callback.
+    #[cfg(not(target_arch = "wasm32"))]
     fn renewal_for(&self, source: &str, track_id: Option<&str>) -> Option<download::Renewal> {
         if !is_url(source) {
             return None;
@@ -1166,6 +1167,14 @@ impl Run {
                 track_id.as_deref(),
             ))
         }))
+    }
+}
+
+/// The browser build has no page fetch and no helper: its host owns clearance.
+#[cfg(target_arch = "wasm32")]
+impl Run {
+    fn renewal_for(&self, _source: &str, _track_id: Option<&str>) -> Option<download::Renewal> {
+        None
     }
 }
 
