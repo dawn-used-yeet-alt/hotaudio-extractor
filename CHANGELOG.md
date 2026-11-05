@@ -14,7 +14,9 @@ All notable changes to this project are documented here. Format follows
   page state. A new shared `Clearance` handle lets a refresh reach every client
   in the run without rebuilding the pipeline. The helper is built and shipped
   with the desktop release archives only; the library and the web build are
-  unchanged.
+  unchanged. A missing helper or webview toolkit is non-fatal: the downloader
+  warns, keeps any supplied clearance, and continues with the normal page
+  re-handshake.
 
 ### Fixed
 

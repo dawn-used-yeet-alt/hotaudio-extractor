@@ -110,8 +110,10 @@ win over the environment, which wins over the config file.
 `--webview` is the shortcut: the bundled `hotaudio-webview` helper opens the
 track page in a real window, waits for the challenge (up to
 `--webview-timeout SECS`, default 300), and returns that browser's cookie,
-User-Agent and page state. The extractor never solves or bypasses a challenge
-itself; the helper is an interactive browser the user drives.
+User-Agent and page state. If the helper or a webview toolkit is unavailable,
+the run warns and continues rather than aborting. The extractor never solves or
+bypasses a challenge itself; the helper is an interactive browser the user
+drives.
 
 Separately, a download that hits the site's per-tick key-window limit
 re-handshakes automatically: it re-reads the page for a fresh tick and resumes

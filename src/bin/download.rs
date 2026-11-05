@@ -428,7 +428,12 @@ fn run() -> ExitCode {
     // Proactive clearance: pass the challenge once, then hand the browser's
     // cookie and User-Agent to every client in the run. Renewal below repeats
     // this against the same page when the server's key-window budget resets.
-    if cli.webview {
+    //
+    // A failed helper is never fatal at startup: the library, or a host without
+    // a webview toolkit/display, must still be able to download. Fall back to
+    // the clearance already supplied and to the plain page re-handshake.
+    let mut webview_active = cli.webview;
+    if webview_active {
         if cli.hax.is_some() {
             eprintln!("error: --webview is for online pages; it cannot be used with --hax\n");
             return ExitCode::from(code::USAGE);
@@ -443,8 +448,12 @@ fn run() -> ExitCode {
                 user_agent = Some(payload.user_agent);
             }
             Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(exit_code(&e));
+                eprintln!("warning: {e}");
+                eprintln!(
+                    "warning: continuing without --webview; pass --cookie and --user-agent \
+                     if the site asks for a challenge"
+                );
+                webview_active = false;
             }
         }
     }
@@ -479,7 +488,7 @@ fn run() -> ExitCode {
         json: cli.json,
         progress_json,
         verify: cli.verify,
-        webview: cli.webview,
+        webview: webview_active,
         webview_timeout: cli.webview_timeout,
         cancel: install_ctrlc(),
     })) {

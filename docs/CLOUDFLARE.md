@@ -19,6 +19,11 @@ The helper is installed next to `hotaudio-download` by the release archives and
 helper installed somewhere else. On a headless machine, pass the values by hand
 as below instead.
 
+A missing helper, webview toolkit or display is not fatal: the downloader warns
+and continues with any clearance you supplied, then falls back to the normal
+page re-handshake. The helper itself is a separate binary, so `hotaudio-download`
+never needs GTK/WebKit to start.
+
 A run also re-handshakes by itself when key paging hits the site's per-tick
 key-window limit: the server answers with a challenge (or stalls the request),
 the downloader fetches a fresh page tick and resumes at the segment that
