@@ -24,11 +24,17 @@ and continues with any clearance you supplied, then falls back to the normal
 page re-handshake. The helper itself is a separate binary, so `hotaudio-download`
 never needs GTK/WebKit to start.
 
+The helper finishes on its own once the track page exposes `__ha_state`. Closing
+the window also finishes: it prints the browser's cookie and User-Agent, and if
+the page state was not captured the downloader re-fetches the page with that
+fresh clearance.
+
 A run also re-handshakes by itself when key paging hits the site's per-tick
 key-window limit: the server answers with a challenge (or stalls the request),
 the downloader fetches a fresh page tick and resumes at the segment that
-failed. With `--webview`, that refresh goes through the helper so a stale
-`cf_clearance` is renewed too.
+failed. The existing clearance usually covers that page fetch, so no window
+opens; with `--webview`, the helper runs again only if the page itself is
+challenged.
 
 ## By hand
 

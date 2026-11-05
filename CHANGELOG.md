@@ -20,14 +20,24 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- **`hotaudio-webview` reports the browser even when the window is closed by
+  hand.** Closing the window used to end the event loop before anything was
+  printed, so the downloader saw empty output and fell back without a cookie.
+  The helper now finishes on close with the cookie and User-Agent it has, and
+  treats a missing `__ha_state` as recoverable: the downloader re-fetches the
+  page with the new clearance. Polling also recovers when a navigation drops an
+  in-flight script callback, which previously froze the snapshot loop after the
+  challenge redirected to the track page.
+
 - **A challenged key page resumes at the failed segment instead of ending the
   run.** The site narrows its key-window budget per page tick and eventually
   answers paging with a 403 or a stalled request. `DownloadOptions::renew` and
   `download::Renewal` let the pager replace its handshake with a fresh page
   tick, then retry the same `first`; the key map and already-decrypted segments
-  are preserved. Without `--webview` the downloader re-fetches the page; with
-  it, the helper also renews the clearance. A refresh is refused if it selects
-  a different track.
+  are preserved. The downloader always re-fetches the page first; with
+  `--webview`, a challenged page fetch falls back to the helper so a stale
+  clearance is renewed too. A refresh is refused if it selects a different
+  track.
 
 ### Changed
 

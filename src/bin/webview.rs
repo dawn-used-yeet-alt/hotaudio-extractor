@@ -8,10 +8,14 @@
 //! ```
 //!
 //! `state` is the page's `__ha_state` value, so the downloader can rebuild the
-//! handshake without fetching the page again and risking another challenge. The
-//! helper is deliberately interactive: it is the escape hatch for a gated
-//! network, not an automated challenge solver. See `docs/CLOUDFLARE.md`.
+//! handshake without fetching the page again and risking another challenge. It
+//! is `null` when the window is closed before the page exposes it; the
+//! downloader then re-fetches the page with the cookie and User-Agent, which is
+//! still a success. The helper is deliberately interactive: it is the escape
+//! hatch for a gated network, not an automated challenge solver. See
+//! `docs/CLOUDFLARE.md`.
 
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -23,6 +27,13 @@ use wry::WebViewBuilder;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// How long one script evaluation may stay outstanding before the next poll is
+/// allowed anyway.
+///
+/// A navigation (the challenge redirecting to the track page) can drop the
+/// callback for an evaluation that was already in flight. Without this bound
+/// the `in_flight` flag would never clear and polling would stop for good.
+const POLL_WATCHDOG: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
 hotaudio-webview --url URL [--timeout SECS]
@@ -145,8 +156,9 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
     let (tx, rx) = mpsc::channel::<String>();
     let deadline = Instant::now() + timeout;
     let mut next_poll = Instant::now();
-    let mut in_flight = false;
+    let mut in_flight_since: Option<Instant> = None;
     let mut last_title = String::new();
+    let mut last_snapshot: Option<Snapshot> = None;
 
     event_loop.run(move |event, _, control_flow| {
         // Keeps the platform window alive alongside the webview it hosts.
@@ -157,31 +169,45 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             ..
         } = event
         {
+            // tao exits the process when the loop ends, so this is the last
+            // chance to report what the browser has. Closing the window after
+            // passing the challenge is a normal way to finish: the cookie and
+            // User-Agent are enough even if the page never exposed
+            // `__ha_state`, because the downloader can re-fetch the page with
+            // them. A snapshot is not required to be from the final document.
             *control_flow = ControlFlow::Exit;
-            return;
+            match last_snapshot.as_ref() {
+                Some(snapshot) => {
+                    let state = snapshot.state.as_deref().filter(|s| !s.is_empty());
+                    finish_and_exit(&webview, snapshot, state, &url);
+                }
+                None => {
+                    eprintln!("error: the window was closed before the page was read");
+                    std::process::exit(1);
+                }
+            }
         }
 
         // The callback arrives as an ordinary event-loop wake-up; drain it
         // before scheduling the next poll.
         while let Ok(value) = rx.try_recv() {
-            in_flight = false;
+            in_flight_since = None;
             match serde_json::from_str::<Snapshot>(&value) {
                 Ok(snapshot) => {
                     if !snapshot.title.is_empty() && snapshot.title != last_title {
                         last_title.clone_from(&snapshot.title);
                         eprintln!("hotaudio-webview: {last_title}");
                     }
-                    if let Some(state) = snapshot.state.as_deref().filter(|s| !s.is_empty()) {
-                        match finish(&webview, &snapshot, state, &url) {
-                            Ok(json) => {
-                                println!("{json}");
-                                std::process::exit(0);
-                            }
-                            Err(message) => {
-                                eprintln!("error: {message}");
-                                std::process::exit(1);
-                            }
-                        }
+                    let state = snapshot
+                        .state
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    last_snapshot = Some(snapshot);
+                    if let (Some(state), Some(snapshot)) =
+                        (state.as_deref(), last_snapshot.as_ref())
+                    {
+                        finish_and_exit(&webview, snapshot, Some(state), &url);
                     }
                 }
                 Err(e) => eprintln!("hotaudio-webview: unreadable page snapshot: {e}"),
@@ -196,9 +222,12 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             std::process::exit(1);
         }
 
-        if !in_flight && Instant::now() >= next_poll {
+        // A poll whose callback was dropped by a navigation must not freeze the
+        // loop; after the watchdog expires, start another one.
+        let stalled = in_flight_since.is_some_and(|since| since.elapsed() >= POLL_WATCHDOG);
+        if (in_flight_since.is_none() || stalled) && Instant::now() >= next_poll {
             next_poll = Instant::now() + POLL_INTERVAL;
-            in_flight = true;
+            in_flight_since = Some(Instant::now());
             let tx = tx.clone();
             // A script evaluated before the document exists can fail; the next
             // poll tries again, and the timeout is the real error path.
@@ -211,13 +240,40 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
     });
 }
 
+/// Print the payload and exit; used from the event-loop callback, where there
+/// is no stack to unwind to.
+fn finish_and_exit(
+    webview: &wry::WebView,
+    snapshot: &Snapshot,
+    state: Option<&str>,
+    requested_url: &str,
+) -> ! {
+    match finish(webview, snapshot, state, requested_url) {
+        Ok(json) => {
+            println!("{json}");
+            // `process::exit` skips destructors, so flush the line explicitly.
+            let _ = std::io::stdout().flush();
+            std::process::exit(0);
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn finish(
     webview: &wry::WebView,
     snapshot: &Snapshot,
-    state: &str,
+    state: Option<&str>,
     requested_url: &str,
 ) -> Result<String, String> {
-    let page_url = if snapshot.url.is_empty() {
+    // Read cookies against the page the downloader will use, not whatever the
+    // webview is showing right now: while the challenge is up that may be a
+    // Cloudflare URL, whose jar does not contain the site's clearance. The
+    // cookie lookup still matches by domain, so a canonical redirect is fine.
+    let page_url = requested_url;
+    let reported_url = if snapshot.url.is_empty() {
         requested_url
     } else {
         &snapshot.url
@@ -243,7 +299,7 @@ fn finish(
         "cookie": cookie,
         "userAgent": &snapshot.user_agent,
         "state": state,
-        "url": page_url,
+        "url": reported_url,
     })
     .to_string())
 }

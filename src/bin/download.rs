@@ -1165,10 +1165,11 @@ impl Run {
     /// A challenge-refresh callback for `source`.
     ///
     /// The pipeline calls this after a challenge and expects a handshake for the
-    /// same track. With `--webview`, the helper re-reads the page after a fresh
-    /// browser clearance; otherwise the callback simply re-fetches the page,
-    /// which is enough to reset the server's per-tick key-window budget. Local
-    /// HTML has no page to refresh, so it gets no callback.
+    /// same track. It always re-fetches the page first, which is what resets the
+    /// server's per-tick key-window budget. With `--webview`, a page fetch that
+    /// is itself challenged falls back to the browser helper; a helper snapshot
+    /// without `__ha_state` is completed by fetching the page with the new
+    /// clearance. Local HTML has no page to refresh, so it gets no callback.
     #[cfg(not(target_arch = "wasm32"))]
     fn renewal_for(&self, source: &str, track_id: Option<&str>) -> Option<download::Renewal> {
         if !is_url(source) {
@@ -1186,28 +1187,45 @@ impl Run {
 
         Some(download::Renewal::new(move || {
             let base = api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
-            if webview {
-                let payload = run_webview(&source, webview_timeout)?;
-                clearance.set(
-                    Some(payload.cookie.clone()),
-                    Some(payload.user_agent.clone()),
-                );
-                return handshake_from_payload(&payload, base, track_id.as_deref(), &source);
-            }
-            let net = Net {
-                proxy: proxy.as_deref(),
-                clearance: &clearance,
-                api_timeout_ms,
-                retry,
-                delay_ms: 0,
+            let refresh = || -> Result<listen::Handshake, Error> {
+                let net = Net {
+                    proxy: proxy.as_deref(),
+                    clearance: &clearance,
+                    api_timeout_ms,
+                    retry,
+                    delay_ms: 0,
+                };
+                let client = api_client(net)?;
+                hotaudio::block_on(listen::load_handshake(
+                    &client,
+                    &source,
+                    base,
+                    track_id.as_deref(),
+                ))
             };
-            let client = api_client(net)?;
-            hotaudio::block_on(listen::load_handshake(
-                &client,
-                &source,
-                base,
-                track_id.as_deref(),
-            ))
+
+            // The clearance from the last browser pass normally outlives the
+            // server's key-window tick, so re-reading the page is enough and
+            // does not pop another window. Only Cloudflare itself needs the
+            // browser again.
+            match refresh() {
+                Ok(hs) => Ok(hs),
+                Err(Error::Challenge(_)) if webview => {
+                    let payload = run_webview(&source, webview_timeout)?;
+                    clearance.set(
+                        Some(payload.cookie.clone()),
+                        Some(payload.user_agent.clone()),
+                    );
+                    if payload.state.is_some() {
+                        handshake_from_payload(&payload, base, track_id.as_deref(), &source)
+                    } else {
+                        // The window was closed before the snapshot carried
+                        // `__ha_state`; the new cookie is still fresh.
+                        refresh()
+                    }
+                }
+                Err(e) => Err(e),
+            }
         }))
     }
 }
@@ -1231,8 +1249,12 @@ struct ClearancePayload {
     /// The webview's exact `User-Agent`.
     #[serde(rename = "userAgent")]
     user_agent: String,
-    /// The page's raw `__ha_state` value.
-    state: String,
+    /// The page's raw `__ha_state` value, when the helper caught it.
+    ///
+    /// `None` is not a failure: a window closed right after the challenge
+    /// clears still yields the cookie and User-Agent, and the page is then
+    /// re-fetched with them.
+    state: Option<String>,
     /// The final page URL, after any challenge redirect.
     #[allow(dead_code)]
     url: String,
@@ -1245,14 +1267,16 @@ fn handshake_from_payload(
     track_id: Option<&str>,
     page_url: &str,
 ) -> Result<listen::Handshake, Error> {
-    let mut hs =
-        listen::handshake_from_state_b64(&payload.state, api_base, track_id)?.ok_or_else(|| {
-            Error::State(
-                "the refreshed page does not carry the requested track; \
-                 clear the challenge on the track page itself"
-                    .into(),
-            )
-        })?;
+    let state = payload.state.as_deref().ok_or_else(|| {
+        Error::State("the webview snapshot has no page state; re-fetch the page".into())
+    })?;
+    let mut hs = listen::handshake_from_state_b64(state, api_base, track_id)?.ok_or_else(|| {
+        Error::State(
+            "the refreshed page does not carry the requested track; \
+             clear the challenge on the track page itself"
+                .into(),
+        )
+    })?;
     hs.listen_key = listen::extract_listen_key(page_url);
     Ok(hs)
 }
