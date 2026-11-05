@@ -1,9 +1,31 @@
-# Cloudflare 
+# Cloudflare
 
-Hotaudio is behind Cloudflare. 
-So you first have to clear it in your browser and pass the cookie and UA to the cli. 
+Hotaudio is behind Cloudflare.
+So you first have to clear it in your browser and pass the cookie and UA to the CLI.
 
 ## Fix
+
+The simplest way is the bundled helper. It opens the track page in a real
+browser window and, once you have passed the challenge, hands the clearance
+back to the downloader:
+
+```bash
+hotaudio-download --webview 'https://hotaudio.net/u/user/track'
+```
+
+The helper is installed next to `hotaudio-download` by the release archives and
+`scripts/install.sh`. It waits up to five minutes by default; use
+`--webview-timeout SECS` to change that, and `HOTAUDIO_WEBVIEW` to point at a
+helper installed somewhere else. On a headless machine, pass the values by hand
+as below instead.
+
+A run also re-handshakes by itself when key paging hits the site's per-tick
+key-window limit: the server answers with a challenge (or stalls the request),
+the downloader fetches a fresh page tick and resumes at the segment that
+failed. With `--webview`, that refresh goes through the helper so a stale
+`cf_clearance` is renewed too.
+
+## By hand
 
 1. Open the track page in your browser and pass the challenge.
 2. Open DevTools (F12) → **Application** → **Cookies** → `https://hotaudio.net` (Firefox: **Storage** → **Cookies**) and copy the `cf_clearance` value.

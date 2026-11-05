@@ -213,6 +213,15 @@ missing index, bounded by `KEY_PAGE_ATTEMPTS` (4). A sequential pass recovers
 from a miss on the next segment anyway; random access (seeking) has no next
 segment, which is what the bound is for.
 
+The window also narrows with use in a single page tick: after a few dozen
+paging requests the server returns only leaf-level windows (two segments), then
+answers further paging with a 403 or a stalled request. Re-fetching the page
+for a fresh `tick` restores the wide branches. That is why
+`DownloadOptions::renew` rebuilds the handshake and retries the same `first`:
+the key map and decrypted segments survive, so the run continues instead of
+restarting. It is a per-tick budget, not an IP ban — the same network gets wide
+windows immediately after a reload.
+
 ## 6. The signature VM
 
 ### What produces it

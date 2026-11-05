@@ -92,6 +92,12 @@ The block above (and `hotaudio-completions.tar.gz`) is generated from
 minimal hosts and in `scratch` containers, while the glibc builds need glibc
 2.17 or newer.
 
+Desktop archives also carry `hotaudio-webview`, the interactive Cloudflare
+helper used by `--webview`; `install.sh` installs it next to the main binary. On
+Linux it needs WebKitGTK 4.1 and GTK 3 (`libwebkit2gtk-4.1-0`, `libgtk-3-0`).
+The static musl, MinGW and Android archives omit the helper: they have no
+system webview to link against.
+
 ## After unpacking
 
 If the binary will not run, it is almost always one of these:

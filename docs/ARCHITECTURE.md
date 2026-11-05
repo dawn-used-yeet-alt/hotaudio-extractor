@@ -58,6 +58,12 @@ Design rules the layout rests on:
   the missing segment index. The server serialises per track
   ([PROTOCOL.md](PROTOCOL.md#5-segment-key-tree)), so every request is
   provably needed and no lookahead can help.
+- **Challenge renewal resumes, not restarts.** The server narrows the key
+  window per page tick and eventually answers paging with a challenge or a
+  stall. `download::Renewal` lets the pipeline replace its handshake with a
+  fresh page tick and retry the failed index; the key map and decrypted
+  segments live outside the pager, so progress survives. A refresh that selects
+  a different track is rejected rather than mixed.
 
 ## The signature VM
 
@@ -221,7 +227,9 @@ or in `docs/PROTOCOL.md` are the point of naming them.
   connections does not increase throughput.
 - **Stealth.** The default user agent is the bare `Mozilla/5.0`; `--user-agent`
   exists only to match the browser that earned a `cf_clearance` cookie. There
-  is no fingerprint rotation, challenge solving or proxy farming. This is an
-  interoperability tool, not a scraper that hides itself. On `wasm32` the
+  is no fingerprint rotation, challenge solving or proxy farming. `--webview`
+  is not an exception: it opens an ordinary browser window for the user to pass
+  the challenge by hand, then copies that browser's cookie and User-Agent. This
+  is an interoperability tool, not a scraper that hides itself. On `wasm32` the
   browser forbids setting the header at all, so the crate drops it rather than
   spoofing.

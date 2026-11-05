@@ -65,7 +65,8 @@ jobs:
             | {include: map({
                 target: .[0], slug: .[1], os: .[2],
                 native: (.[3] == "true"),
-                label: .[4], featured: (.[5] == "true")
+                label: .[4], featured: (.[5] == "true"),
+                webview: (.[6] == "true")
               })}
           ' scripts/release-targets.tsv)
           echo "$matrix"
@@ -102,7 +103,7 @@ jobs:
       - name: Fetch crate sources
         run: cargo fetch --locked
       - name: Generate
-        run: cargo bundle-licenses --format yaml --output THIRD_PARTY_LICENSES.yml
+        run: cargo bundle-licenses --features webview --format yaml --output THIRD_PARTY_LICENSES.yml
       - uses: actions/upload-artifact@v7
         with:
           name: notices
@@ -140,6 +141,16 @@ jobs:
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+
+      # The helper links the platform webview. Only the desktop targets in
+      # `release-targets.tsv` mark `webview` true; musl, MinGW and Android have
+      # no toolkit the release runner can build.
+      - name: Install webview dependencies
+        if: matrix.webview && runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
 
       # mingw-w64 is preinstalled on the Windows runners, but make it explicit
       # so the gnu target cannot fail on a runner-image change.
@@ -220,7 +231,11 @@ jobs:
               ;;
           esac
 
-          cargo build --release --locked --target "$target"
+          features=()
+          if [ "${{ matrix.webview }}" = "true" ]; then
+            features=(--features webview)
+          fi
+          cargo build --release --locked --target "$target" "${features[@]}"
 
       # Cross-built targets cannot run here, so confirm the artifact is the
       # architecture and format it claims to be.
@@ -253,6 +268,9 @@ jobs:
           stage="hotaudio-download-${{ matrix.slug }}"
           mkdir -p "$stage" dist
           cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
+          if [ "${{ matrix.webview }}" = "true" ]; then
+            cp "target/${{ matrix.target }}/release/hotaudio-webview" "$stage/"
+          fi
           cp README.md LICENSE CHANGELOG.md THIRD_PARTY_LICENSES.yml "$stage/"
           tar -czf "dist/${stage}.tar.gz" "$stage"
           rm -rf "$stage"
@@ -266,6 +284,9 @@ jobs:
           $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
           New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
           Copy-Item $exe $stage
+          if ("${{ matrix.webview }}" -eq "true") {
+            Copy-Item "target/${{ matrix.target }}/release/hotaudio-webview.exe" $stage
+          }
           Copy-Item README.md, LICENSE, CHANGELOG.md, THIRD_PARTY_LICENSES.yml $stage
           Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
           Remove-Item -Recurse -Force $stage

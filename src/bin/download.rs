@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 use hotaudio::crypto::{Error, KeyMap};
 use hotaudio::download::{self, DownloadOptions, Phase, Progress};
-use hotaudio::http::{Client, Retry};
+use hotaudio::http::{Clearance, Client, Retry};
 use hotaudio::listen;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,6 +41,14 @@ User-Agent and retry:
   --cookie 'cf_clearance=...' --user-agent 'Mozilla/5.0 (...)'
 Cloudflare binds the clearance to both the network and the exact User-Agent.
 `HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` set the same two values; flags win.
+
+Or let the downloaded helper do both steps:
+  --webview
+It opens the track page in a real window, waits for the challenge, and reuses
+that browser's cookie, User-Agent and page state. The run also re-handshakes
+automatically when key paging hits the server's per-tick window limit, even
+without --webview.
+
 Guide: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md
 
 Exit status:
@@ -62,6 +70,7 @@ hint: hotaudio.net is asking this network to pass a browser challenge.
       then copy its `cf_clearance` cookie and exact User-Agent and retry:
         --cookie 'cf_clearance=...' --user-agent 'Mozilla/5.0 (...)'
       The clearance is bound to both the network and the exact User-Agent.
+      The bundled helper does this for you: retry with `--webview`.
       Step-by-step guide:
       https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md";
 
@@ -181,6 +190,15 @@ struct Cli {
     /// the `--cookie` clearance
     #[arg(long, value_name = "UA")]
     user_agent: Option<String>,
+
+    /// Open the track page in a browser window to clear the Cloudflare
+    /// challenge, then use that browser's cookie, User-Agent and page state
+    #[arg(long)]
+    webview: bool,
+
+    /// How long `--webview` waits for the challenge, in seconds
+    #[arg(long, value_name = "SECS", requires = "webview", default_value_t = 300)]
+    webview_timeout: u64,
 
     /// Retry a failed request up to N times (default 2)
     #[arg(long, value_name = "N")]
@@ -387,7 +405,7 @@ fn run() -> ExitCode {
     };
     let progress_json = cli.progress.as_deref() == Some("json");
 
-    let (cookie, user_agent) = identity(&cli, &config);
+    let (mut cookie, mut user_agent) = identity(&cli, &config);
 
     let sources = match collect_sources(&cli) {
         Ok(s) => s,
@@ -407,6 +425,33 @@ fn run() -> ExitCode {
         return ExitCode::from(code::USAGE);
     }
 
+    // Proactive clearance: pass the challenge once, then hand the browser's
+    // cookie and User-Agent to every client in the run. Renewal below repeats
+    // this against the same page when the server's key-window budget resets.
+    if cli.webview {
+        if cli.hax.is_some() {
+            eprintln!("error: --webview is for online pages; it cannot be used with --hax\n");
+            return ExitCode::from(code::USAGE);
+        }
+        let Some(url) = sources.iter().find(|s| is_url(s)) else {
+            eprintln!("error: --webview needs a page URL; a local HTML file cannot be cleared\n");
+            return ExitCode::from(code::USAGE);
+        };
+        match run_webview(url, cli.webview_timeout) {
+            Ok(payload) => {
+                cookie = Some(payload.cookie);
+                user_agent = Some(payload.user_agent);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(exit_code(&e));
+            }
+        }
+    }
+
+    let clearance = Clearance::new();
+    clearance.set(cookie, user_agent);
+
     match hotaudio::block_on(execute(Run {
         sources,
         out: cli.out,
@@ -421,8 +466,7 @@ fn run() -> ExitCode {
         track_id: cli.track,
         api_base: cli.api_base.or(config.api_base),
         proxy: cli.proxy.or(config.proxy),
-        cookie,
-        user_agent,
+        clearance,
         retry: retry_for(cli.retries, config.retries),
         api_timeout_ms,
         delay_ms: delay_ms(cli.delay, config.delay_ms),
@@ -435,6 +479,8 @@ fn run() -> ExitCode {
         json: cli.json,
         progress_json,
         verify: cli.verify,
+        webview: cli.webview,
+        webview_timeout: cli.webview_timeout,
         cancel: install_ctrlc(),
     })) {
         Ok(()) => ExitCode::SUCCESS,
@@ -471,10 +517,9 @@ struct Run {
     track_id: Option<String>,
     api_base: Option<String>,
     proxy: Option<String>,
-    /// Raw `Cookie` header for a browser clearance (`cf_clearance`).
-    cookie: Option<String>,
-    /// `User-Agent` override; must match the browser that earned `cookie`.
-    user_agent: Option<String>,
+    /// Shared by every client in the run; a `--webview` refresh updates it in
+    /// place, so key paging and the bulk transfer both see the new cookie.
+    clearance: Clearance,
     /// Retry policy for every client the run builds.
     retry: Retry,
     /// Per-attempt API timeout override; `None` keeps the 30 s default.
@@ -491,6 +536,10 @@ struct Run {
     progress_json: bool,
     /// `--verify`: walk the decrypted MP4 and check its duration.
     verify: bool,
+    /// `--webview`: refresh the clearance through the helper after a challenge.
+    webview: bool,
+    /// `--webview-timeout`: seconds the helper waits for the challenge.
+    webview_timeout: u64,
     /// Set when the user interrupts the run, so the pipeline can stop between
     /// segments and the temp-file sink can discard its partial output.
     cancel: download::Cancel,
@@ -791,11 +840,13 @@ async fn execute(r: Run) -> Result<(), Error> {
         let (sink, out) = StreamSink::open(dest, clobber)?;
         let mut writer = std::io::BufWriter::with_capacity(1 << 20, out);
 
-        let res = download::download_streaming(
+        let renewal = r.renewal_for(&source, r.track_id.as_deref());
+        let res = download::download_streaming_renewing(
             &api,
             &hs,
             seed.as_ref(),
             r.delay_ms,
+            renewal,
             |fragment| {
                 writer
                     .write_all(fragment)
@@ -943,6 +994,7 @@ async fn fetch_online(
         api: &api,
         bulk: &bulk,
     };
+    let renew = r.renewal_for(source, track_id);
     let mut opts = DownloadOptions {
         initial_keys,
         on_progress: Some(report),
@@ -951,6 +1003,7 @@ async fn fetch_online(
         capture_hax,
         delay_ms: net.delay_ms,
         cancel: Some(r.cancel.clone()),
+        renew,
     };
     if is_url(source) {
         clients.download_from_page(source, &mut opts).await
@@ -970,10 +1023,8 @@ async fn fetch_online(
 #[derive(Clone, Copy)]
 struct Net<'a> {
     proxy: Option<&'a str>,
-    /// Raw `Cookie` header for a browser clearance.
-    cookie: Option<&'a str>,
-    /// `User-Agent` override; must match the browser that earned `cookie`.
-    user_agent: Option<&'a str>,
+    /// Browser clearance shared by every client in the run.
+    clearance: &'a Clearance,
     /// Per-attempt API timeout; `None` keeps [`Client::api`]'s 30 s default.
     api_timeout_ms: Option<u64>,
     retry: Retry,
@@ -985,8 +1036,7 @@ struct Net<'a> {
 fn net_of(r: &Run) -> Net<'_> {
     Net {
         proxy: r.proxy.as_deref(),
-        cookie: r.cookie.as_deref(),
-        user_agent: r.user_agent.as_deref(),
+        clearance: &r.clearance,
         api_timeout_ms: r.api_timeout_ms,
         retry: r.retry,
         delay_ms: r.delay_ms,
@@ -1041,18 +1091,14 @@ fn bulk_client(net: Net<'_>) -> Result<Client, Error> {
     Ok(client.with_retries(net.retry))
 }
 
-/// Apply the browser clearance and the User-Agent that earned it.
+/// Attach the run's shared browser clearance.
 ///
-/// The two travel together: Cloudflare binds `cf_clearance` to the requesting
-/// user agent, so forwarding the cookie alone just fetches another challenge.
-fn apply_identity(mut client: Client, net: Net<'_>) -> Client {
-    if let Some(cookie) = net.cookie {
-        client = client.with_cookie(cookie);
-    }
-    if let Some(ua) = net.user_agent {
-        client = client.with_user_agent(ua);
-    }
-    client
+/// Every client is built from the same handle, so a `--webview` refresh updates
+/// the API and bulk clients together. Cloudflare binds `cf_clearance` to the
+/// requesting user agent, which is why [`Clearance`] stores the pair as one
+/// value rather than two independent options.
+fn apply_identity(client: Client, net: Net<'_>) -> Client {
+    client.with_clearance(net.clearance.clone())
 }
 
 /// Apply `--proxy` to `client`; without it the transport honors the standard
@@ -1061,6 +1107,152 @@ fn apply_proxy(client: Client, proxy: Option<&str>) -> Result<Client, Error> {
     match proxy {
         Some(url) => client.with_proxy(url),
         None => Ok(client),
+    }
+}
+
+impl Run {
+    /// A challenge-refresh callback for `source`.
+    ///
+    /// The pipeline calls this after a challenge and expects a handshake for the
+    /// same track. With `--webview`, the helper re-reads the page after a fresh
+    /// browser clearance; otherwise the callback simply re-fetches the page,
+    /// which is enough to reset the server's per-tick key-window budget. Local
+    /// HTML has no page to refresh, so it gets no callback.
+    fn renewal_for(&self, source: &str, track_id: Option<&str>) -> Option<download::Renewal> {
+        if !is_url(source) {
+            return None;
+        }
+        let source = source.to_string();
+        let clearance = self.clearance.clone();
+        let api_base = self.api_base.clone();
+        let track_id = track_id.map(str::to_string);
+        let proxy = self.proxy.clone();
+        let retry = self.retry;
+        let api_timeout_ms = self.api_timeout_ms;
+        let webview = self.webview;
+        let webview_timeout = self.webview_timeout;
+
+        Some(download::Renewal::new(move || {
+            let base = api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
+            if webview {
+                let payload = run_webview(&source, webview_timeout)?;
+                clearance.set(
+                    Some(payload.cookie.clone()),
+                    Some(payload.user_agent.clone()),
+                );
+                return handshake_from_payload(&payload, base, track_id.as_deref(), &source);
+            }
+            let net = Net {
+                proxy: proxy.as_deref(),
+                clearance: &clearance,
+                api_timeout_ms,
+                retry,
+                delay_ms: 0,
+            };
+            let client = api_client(net)?;
+            hotaudio::block_on(listen::load_handshake(
+                &client,
+                &source,
+                base,
+                track_id.as_deref(),
+            ))
+        }))
+    }
+}
+
+/// What `hotaudio-webview` prints after the challenge is cleared.
+#[derive(serde::Deserialize)]
+struct ClearancePayload {
+    /// A ready `Cookie` header (`name=value; ...`).
+    cookie: String,
+    /// The webview's exact `User-Agent`.
+    #[serde(rename = "userAgent")]
+    user_agent: String,
+    /// The page's raw `__ha_state` value.
+    state: String,
+    /// The final page URL, after any challenge redirect.
+    #[allow(dead_code)]
+    url: String,
+}
+
+/// Rebuild a handshake from a webview snapshot.
+fn handshake_from_payload(
+    payload: &ClearancePayload,
+    api_base: &str,
+    track_id: Option<&str>,
+    page_url: &str,
+) -> Result<listen::Handshake, Error> {
+    let mut hs =
+        listen::handshake_from_state_b64(&payload.state, api_base, track_id)?.ok_or_else(|| {
+            Error::State(
+                "the refreshed page does not carry the requested track; \
+                 clear the challenge on the track page itself"
+                    .into(),
+            )
+        })?;
+    hs.listen_key = listen::extract_listen_key(page_url);
+    Ok(hs)
+}
+
+/// Run the clearance helper for `url` and parse its JSON.
+#[cfg(feature = "webview")]
+fn run_webview(url: &str, timeout_secs: u64) -> Result<ClearancePayload, Error> {
+    let exe = webview_exe()?;
+    let output = std::process::Command::new(&exe)
+        .arg("--url")
+        .arg(url)
+        .arg("--timeout")
+        .arg(timeout_secs.to_string())
+        .output()
+        .map_err(|e| Error::Io(format!("cannot run {}: {e}", exe.display())))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("the helper exited without a message");
+        return Err(Error::Challenge(format!(
+            "webview clearance failed: {detail}"
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| Error::Protocol(format!("unreadable webview output: {e}")))
+}
+
+/// This build has no `webview` feature: keep the flag and fail with a clear fix.
+#[cfg(not(feature = "webview"))]
+fn run_webview(_url: &str, _timeout_secs: u64) -> Result<ClearancePayload, Error> {
+    Err(Error::Protocol(
+        "--webview needs a build with the `webview` feature; the release archives include it"
+            .into(),
+    ))
+}
+
+/// Locate `hotaudio-webview`, next to this executable unless overridden.
+#[cfg(feature = "webview")]
+fn webview_exe() -> Result<std::path::PathBuf, Error> {
+    if let Some(path) = env_value("HOTAUDIO_WEBVIEW") {
+        return Ok(path.into());
+    }
+    let name = if cfg!(windows) {
+        "hotaudio-webview.exe"
+    } else {
+        "hotaudio-webview"
+    };
+    let exe = std::env::current_exe()
+        .map_err(|e| Error::Io(format!("cannot locate this executable: {e}")))?;
+    let path = exe
+        .parent()
+        .map(|dir| dir.join(name))
+        .unwrap_or_else(|| name.into());
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(Error::Protocol(format!(
+            "cannot find {}; install the webview-enabled build or set HOTAUDIO_WEBVIEW",
+            path.display()
+        )))
     }
 }
 

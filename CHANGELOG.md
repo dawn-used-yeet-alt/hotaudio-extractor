@@ -6,6 +6,27 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`--webview` clears Cloudflare in a real browser window.** The bundled
+  `hotaudio-webview` helper opens the track page, waits for the user to pass the
+  challenge, and returns that browser's `Cookie` header, exact User-Agent and
+  page state. A new shared `Clearance` handle lets a refresh reach every client
+  in the run without rebuilding the pipeline. The helper is built and shipped
+  with the desktop release archives only; the library and the web build are
+  unchanged.
+
+### Fixed
+
+- **A challenged key page resumes at the failed segment instead of ending the
+  run.** The site narrows its key-window budget per page tick and eventually
+  answers paging with a 403 or a stalled request. `DownloadOptions::renew` and
+  `download::Renewal` let the pager replace its handshake with a fresh page
+  tick, then retry the same `first`; the key map and already-decrypted segments
+  are preserved. Without `--webview` the downloader re-fetches the page; with
+  it, the helper also renews the clearance. A refresh is refused if it selects
+  a different track.
+
 ### Changed
 
 - **Pinned player bundle follows build `A3ZqJBSY`.** The site re-minified

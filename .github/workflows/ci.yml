@@ -61,6 +61,33 @@ jobs:
       - name: Perf guard
         run: cargo test --release --locked --test perf_guard
 
+  # The optional desktop helper (`hotaudio-webview`) has its own dependency tree
+  # (`wry`/`tao`), so the main gates above never compile it. Build and lint it
+  # with the platform webview headers installed, on the one Linux target that
+  # ships it.
+  webview:
+    name: webview helper
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install webview dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - name: Check MSRV
+        run: |
+          rustup toolchain install 1.87 --profile minimal
+          cargo +1.87 check --locked --all-targets --features webview
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --features webview -- -D warnings
+      - name: Test
+        run: cargo test --locked --features webview
+
   # Supply-chain gate over the same target set that ships (`deny.toml`):
   # advisories, license expressions, banned crates and allowed sources. Unlike
   # `cargo test` this needs network — it fetches the RustSec advisory database.
@@ -104,7 +131,7 @@ jobs:
       - name: Fetch crate sources
         run: cargo fetch --locked
       - name: Generate the third-party notice
-        run: cargo bundle-licenses --format yaml --output "$RUNNER_TEMP/THIRD_PARTY_LICENSES.yml"
+        run: cargo bundle-licenses --features webview --format yaml --output "$RUNNER_TEMP/THIRD_PARTY_LICENSES.yml"
       - name: Check the notice is complete
         run: |
           set -euo pipefail
@@ -327,7 +354,8 @@ jobs:
             | {include: map({
                 target: .[0], slug: .[1], os: .[2],
                 native: (.[3] == "true"),
-                label: .[4], featured: (.[5] == "true")
+                label: .[4], featured: (.[5] == "true"),
+                webview: (.[6] == "true")
               })}
           ' scripts/release-targets.tsv)
           echo "$matrix"
@@ -348,6 +376,16 @@ jobs:
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+
+      # The helper links the platform webview. Only the desktop targets in
+      # `release-targets.tsv` mark `webview` true; musl, MinGW and Android have
+      # no toolkit the release runner can build.
+      - name: Install webview dependencies
+        if: matrix.webview && runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
 
       - name: Verify mingw-w64
         if: contains(matrix.target, 'windows-gnu')
@@ -417,7 +455,11 @@ jobs:
               ;;
           esac
 
-          cargo build --release --locked --target "$target"
+          features=()
+          if [ "${{ matrix.webview }}" = "true" ]; then
+            features=(--features webview)
+          fi
+          cargo build --release --locked --target "$target" "${features[@]}"
 
       - name: Inspect artifact
         if: ${{ !matrix.native && runner.os != 'Windows' }}
@@ -445,6 +487,9 @@ jobs:
           stage="hotaudio-download-${{ matrix.slug }}"
           mkdir -p "$stage" dist
           cp "target/${{ matrix.target }}/release/hotaudio-download" "$stage/"
+          if [ "${{ matrix.webview }}" = "true" ]; then
+            cp "target/${{ matrix.target }}/release/hotaudio-webview" "$stage/"
+          fi
           cp README.md LICENSE CHANGELOG.md "$stage/"
           tar -czf "dist/${stage}.tar.gz" "$stage"
           rm -rf "$stage"
@@ -458,6 +503,9 @@ jobs:
           $exe = "target/${{ matrix.target }}/release/hotaudio-download.exe"
           New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
           Copy-Item $exe $stage
+          if ("${{ matrix.webview }}" -eq "true") {
+            Copy-Item "target/${{ matrix.target }}/release/hotaudio-webview.exe" $stage
+          }
           Copy-Item README.md, LICENSE, CHANGELOG.md $stage
           Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip"
           Remove-Item -Recurse -Force $stage
