@@ -165,7 +165,7 @@ fn open(event_loop: &EventLoop<()>, url: &str) -> Result<(Window, WebContext, We
         // cleared from the challenge it shows.
         let _ = std::fs::remove_dir_all(directory.join("WebKitCache"));
     }
-    let mut context = WebContext::new(data_directory.as_deref());
+    let mut context = WebContext::new(data_directory);
     let builder = WebViewBuilder::new_with_web_context(&mut context).with_url(url);
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
