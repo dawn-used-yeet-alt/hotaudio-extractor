@@ -128,7 +128,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, u64), Strin
 
 /// Where the helper keeps the browser's cookie jar and cache.
 ///
-/// Without a data directory WebKit keeps cookies in memory only: the clearance
+/// Without a data directory `WebKit` keeps cookies in memory only: the clearance
 /// dies with the process, and the next run can then serve the track page from
 /// the HTTP cache without asking Cloudflare again, leaving no cookie to copy.
 fn data_directory() -> Option<PathBuf> {
@@ -351,7 +351,7 @@ fn finish(
 
 /// The browser's cookies for `url`, with a whole-jar fallback.
 ///
-/// WebKitGTK has been observed returning an empty per-URL list while the jar
+/// `WebKitGTK` has been observed returning an empty per-URL list while the jar
 /// itself held the clearance. This context is dedicated to the helper, so
 /// falling back to every hotaudio.net cookie is safe and still keeps an
 /// unrelated site's cookies out of the request header.
