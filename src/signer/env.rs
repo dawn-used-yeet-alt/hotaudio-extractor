@@ -14,7 +14,7 @@ pub const ENV_HASHES: [u32; 3] = [2878, 21112, 33069];
 pub const PERF_NOW: f64 = 123_456.789;
 
 /// Player build the bytecode + environment table were captured from.
-pub const PINNED_NOZZLE_VERSION: &str = "wGUeBtfc";
+pub const PINNED_NOZZLE_VERSION: &str = "A3ZqJBSY";
 
 /// V8-formatted stack for the `Date.stack` `TypeError` probe.
 /// The pinned program does not read `.stack`, so this is not folded into its

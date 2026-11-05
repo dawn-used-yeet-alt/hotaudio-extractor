@@ -73,7 +73,7 @@ const patched = (
   expr +
   '))' +
   bundleSource.slice(exprEnd)
-).replace('Ot=w(', 'globalThis.__lastDt=Ot=w(');
+).replace('Dt=w(', 'globalThis.__lastDt=Dt=w(');
 
 const patchedFile = path.join(root, '.nozzle.recapture.js');
 fs.writeFileSync(patchedFile, patched);

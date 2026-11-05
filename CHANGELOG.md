@@ -6,6 +6,15 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Pinned player bundle follows build `A3ZqJBSY`.** The site re-minified
+  `nozzle.js` and renamed the closure that exposes the signer and the
+  environment-probe loop, so the capture anchors moved. The signature VM and
+  environment fingerprint are byte-identical to the previous build, and
+  `scripts/recapture.ts` confirms `src/signer/bytecode.rs` needs no change; only
+  the vendored bundle and the two pinned anchors moved.
+
 ## [2.1.3] - 2026-11-04
 
 ### Fixed

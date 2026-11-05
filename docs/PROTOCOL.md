@@ -320,7 +320,7 @@ full digest width.
 ### Version pinning
 
 The program, the environment table and the build id
-(`PINNED_NOZZLE_VERSION = "1J1Db0bF"`) are one contract. When the upstream
+(`PINNED_NOZZLE_VERSION = "A3ZqJBSY"`) are one contract. When the upstream
 player changes, signatures are rejected with 401 and all three must be
 re-captured together ([MAINTENANCE.md](MAINTENANCE.md#the-three-pinned-artefacts)).
 
