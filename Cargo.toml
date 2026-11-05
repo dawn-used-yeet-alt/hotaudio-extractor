@@ -2,6 +2,9 @@
 name = "hotaudio-rs"
 version = "2.1.3"
 edition = "2024"
+# `cargo run` now has two bins (`hotaudio-download` and the optional
+# `hotaudio-webview`); the downloader is the one people mean.
+default-run = "hotaudio-download"
 # Also the floor for the dependency tree: several RustCrypto and ureq crates
 # declare the same MSRV. CI checks against this version.
 rust-version = "1.87"

@@ -1307,8 +1307,7 @@ fn webview_exe() -> Result<std::path::PathBuf, Error> {
         .map_err(|e| Error::Io(format!("cannot locate this executable: {e}")))?;
     let path = exe
         .parent()
-        .map(|dir| dir.join(name))
-        .unwrap_or_else(|| name.into());
+        .map_or_else(|| name.into(), |dir| dir.join(name));
     if path.is_file() {
         Ok(path)
     } else {
