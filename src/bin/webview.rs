@@ -176,16 +176,12 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             // `__ha_state`, because the downloader can re-fetch the page with
             // them. A snapshot is not required to be from the final document.
             *control_flow = ControlFlow::Exit;
-            match last_snapshot.as_ref() {
-                Some(snapshot) => {
-                    let state = snapshot.state.as_deref().filter(|s| !s.is_empty());
-                    finish_and_exit(&webview, snapshot, state, &url);
-                }
-                None => {
-                    eprintln!("error: the window was closed before the page was read");
-                    std::process::exit(1);
-                }
+            if let Some(snapshot) = last_snapshot.as_ref() {
+                let state = snapshot.state.as_deref().filter(|s| !s.is_empty());
+                finish_and_exit(&webview, snapshot, state, &url);
             }
+            eprintln!("error: the window was closed before the page was read");
+            std::process::exit(1);
         }
 
         // The callback arrives as an ordinary event-loop wake-up; drain it
