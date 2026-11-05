@@ -353,6 +353,109 @@ fn main() -> ExitCode {
     run()
 }
 
+/// Clear Cloudflare up front when `--webview` is set.
+///
+/// Returns whether the helper stays enabled for challenge renewal. Usage
+/// mistakes are exit codes; a helper that cannot start only warns, so a host
+/// without a webview toolkit, display or the helper binary still downloads.
+#[cfg(not(target_arch = "wasm32"))]
+fn proactive_webview(
+    cli: &Cli,
+    sources: &[String],
+    cookie: &mut Option<String>,
+    user_agent: &mut Option<String>,
+) -> Result<bool, ExitCode> {
+    if !cli.webview {
+        return Ok(false);
+    }
+    if cli.hax.is_some() {
+        eprintln!("error: --webview is for online pages; it cannot be used with --hax\n");
+        return Err(ExitCode::from(code::USAGE));
+    }
+    let Some(url) = sources.iter().find(|s| is_url(s)) else {
+        eprintln!("error: --webview needs a page URL; a local HTML file cannot be cleared\n");
+        return Err(ExitCode::from(code::USAGE));
+    };
+    match run_webview(url, cli.webview_timeout) {
+        Ok(payload) => {
+            *cookie = Some(payload.cookie);
+            *user_agent = Some(payload.user_agent);
+            Ok(true)
+        }
+        Err(e) => {
+            eprintln!("warning: {e}");
+            eprintln!(
+                "warning: continuing without --webview; pass --cookie and --user-agent \
+                 if the site asks for a challenge"
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// Handle the hidden packaging flags (`--completions`, `--man-page`).
+///
+/// Returns `Some(exit)` when one was requested; `None` continues to a download.
+#[cfg(not(target_arch = "wasm32"))]
+fn packaging_exit(cli: &Cli) -> Option<ExitCode> {
+    if let Some(shell) = cli.completions {
+        clap_complete::generate(shell, &mut Cli::command(), BIN_NAME, &mut std::io::stdout());
+        return Some(ExitCode::SUCCESS);
+    }
+    if cli.man_page {
+        return Some(match write_man(&mut std::io::stdout()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: cannot write the man page: {e}");
+                ExitCode::from(code::IO)
+            }
+        });
+    }
+    None
+}
+
+/// Positional sources, rejecting combinations that cannot name one output.
+#[cfg(not(target_arch = "wasm32"))]
+fn validated_sources(cli: &Cli) -> Result<Vec<String>, ExitCode> {
+    let sources = match collect_sources(cli) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}\n");
+            return Err(ExitCode::from(code::IO));
+        }
+    };
+    if cli.all_tracks && sources.len() != 1 {
+        eprintln!("error: --all-tracks needs exactly one page URL or HTML file\n");
+        return Err(ExitCode::from(code::USAGE));
+    }
+    if let Some(name) = multi_output_conflict(sources.len(), cli.all_tracks, cli) {
+        eprintln!(
+            "error: {name} names one path; it cannot be used with several sources or --all-tracks\n"
+        );
+        return Err(ExitCode::from(code::USAGE));
+    }
+    Ok(sources)
+}
+
+/// Turn one pipeline result into the process exit code, printing diagnostics.
+#[cfg(not(target_arch = "wasm32"))]
+fn finish(result: Result<(), Error>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            if matches!(e, Error::Cancelled) {
+                eprintln!("cancelled");
+            } else {
+                eprintln!("error: {e}");
+                if matches!(&e, Error::Challenge(_)) {
+                    eprintln!("{CHALLENGE_HINT}");
+                }
+            }
+            ExitCode::from(exit_code(&e))
+        }
+    }
+}
+
 /// Parse arguments and run. The pipeline is `async` so one implementation serves
 /// both transports; natively it never suspends, so driving it is a single poll.
 #[cfg(not(target_arch = "wasm32"))]
@@ -361,18 +464,8 @@ fn run() -> ExitCode {
 
     // Packaging hooks, hidden from the help: they print machine-readable output
     // and exit without touching the network.
-    if let Some(shell) = cli.completions {
-        clap_complete::generate(shell, &mut Cli::command(), BIN_NAME, &mut std::io::stdout());
-        return ExitCode::SUCCESS;
-    }
-    if cli.man_page {
-        return match write_man(&mut std::io::stdout()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: cannot write the man page: {e}");
-                ExitCode::from(code::IO)
-            }
-        };
+    if let Some(exit) = packaging_exit(&cli) {
+        return exit;
     }
 
     if let Err(e) = validate_mode(&cli) {
@@ -407,61 +500,23 @@ fn run() -> ExitCode {
 
     let (mut cookie, mut user_agent) = identity(&cli, &config);
 
-    let sources = match collect_sources(&cli) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: {e}\n");
-            return ExitCode::from(code::IO);
-        }
+    let sources = match validated_sources(&cli) {
+        Ok(sources) => sources,
+        Err(code) => return code,
     };
-    if cli.all_tracks && sources.len() != 1 {
-        eprintln!("error: --all-tracks needs exactly one page URL or HTML file\n");
-        return ExitCode::from(code::USAGE);
-    }
-    if let Some(name) = multi_output_conflict(sources.len(), cli.all_tracks, &cli) {
-        eprintln!(
-            "error: {name} names one path; it cannot be used with several sources or --all-tracks\n"
-        );
-        return ExitCode::from(code::USAGE);
-    }
 
     // Proactive clearance: pass the challenge once, then hand the browser's
-    // cookie and User-Agent to every client in the run. Renewal below repeats
-    // this against the same page when the server's key-window budget resets.
-    //
-    // A failed helper is never fatal at startup: the library, or a host without
-    // a webview toolkit/display, must still be able to download. Fall back to
-    // the clearance already supplied and to the plain page re-handshake.
-    let mut webview_active = cli.webview;
-    if webview_active {
-        if cli.hax.is_some() {
-            eprintln!("error: --webview is for online pages; it cannot be used with --hax\n");
-            return ExitCode::from(code::USAGE);
-        }
-        let Some(url) = sources.iter().find(|s| is_url(s)) else {
-            eprintln!("error: --webview needs a page URL; a local HTML file cannot be cleared\n");
-            return ExitCode::from(code::USAGE);
-        };
-        match run_webview(url, cli.webview_timeout) {
-            Ok(payload) => {
-                cookie = Some(payload.cookie);
-                user_agent = Some(payload.user_agent);
-            }
-            Err(e) => {
-                eprintln!("warning: {e}");
-                eprintln!(
-                    "warning: continuing without --webview; pass --cookie and --user-agent \
-                     if the site asks for a challenge"
-                );
-                webview_active = false;
-            }
-        }
-    }
+    // cookie and User-Agent to every client in the run. Renewal repeats this
+    // against the same page when the server's key-window budget resets.
+    let webview_active = match proactive_webview(&cli, &sources, &mut cookie, &mut user_agent) {
+        Ok(active) => active,
+        Err(code) => return code,
+    };
 
     let clearance = Clearance::new();
     clearance.set(cookie, user_agent);
 
-    match hotaudio::block_on(execute(Run {
+    finish(hotaudio::block_on(execute(Run {
         sources,
         out: cli.out,
         filename_template: cli.filename_template.or(config.filename_template),
@@ -491,20 +546,7 @@ fn run() -> ExitCode {
         webview: webview_active,
         webview_timeout: cli.webview_timeout,
         cancel: install_ctrlc(),
-    })) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            if matches!(e, Error::Cancelled) {
-                eprintln!("cancelled");
-            } else {
-                eprintln!("error: {e}");
-                if matches!(&e, Error::Challenge(_)) {
-                    eprintln!("{CHALLENGE_HINT}");
-                }
-            }
-            ExitCode::from(exit_code(&e))
-        }
-    }
+    })))
 }
 
 // A flat option bag built once from the parsed flags; each bool is an
@@ -1173,6 +1215,9 @@ impl Run {
 /// The browser build has no page fetch and no helper: its host owns clearance.
 #[cfg(target_arch = "wasm32")]
 impl Run {
+    // The native version is a method; keep call sites uniform on both targets
+    // even though the browser has nothing to refresh.
+    #[allow(clippy::unused_self)]
     fn renewal_for(&self, _source: &str, _track_id: Option<&str>) -> Option<download::Renewal> {
         None
     }
