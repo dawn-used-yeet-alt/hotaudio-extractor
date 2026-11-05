@@ -230,13 +230,21 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             in_flight_since = Some(Instant::now());
             let tx = tx.clone();
             // A script evaluated before the document exists can fail; the next
-            // poll tries again, and the timeout is the real error path.
-            let _ = webview.evaluate_script_with_callback(SCRIPT, move |value| {
+            // poll tries again, and the timeout is the real error path. Clear
+            // the in-flight marker now so that failure does not wait out the
+            // watchdog.
+            let started = webview.evaluate_script_with_callback(SCRIPT, move |value| {
                 let _ = tx.send(value);
             });
+            if started.is_err() {
+                in_flight_since = None;
+            }
         }
 
-        *control_flow = ControlFlow::WaitUntil(next_poll);
+        // An outstanding evaluation supplies its own wake-up (the callback) or
+        // this watchdog, so do not spin on an already-due `next_poll`.
+        let wake = in_flight_since.map_or(next_poll, |since| since + POLL_WATCHDOG);
+        *control_flow = ControlFlow::WaitUntil(wake);
     });
 }
 
