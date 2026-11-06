@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-06
+
 ### Added
 
 - **`--webview` clears Cloudflare in a real browser window.** The bundled
@@ -679,7 +681,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.1.3...v2.2.0
 [2.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.0...v1.2.1
