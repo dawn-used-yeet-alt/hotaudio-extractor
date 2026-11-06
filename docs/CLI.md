@@ -84,6 +84,7 @@ destination.
 --api-base https://mirror.example  # talk to a mirror, or override the listen API
 --cookie 'cf_clearance=...'        # reuse a browser's Cloudflare clearance
 --user-agent 'Mozilla/5.0 (...)'   # the exact UA that earned that clearance
+--webview                          # open a browser window and do both for you
 ```
 
 Transfers resume themselves across dropped connections, and a dropped body is
@@ -104,8 +105,20 @@ hotaudio-download "$URL" \
 ```
 
 `HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` set the same values per run; flags
-win over the environment, which wins over the config file. The extractor never
-solves or bypasses a challenge itself.
+win over the environment, which wins over the config file.
+
+`--webview` is the shortcut: the bundled `hotaudio-webview` helper opens the
+track page in a real window, waits for the challenge (up to
+`--webview-timeout SECS`, default 300), and returns that browser's cookie,
+User-Agent and page state. If the helper or a webview toolkit is unavailable,
+the run warns and continues rather than aborting. The extractor never solves or
+bypasses a challenge itself; the helper is an interactive browser the user
+drives.
+
+Separately, a download that hits the site's per-tick key-window limit
+re-handshakes automatically: it re-reads the page for a fresh tick and resumes
+at the segment that failed, keeping every key it already decrypted. That applies
+even without `--webview`; with it, the refresh also renews the clearance.
 
 The flags are native-transport concerns. The wasm build has no flag of this
 kind: a page cannot choose its proxy, so proxying there belongs to the host.

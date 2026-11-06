@@ -22,6 +22,7 @@
 //! `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables, and
 //! [`Client::with_proxy`] overrides them. The browser uses its own settings.
 
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -183,6 +184,74 @@ type UrlRewrite = Box<dyn Fn(&str) -> String + Send + Sync + 'static>;
 #[cfg(target_arch = "wasm32")]
 type UrlRewrite = Box<dyn Fn(&str) -> String + 'static>;
 
+/// A shared browser clearance: the `Cookie` header and the exact `User-Agent`
+/// that earned it.
+///
+/// Cloudflare binds `cf_clearance` to both the network and the user agent, so
+/// the two are one value rather than independent options. A handle is cheap to
+/// clone and can be shared by every client in a download; [`Clearance::set`]
+/// changes what those clients send on their next request, which is what lets a
+/// caller refresh a stale clearance mid-download without rebuilding the
+/// pipeline. The crate never obtains a clearance itself — that is the caller's
+/// job, usually through a browser.
+#[derive(Clone, Default)]
+pub struct Clearance {
+    inner: Arc<RwLock<Identity>>,
+}
+
+#[derive(Default)]
+struct Identity {
+    cookie: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl Clearance {
+    /// An empty clearance: no cookie and no user-agent override.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the cookie and the user agent, either of which may be `None`.
+    ///
+    /// The pair is stored together because a cookie sent with the wrong user
+    /// agent is worse than no cookie at all: Cloudflare answers it with another
+    /// challenge instead of the page.
+    pub fn set(&self, cookie: Option<String>, user_agent: Option<String>) {
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.cookie = cookie;
+        inner.user_agent = user_agent;
+    }
+
+    fn set_user_agent(&self, user_agent: impl Into<String>) {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .user_agent = Some(user_agent.into());
+    }
+
+    fn set_cookie(&self, cookie: impl Into<String>) {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cookie = Some(cookie.into());
+    }
+
+    /// The pair a request sends, in the order every call site destructures:
+    /// `(user_agent, cookie)`. Keeping one order is what makes a swap
+    /// impossible; the two are only useful together.
+    fn snapshot(&self) -> (Option<String>, Option<String>) {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (inner.user_agent.clone(), inner.cookie.clone())
+    }
+}
+
 /// An HTTP client: a transport plus the request policy applied to it.
 ///
 /// Cheap to clone-free by reference and reusable across a whole download, the
@@ -191,14 +260,9 @@ pub struct Client {
     backend: backend::Transport,
     retry: Retry,
     rewrite: Option<UrlRewrite>,
-    /// Overrides the per-request `User-Agent` when set. Needed when a
-    /// `cf_clearance` cookie was issued to a browser: Cloudflare binds the
-    /// clearance to the user agent that earned it.
-    user_agent: Option<String>,
-    /// A raw `Cookie` header sent with every request. This is how a caller
-    /// reuses a browser's challenge clearance; the crate never obtains one
-    /// itself.
-    cookie: Option<String>,
+    /// Shared with every client in one download, so a refreshed clearance takes
+    /// effect without rebuilding the clients.
+    clearance: Clearance,
 }
 
 impl Client {
@@ -221,8 +285,7 @@ impl Client {
             backend: backend::Transport::new(timeout_ms),
             retry: Retry::default(),
             rewrite: None,
-            user_agent: None,
-            cookie: None,
+            clearance: Clearance::new(),
         }
     }
 
@@ -233,8 +296,8 @@ impl Client {
     /// `cf_clearance` cookie with [`Client::with_cookie`]: Cloudflare binds a
     /// clearance to the user agent that earned it.
     #[must_use]
-    pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
-        self.user_agent = Some(ua.into());
+    pub fn with_user_agent(self, ua: impl Into<String>) -> Self {
+        self.clearance.set_user_agent(ua);
         self
     }
 
@@ -247,31 +310,52 @@ impl Client {
     /// On `wasm32` the browser forbids setting this header, so the transport
     /// drops it; cookie handling belongs to the host's `fetch` there.
     #[must_use]
-    pub fn with_cookie(mut self, cookie: impl Into<String>) -> Self {
-        self.cookie = Some(cookie.into());
+    pub fn with_cookie(self, cookie: impl Into<String>) -> Self {
+        self.clearance.set_cookie(cookie);
         self
+    }
+
+    /// Read and update the clearance shared by this client and its clones.
+    ///
+    /// Use this to hand several clients the same clearance, or to refresh one
+    /// after a challenge without rebuilding the pipeline.
+    #[must_use]
+    pub fn with_clearance(mut self, clearance: Clearance) -> Self {
+        self.clearance = clearance;
+        self
+    }
+
+    /// The clearance this client reads.
+    #[must_use]
+    pub fn clearance(&self) -> Clearance {
+        self.clearance.clone()
     }
 
     /// Per-request headers after applying the client-wide user agent and
     /// cookie. A client-wide value replaces a same-named per-request header;
     /// everything else is passed through.
+    ///
+    /// `user_agent` and `cookie` are the snapshot the caller took from
+    /// [`Client::clearance`]; passing them in keeps the read lock off the
+    /// request path and lets a refresh land between attempts.
     fn headers<'a>(
-        &'a self,
         request: &[(&'a str, &'a str)],
         extra: &[(&'a str, &'a str)],
+        user_agent: Option<&'a str>,
+        cookie: Option<&'a str>,
     ) -> Vec<(&'a str, &'a str)> {
         let mut headers: Vec<(&str, &str)> = Vec::with_capacity(request.len() + extra.len() + 2);
-        let replace_ua = self.user_agent.is_some();
-        let replace_cookie = self.cookie.is_some();
+        let replace_ua = user_agent.is_some();
+        let replace_cookie = cookie.is_some();
         headers.extend(request.iter().copied().filter(|(name, _)| {
             (!replace_ua || !name.eq_ignore_ascii_case("user-agent"))
                 && (!replace_cookie || !name.eq_ignore_ascii_case("cookie"))
         }));
-        if let Some(ua) = self.user_agent.as_deref() {
+        if let Some(ua) = user_agent {
             headers.push(("User-Agent", ua));
         }
         headers.extend(extra.iter().copied());
-        if let Some(cookie) = self.cookie.as_deref() {
+        if let Some(cookie) = cookie {
             headers.push(("Cookie", cookie));
         }
         headers
@@ -371,7 +455,8 @@ impl Client {
         body: Option<&[u8]>,
     ) -> Result<FullResponse> {
         let url = self.url(url);
-        let merged = self.headers(headers, &[]);
+        let (user_agent, cookie) = self.clearance.snapshot();
+        let merged = Self::headers(headers, &[], user_agent.as_deref(), cookie.as_deref());
         let req = Request {
             method,
             url: &url,
@@ -466,7 +551,8 @@ impl Client {
             } else {
                 Vec::new()
             };
-            let merged = self.headers(headers, &extra);
+            let (user_agent, cookie) = self.clearance.snapshot();
+            let merged = Self::headers(headers, &extra, user_agent.as_deref(), cookie.as_deref());
             let req = Request {
                 method: "GET",
                 url: &url,
@@ -719,9 +805,12 @@ mod tests {
         let client = Client::api()
             .with_user_agent("Brave/156")
             .with_cookie("cf_clearance=abc");
-        let merged = client.headers(
+        let (user_agent, cookie) = client.clearance.snapshot();
+        let merged = Client::headers(
             &[("User-Agent", "Mozilla/5.0"), ("Accept", "*/*")],
             &[("Range", "bytes=0-")],
+            user_agent.as_deref(),
+            cookie.as_deref(),
         );
         assert!(merged.contains(&("User-Agent", "Brave/156")));
         assert!(!merged.contains(&("User-Agent", "Mozilla/5.0")));
@@ -734,13 +823,41 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn client_without_overrides_keeps_the_callers_user_agent() {
         let client = Client::api();
-        let merged = client.headers(&[("User-Agent", "Mozilla/5.0")], &[]);
+        let (user_agent, cookie) = client.clearance.snapshot();
+        let merged = Client::headers(
+            &[("User-Agent", "Mozilla/5.0")],
+            &[],
+            user_agent.as_deref(),
+            cookie.as_deref(),
+        );
         assert!(merged.contains(&("User-Agent", "Mozilla/5.0")));
         assert!(
             !merged
                 .iter()
                 .any(|(name, _)| name.eq_ignore_ascii_case("cookie"))
         );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_clearance_refresh_reaches_clients_built_from_the_same_handle() {
+        let clearance = Clearance::new();
+        let api = Client::api().with_clearance(clearance.clone());
+        let bulk = Client::bulk().with_clearance(clearance.clone());
+
+        clearance.set(Some("cf_clearance=new".into()), Some("Browser/1".into()));
+
+        for client in [&api, &bulk] {
+            let (user_agent, cookie) = client.clearance.snapshot();
+            let merged = Client::headers(
+                &[("User-Agent", "Mozilla/5.0")],
+                &[],
+                user_agent.as_deref(),
+                cookie.as_deref(),
+            );
+            assert!(merged.contains(&("User-Agent", "Browser/1")));
+            assert!(merged.contains(&("Cookie", "cf_clearance=new")));
+        }
     }
 
     /// Proxies are the native transport's concern: on `wasm32`

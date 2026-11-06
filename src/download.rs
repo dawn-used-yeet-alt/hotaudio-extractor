@@ -47,6 +47,56 @@ pub type ProgressFn<'a> = &'a mut dyn FnMut(Progress);
 /// A progress reporter that can be threaded through the pipeline.
 pub type ProgressSink<'a> = Option<ProgressFn<'a>>;
 
+/// How many times one download may refresh its handshake after a challenge.
+///
+/// A fresh page tick resets the server's key-window budget (see
+/// `docs/PROTOCOL.md`), so one refresh usually rides out a stall. Three is a
+/// bound, not a target: past that the network is genuinely blocked, and paging
+/// the challenge again only opens another browser window.
+pub const MAX_RENEWALS: u8 = 3;
+
+#[cfg(target_arch = "wasm32")]
+type RenewFn = Rc<dyn Fn() -> Result<Handshake>>;
+#[cfg(not(target_arch = "wasm32"))]
+type RenewFn = Arc<dyn Fn() -> Result<Handshake> + Send + Sync>;
+
+/// Rebuilds a [`Handshake`] after a Cloudflare challenge.
+///
+/// The callback is the caller's seam for refreshing whatever the challenge
+/// invalidated — a `cf_clearance` cookie, the page's `__ha_state` tick, or both
+/// — and returning a handshake for the same track. The pipeline calls it at
+/// most [`MAX_RENEWALS`] times per download and resumes at the key page that
+/// failed, so segments already decrypted are neither fetched nor decrypted
+/// again.
+///
+/// A refreshed handshake whose track key differs is rejected: mixing keys from
+/// two tracks would decrypt into noise.
+#[derive(Clone)]
+pub struct Renewal(RenewFn);
+
+impl Renewal {
+    /// Wrap `renew` as a reusable callback.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub fn new(renew: impl Fn() -> Result<Handshake> + 'static) -> Self {
+        Self(Rc::new(renew))
+    }
+
+    /// Wrap `renew` as a reusable callback.
+    ///
+    /// The native callback is `Send + Sync` so a binding can build it on a UI
+    /// thread and run the pipeline on a worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn new(renew: impl Fn() -> Result<Handshake> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(renew))
+    }
+
+    fn call(&self) -> Result<Handshake> {
+        (self.0)()
+    }
+}
+
 /// A cooperative cancellation token for a download.
 ///
 /// A cheap, cloneable handle over a `bool` the caller flips from wherever it
@@ -131,6 +181,10 @@ pub struct DownloadOptions<'a> {
     /// Cooperative cancellation, observed between segments and key pages.
     /// `None` (the default) runs to completion.
     pub cancel: Option<Cancel>,
+    /// Refresh the handshake after a challenge, so key paging resumes at the
+    /// failed segment instead of restarting the download. `None` propagates the
+    /// challenge.
+    pub renew: Option<Renewal>,
 }
 
 /// The decrypted track plus everything needed to reuse it.
@@ -219,18 +273,30 @@ impl<'a> Clients<'a> {
         if let Some(cancel) = &opts.cancel {
             cancel.check()?;
         }
-        let initial = listen::listen(self.api, hs, -1, opts.delay_ms).await?;
+        let mut pager = opts.pager(self.api, hs);
+        let initial = pager.listen(-1).await?;
         if initial.url.is_empty() {
             return Err(Error::Listen("listen API returned no .hax url".into()));
         }
-        check_hax_url(hs, &initial.url);
+        check_hax_url(pager.handshake(), &initial.url);
 
         let hax_bytes = fetch_container(self.bulk, &initial.url, opts).await?;
-        let mut downloaded = decrypt_container(self.api, hs, &hax_bytes, &initial, opts).await?;
+        let mut downloaded =
+            decrypt_container_with_pager(&mut pager, &hax_bytes, &initial, opts).await?;
         if opts.capture_hax {
             downloaded.hax_bytes = Some(hax_bytes);
         }
         Ok(downloaded)
+    }
+}
+
+impl DownloadOptions<'_> {
+    /// A pager carrying this run's politeness, cancellation and renewal policy.
+    fn pager<'a>(&self, client: &'a Client, hs: &Handshake) -> ListenPager<'a> {
+        ListenPager::new(client, hs)
+            .with_delay_ms(self.delay_ms)
+            .with_cancel(self.cancel.clone())
+            .with_renewal(self.renew.clone())
     }
 }
 
@@ -351,20 +417,26 @@ pub trait KeyPager {
 /// [`KeyPager`] over the encrypted listen API.
 pub struct ListenPager<'a> {
     client: &'a Client,
-    hs: &'a Handshake,
+    /// Owned rather than borrowed: a challenge refresh replaces the page tick
+    /// (and the X25519 session) while the rest of the download keeps its keys.
+    hs: Handshake,
     delay_ms: u64,
     cancel: Option<Cancel>,
+    renew: Option<Renewal>,
+    renewals_left: u8,
 }
 
 impl<'a> ListenPager<'a> {
     /// Page `hs`'s track through `client`.
     #[must_use]
-    pub fn new(client: &'a Client, hs: &'a Handshake) -> Self {
+    pub fn new(client: &'a Client, hs: &Handshake) -> Self {
         Self {
             client,
-            hs,
+            hs: hs.clone(),
             delay_ms: 0,
             cancel: None,
+            renew: None,
+            renewals_left: MAX_RENEWALS,
         }
     }
 
@@ -382,18 +454,75 @@ impl<'a> ListenPager<'a> {
         self.cancel = cancel;
         self
     }
+
+    /// Refresh the handshake when the listen endpoint answers with a challenge.
+    #[must_use]
+    pub fn with_renewal(mut self, renew: Option<Renewal>) -> Self {
+        self.renew = renew;
+        self
+    }
+
+    /// The handshake in use, which is the refreshed one after a renewal.
+    #[must_use]
+    pub fn handshake(&self) -> &Handshake {
+        &self.hs
+    }
+
+    /// Perform one listen call, refreshing the handshake once if the endpoint
+    /// answers with a challenge.
+    ///
+    /// A challenge here is usually the per-tick key-window budget running out,
+    /// not a permanent block: a fresh page has a wide window again. Keeping the
+    /// caller's key map means the download continues at the failed segment.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the listen error when no renewal is set or the budget is
+    /// exhausted, and the renewal callback's own error when refreshing fails.
+    pub async fn listen(&mut self, first: i64) -> Result<ListenResponse> {
+        if let Some(cancel) = &self.cancel {
+            cancel.check()?;
+        }
+        match listen::listen(self.client, &self.hs, first, self.delay_ms).await {
+            Ok(resp) => Ok(resp),
+            Err(Error::Challenge(detail)) if self.can_renew() => {
+                self.renew_handshake(&detail)?;
+                listen::listen(self.client, &self.hs, first, self.delay_ms).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn can_renew(&self) -> bool {
+        self.renew.is_some() && self.renewals_left > 0
+    }
+
+    fn renew_handshake(&mut self, detail: &str) -> Result<()> {
+        self.renewals_left -= 1;
+        crate::warn(&format!(
+            "{detail}; refreshing the browser clearance and page state \
+             ({} refresh(es) left)",
+            self.renewals_left
+        ));
+        let hs = {
+            let Some(renew) = &self.renew else {
+                return Ok(());
+            };
+            renew.call()?
+        };
+        if hs.track.key != self.hs.track.key {
+            return Err(Error::State(
+                "the refreshed page selects a different track; refusing to mix keys".into(),
+            ));
+        }
+        self.hs = hs;
+        Ok(())
+    }
 }
 
 impl KeyPager for ListenPager<'_> {
     async fn page(&mut self, idx: u32) -> Result<HashMap<String, String>> {
-        if let Some(cancel) = &self.cancel {
-            cancel.check()?;
-        }
-        Ok(
-            listen::listen(self.client, self.hs, i64::from(idx), self.delay_ms)
-                .await?
-                .keys,
-        )
+        Ok(self.listen(i64::from(idx)).await?.keys)
     }
 }
 
@@ -533,6 +662,28 @@ pub async fn decrypt_container(
     initial: &ListenResponse,
     opts: &mut DownloadOptions<'_>,
 ) -> Result<Downloaded> {
+    let mut pager = opts.pager(client, hs);
+    decrypt_container_with_pager(&mut pager, hax_bytes, initial, opts).await
+}
+
+/// Decrypt a container through an existing pager.
+///
+/// Splitting this from [`decrypt_container`] is what lets a full download reuse
+/// the pager that produced its initial listen response, so a challenge refresh
+/// replaces exactly one handshake and never re-pages a key branch the run
+/// already has.
+///
+/// # Errors
+///
+/// Propagates container parsing, key paging, decryption and cancellation
+/// errors; also [`Error::Protocol`] if a segment slice is out of range or the
+/// output is not MP4.
+pub async fn decrypt_container_with_pager(
+    pager: &mut ListenPager<'_>,
+    hax_bytes: &[u8],
+    initial: &ListenResponse,
+    opts: &mut DownloadOptions<'_>,
+) -> Result<Downloaded> {
     let hax = Hax0::parse(hax_bytes)?;
     let tree = KeyTree::new(hax.segment_count.max(1));
 
@@ -549,9 +700,6 @@ pub async fn decrypt_container(
     let mut audio: Vec<u8> =
         Vec::with_capacity((hax.file_length.saturating_sub(hax.header_length)) as usize + 64);
 
-    let mut pager = ListenPager::new(client, hs)
-        .with_delay_ms(opts.delay_ms)
-        .with_cancel(opts.cancel.clone());
     let mut page_count = 0u32;
     for i in 0..hax.segment_count as usize {
         // Between segments: a page request has its own check, but a segment
@@ -561,7 +709,7 @@ pub async fn decrypt_container(
             cancel.check()?;
         }
         let key = derive_or_page(
-            &mut pager,
+            pager,
             &tree,
             &mut keys,
             &mut cache,
@@ -591,7 +739,7 @@ pub async fn decrypt_container(
     ensure_mp4(&audio)?;
     Ok(Downloaded {
         audio,
-        title: Some(hs.track.title.clone()).filter(|t| !t.is_empty()),
+        title: Some(pager.handshake().track.title.clone()).filter(|t| !t.is_empty()),
         duration: hax.duration_ms as f64 / 1000.0,
         duration_ms: hax.duration_ms,
         mime: "audio/mp4",
@@ -634,6 +782,43 @@ pub async fn download_streaming(
     hs: &Handshake,
     initial_keys: Option<&crypto::KeyMap>,
     delay_ms: u64,
+    on_fragment: impl FnMut(&[u8]) -> Result<()>,
+    on_progress: Option<ProgressFn<'_>>,
+    cancel: Option<Cancel>,
+) -> Result<Streamed> {
+    download_streaming_renewing(
+        api_client,
+        hs,
+        initial_keys,
+        delay_ms,
+        None,
+        on_fragment,
+        on_progress,
+        cancel,
+    )
+    .await
+}
+
+/// [`download_streaming`] with a challenge-refresh callback.
+///
+/// The callback is called when the listen endpoint answers with a challenge,
+/// e.g. after the server's per-tick key-window budget is exhausted, and returns
+/// a fresh handshake for the same track. Decryption resumes at the segment that
+/// failed; fragments already handed to `on_fragment` are never replayed.
+///
+/// # Errors
+///
+/// Propagates listen, range-read, key-paging, decryption, `on_fragment`,
+/// renewal and cancellation errors; also [`Error::Listen`] if the listen
+/// response has no `.hax` URL, and [`Error::State`] if a renewal selects a
+/// different track.
+#[allow(clippy::too_many_arguments)]
+pub async fn download_streaming_renewing(
+    api_client: &Client,
+    hs: &Handshake,
+    initial_keys: Option<&crypto::KeyMap>,
+    delay_ms: u64,
+    renew: Option<Renewal>,
     mut on_fragment: impl FnMut(&[u8]) -> Result<()>,
     mut on_progress: Option<ProgressFn<'_>>,
     cancel: Option<Cancel>,
@@ -641,11 +826,15 @@ pub async fn download_streaming(
     if let Some(cancel) = &cancel {
         cancel.check()?;
     }
-    let initial = listen::listen(api_client, hs, -1, delay_ms).await?;
+    let mut pager = ListenPager::new(api_client, hs)
+        .with_delay_ms(delay_ms)
+        .with_cancel(cancel.clone())
+        .with_renewal(renew);
+    let initial = pager.listen(-1).await?;
     if initial.url.is_empty() {
         return Err(Error::Listen("listen API returned no .hax url".into()));
     }
-    check_hax_url(hs, &initial.url);
+    check_hax_url(pager.handshake(), &initial.url);
 
     // Small ranged reads belong on the timeout-bound client.
     let mut source = HttpRangeSource::new(api_client, &initial.url);
@@ -661,9 +850,6 @@ pub async fn download_streaming(
     }
 
     let mut written = 0u64;
-    let mut pager = ListenPager::new(api_client, hs)
-        .with_delay_ms(delay_ms)
-        .with_cancel(cancel.clone());
     let (keys, page_count) =
         range::decrypt_streaming(&source, &hax, &keys, &mut pager, |i, plain| {
             // Between segments: the page-request check inside the pager covers the

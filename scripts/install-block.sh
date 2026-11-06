@@ -32,7 +32,7 @@ end='<!-- install:end -->'
 render() {
   local target slug runner native label featured archive winpath
   printf '\n'
-  while IFS=$'\t' read -r target slug runner native label featured || [ -n "$target" ]; do
+  while IFS=$'\t' read -r target slug runner native label featured webview || [ -n "$target" ]; do
     case "$target" in '' | '#'*) continue ;; esac
 
     if [ "$featured" != true ]; then continue; fi
@@ -58,7 +58,7 @@ render() {
 
   printf '| Your system | Archive |\n'
   printf '| --- | --- |\n'
-  while IFS=$'\t' read -r target slug runner native label featured || [ -n "$target" ]; do
+  while IFS=$'\t' read -r target slug runner native label featured webview || [ -n "$target" ]; do
     case "$target" in '' | '#'*) continue ;; esac
     if [ "$runner" = windows-latest ]; then
       archive="hotaudio-download-${slug}.zip"

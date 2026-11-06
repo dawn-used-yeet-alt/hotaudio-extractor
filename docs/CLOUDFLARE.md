@@ -1,9 +1,49 @@
-# Cloudflare 
+# Cloudflare
 
-Hotaudio is behind Cloudflare. 
-So you first have to clear it in your browser and pass the cookie and UA to the cli. 
+Hotaudio is behind Cloudflare.
+So you first have to clear it in your browser and pass the cookie and UA to the CLI.
 
 ## Fix
+
+The simplest way is the bundled helper. It opens the track page in a real
+browser window and, once you have passed the challenge, hands the clearance
+back to the downloader:
+
+```bash
+hotaudio-download --webview 'https://hotaudio.net/u/user/track'
+```
+
+The helper is installed next to `hotaudio-download` by the release archives and
+`scripts/install.sh`. It waits up to five minutes by default; use
+`--webview-timeout SECS` to change that, and `HOTAUDIO_WEBVIEW` to point at a
+helper installed somewhere else. On a headless machine, pass the values by hand
+as below instead.
+
+A missing helper, webview toolkit or display is not fatal: the downloader warns
+and continues with any clearance you supplied, then falls back to the normal
+page re-handshake. The helper itself is a separate binary, so `hotaudio-download`
+never needs GTK/WebKit to start.
+
+The helper finishes on its own once the track page exposes `__ha_state`. Closing
+the window also finishes: it prints the browser's cookie and User-Agent, and if
+the page state was not captured the downloader re-fetches the page with that
+fresh clearance.
+
+The helper keeps its browser profile in the platform data directory
+(`~/.local/share/hotaudio-webview` on Linux, `%LOCALAPPDATA%` on Windows,
+`Application Support` on macOS), so a passed challenge can be reused on the next
+run. It drops the page cache before every run: a cached track page would
+otherwise hide a new challenge and leave the helper with no clearance to
+report.
+
+A run also re-handshakes by itself when key paging hits the site's per-tick
+key-window limit: the server answers with a challenge (or stalls the request),
+the downloader fetches a fresh page tick and resumes at the segment that
+failed. The existing clearance usually covers that page fetch, so no window
+opens; with `--webview`, the helper runs again only if the page itself is
+challenged.
+
+## By hand
 
 1. Open the track page in your browser and pass the challenge.
 2. Open DevTools (F12) → **Application** → **Cookies** → `https://hotaudio.net` (Firefox: **Storage** → **Cookies**) and copy the `cf_clearance` value.

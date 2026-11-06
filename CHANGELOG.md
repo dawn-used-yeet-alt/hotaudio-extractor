@@ -6,6 +6,46 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`--webview` clears Cloudflare in a real browser window.** The bundled
+  `hotaudio-webview` helper opens the track page, waits for the user to pass the
+  challenge, and returns that browser's `Cookie` header, exact User-Agent and
+  page state. A new shared `Clearance` handle lets a refresh reach every client
+  in the run without rebuilding the pipeline. The helper is built and shipped
+  with the desktop release archives only; the library and the web build are
+  unchanged. A missing helper or webview toolkit is non-fatal: the downloader
+  warns, keeps any supplied clearance, and continues with the normal page
+  re-handshake.
+
+### Fixed
+
+- **`hotaudio-webview` reports the browser even when the window is closed by
+  hand.** Closing the window used to end the event loop before anything was
+  printed, so the downloader saw empty output and fell back without a cookie.
+  The helper now finishes on close with the cookie and User-Agent it has, and
+  treats a missing `__ha_state` as recoverable: the downloader re-fetches the
+  page with the new clearance. Polling also recovers when a navigation drops an
+  in-flight script callback, which previously froze the snapshot loop after the
+  challenge redirected to the track page.
+
+- **A challenged key page resumes at the failed segment instead of ending the
+  run.** The site narrows its key-window budget per page tick and eventually
+  answers paging with a 403 or a stalled request. `DownloadOptions::renew` and
+  `download::Renewal` let the pager replace its handshake with a fresh page
+  tick, then retry the same `first`; the key map and already-decrypted segments
+  are preserved. The downloader always re-fetches the page first; with
+  `--webview`, a challenged page fetch falls back to the helper so a stale
+  clearance is renewed too. A refresh is refused if it selects a different
+  track.
+
+- **The webview helper reuses its cookie jar and never reports a cached page.**
+  The helper now keeps a persistent browser profile, so a passed challenge
+  survives the process that passed it, and deletes the page cache before every
+  run. A cached track page used to load without a Cloudflare challenge, leaving
+  the helper with no cookie to copy; it now always fetches the page from the
+  network when a clearance is needed.
+
 ### Changed
 
 - **Pinned player bundle follows build `A3ZqJBSY`.** The site re-minified

@@ -193,6 +193,14 @@ mkdir -p "$dir" || die "could not create $dir"
 cp "$src" "$dir/hotaudio-download" || die "could not write $dir/hotaudio-download"
 chmod 755 "$dir/hotaudio-download"
 
+# Desktop archives also carry the interactive Cloudflare helper. Static musl and
+# Android archives do not, so its absence is not an error.
+helper="$tmp/hotaudio-download-$slug/hotaudio-webview"
+if [ -f "$helper" ]; then
+  cp "$helper" "$dir/hotaudio-webview" || die "could not write $dir/hotaudio-webview"
+  chmod 755 "$dir/hotaudio-webview"
+fi
+
 version=$("$dir/hotaudio-download" --version 2>/dev/null || true)
 if [ -n "$version" ]; then
   printf 'Installed %s\n' "$version"

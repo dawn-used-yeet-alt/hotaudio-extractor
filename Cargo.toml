@@ -2,6 +2,9 @@
 name = "hotaudio-rs"
 version = "2.1.3"
 edition = "2024"
+# `cargo run` now has two bins (`hotaudio-download` and the optional
+# `hotaudio-webview`); the downloader is the one people mean.
+default-run = "hotaudio-download"
 # Also the floor for the dependency tree: several RustCrypto and ureq crates
 # declare the same MSRV. CI checks against this version.
 rust-version = "1.87"
@@ -33,10 +36,21 @@ path = "src/bin/download.rs"
 # should keep working; binding builds opt out with `default-features = false`.
 required-features = ["cli"]
 
+[[bin]]
+name = "hotaudio-webview"
+path = "src/bin/webview.rs"
+# Desktop only: `wry`/`tao` pull a platform webview (`WebKitGTK`, `WKWebView`,
+# `WebView2`). The flag is opt-in so the library and the plain CLI keep their
+# dependency graph and build on every release target.
+required-features = ["webview"]
+
 [features]
 default = ["cli"]
 # The binary. Its dependencies are optional, so they leave the library graph.
 cli = ["dep:clap", "dep:clap_complete", "dep:clap_mangen", "dep:ctrlc"]
+# The interactive Cloudflare-clearance helper (`hotaudio-webview`). Only the
+# desktop release archives enable it; see `docs/CLOUDFLARE.md`.
+webview = ["dep:wry", "dep:tao"]
 # Route diagnostics through the `log` facade instead of stderr/console. Off by
 # default so the CLI and the browser keep their zero-configuration behaviour;
 # the FFI crate enables it and installs the host's logger.
@@ -73,6 +87,13 @@ ctrlc = { version = "=3.5.2", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
 clap_mangen = { version = "0.3", optional = true }
+
+# Interactive Cloudflare clearance (`hotaudio-webview`). Both are optional and
+# native-only: the helper is a desktop escape hatch, not part of the library or
+# the browser build. `wry`'s default features select the platform webview plus
+# X11 on Linux; `tao` supplies the event loop and window.
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }
 
 # Browser transport. `getrandom/wasm_js` is what gives `EphemeralSecret::random`
 # a CSPRNG: the `wasm32-unknown-unknown` target has no default backend.

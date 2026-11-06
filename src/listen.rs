@@ -51,6 +51,10 @@ pub struct ListenResponse {
 }
 
 /// A completed handshake, reusable across every listen request for one track.
+///
+/// Cloneable because a challenge refresh swaps the page tick mid-download: the
+/// pager keeps its own copy and replaces it after re-reading the page.
+#[derive(Clone)]
 pub struct Handshake {
     pub state: PageState,
     pub tid: String,
@@ -111,8 +115,40 @@ pub fn handshake_from_html(
     let Some(state_b64) = extract_ha_state(html) else {
         return Ok(None);
     };
-    let state = decrypt_state(&state_b64).map_err(|e| Error::State(e.to_string()))?;
+    handshake_from_state_b64(&state_b64, api_base, track_id)
+}
 
+/// Build a handshake from the already-extracted `__ha_state` payload.
+///
+/// This is the webview path: the helper reads the page's variable after the
+/// challenge is cleared, so the downloader can rebuild the handshake without a
+/// second page fetch that might be gated again.
+///
+/// # Errors
+///
+/// Returns [`Error::State`] if the payload cannot be decrypted, or
+/// [`Error::Decode`] / [`Error::Protocol`] if its server key is malformed.
+pub fn handshake_from_state_b64(
+    state_b64: &str,
+    api_base: &str,
+    track_id: Option<&str>,
+) -> Result<Option<Handshake>> {
+    let state = decrypt_state(state_b64).map_err(|e| Error::State(e.to_string()))?;
+    handshake_from_state(state, api_base, track_id)
+}
+
+/// Build a handshake from a decrypted [`PageState`].
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] / [`Error::Protocol`] if the server key is
+/// malformed. A missing track is `Ok(None)`; callers that must distinguish an
+/// unreadable page from a missing track do so by looking at the HTML.
+pub fn handshake_from_state(
+    state: PageState,
+    api_base: &str,
+    track_id: Option<&str>,
+) -> Result<Option<Handshake>> {
     let tid = match track_id {
         Some(id) => id.to_string(),
         None => state
