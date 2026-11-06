@@ -6,6 +6,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **UniFFI: `set_clearance` and `clear_clearance` expose Cloudflare clearance.**
+  The bindings can now receive an interactive Cloudflare clearance
+  (`cf_clearance` cookie and matching `User-Agent`) captured from a host webview
+  (such as Android's `CookieManager` + `WebSettings.userAgentString`). The
+  clearance is held in process memory and automatically applied to every
+  subsequent network client (`track_keys`, `download_to_file`, `download_bytes`,
+  `download_cached_to_file`). An empty string clears that half;
+  `clear_clearance()` resets both.
+
 ## [2.2.0] - 2026-11-06
 
 ### Added

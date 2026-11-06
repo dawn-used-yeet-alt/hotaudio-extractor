@@ -59,14 +59,14 @@ use std::any::Any;
 use std::io::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once, RwLock};
+use std::sync::{Arc, LazyLock, Once, RwLock};
 
 use hotaudio::crypto::{Error as CoreError, KeyMap};
 use hotaudio::download::{
     self, Cancel, Clients, DownloadOptions as CoreDownloadOptions, Downloaded, Phase,
     Progress as CoreProgress, Streamed,
 };
-use hotaudio::http::Client;
+use hotaudio::http::{Clearance, Client};
 use hotaudio::{clock, listen};
 
 /// `UniFFI`'s error surface.
@@ -444,6 +444,42 @@ fn warn_if_not_canonical(page_url: &str) {
     }
 }
 
+static CLEARANCE: LazyLock<Clearance> = LazyLock::new(Clearance::new);
+
+fn api_client() -> Client {
+    Client::api().with_clearance(Clearance::clone(&CLEARANCE))
+}
+
+fn bulk_client() -> Client {
+    Client::bulk().with_clearance(Clearance::clone(&CLEARANCE))
+}
+
+/// Set the process-wide Cloudflare clearance (cookie and user agent).
+///
+/// Cloudflare binds `cf_clearance` to both the client IP and the exact
+/// `User-Agent` string that passed the challenge, so the two are stored and
+/// applied together. An empty string for either argument clears that half.
+///
+/// The clearance is held in process memory only and applied to every network
+/// request this crate makes ([`track_keys`], [`download_to_file`],
+/// [`download_bytes`], [`download_cached_to_file`]). Call [`clear_clearance`]
+/// to reset both.
+#[uniffi::export]
+pub fn set_clearance(cookie: String, user_agent: String) {
+    let cookie = (!cookie.is_empty()).then_some(cookie);
+    let user_agent = (!user_agent.is_empty()).then_some(user_agent);
+    CLEARANCE.set(cookie, user_agent);
+}
+
+/// Clear the process-wide Cloudflare clearance (both cookie and user agent).
+///
+/// Resets what subsequent network requests send to the default user agent and
+/// no `Cookie` header.
+#[uniffi::export]
+pub fn clear_clearance() {
+    CLEARANCE.set(None, None);
+}
+
 /// List the tracks on a track page, without any network call.
 ///
 /// Takes page HTML, not a URL: a host that already fetched the page does not
@@ -477,7 +513,7 @@ pub fn track_keys(
 ) -> Result<KeyEnvelope, FfiError> {
     guarded(|| {
         warn_if_not_canonical(&page_url);
-        let client = Client::api();
+        let client = api_client();
         let bundle = hotaudio::block_on(download::fetch_keys_only(
             &client,
             &page_url,
@@ -519,7 +555,7 @@ pub fn download_to_file(
         let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
 
-        let client = Client::api();
+        let client = api_client();
         let api_base = options
             .api_base
             .as_deref()
@@ -579,8 +615,8 @@ pub fn download_bytes(
         let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
 
-        let api = Client::api();
-        let bulk = Client::bulk();
+        let api = api_client();
+        let bulk = bulk_client();
         let clients = Clients {
             api: &api,
             bulk: &bulk,
@@ -625,7 +661,7 @@ pub fn download_cached_to_file(
         let saved = download::parse_saved_keys(&keys_json)?;
         let cancel = CancellationToken::to_cancel(cancel.as_ref());
         let mut callback = progress_sink(progress);
-        let client = Client::bulk();
+        let client = bulk_client();
         let downloaded = hotaudio::block_on(download::download_cached(
             &client,
             &hax_url,
@@ -822,4 +858,68 @@ pub extern "system" fn init_android_tls(
     use jni::errors::ThrowRuntimeExAndDefault;
     env.with_env(|env| rustls_platform_verifier::android::init_with_env(env, context))
         .resolve::<ThrowRuntimeExAndDefault>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearance_lifecycle_and_client_propagation() {
+        clear_clearance();
+        assert_eq!(CLEARANCE.snapshot(), (None, None));
+
+        set_clearance("cf_clearance=abc".to_string(), "TestAgent/1.0".to_string());
+        assert_eq!(
+            CLEARANCE.snapshot(),
+            (
+                Some("TestAgent/1.0".to_string()),
+                Some("cf_clearance=abc".to_string())
+            )
+        );
+
+        let api = api_client();
+        let bulk = bulk_client();
+        assert_eq!(
+            api.clearance().snapshot(),
+            (
+                Some("TestAgent/1.0".to_string()),
+                Some("cf_clearance=abc".to_string())
+            )
+        );
+        assert_eq!(
+            bulk.clearance().snapshot(),
+            (
+                Some("TestAgent/1.0".to_string()),
+                Some("cf_clearance=abc".to_string())
+            )
+        );
+
+        // Empty cookie clears that half while updating user agent.
+        set_clearance(String::new(), "TestAgent/2.0".to_string());
+        assert_eq!(
+            CLEARANCE.snapshot(),
+            (Some("TestAgent/2.0".to_string()), None)
+        );
+        assert_eq!(
+            api.clearance().snapshot(),
+            (Some("TestAgent/2.0".to_string()), None)
+        );
+
+        // Empty user agent clears that half while setting cookie.
+        set_clearance("cf_clearance=xyz".to_string(), String::new());
+        assert_eq!(
+            CLEARANCE.snapshot(),
+            (None, Some("cf_clearance=xyz".to_string()))
+        );
+        assert_eq!(
+            api.clearance().snapshot(),
+            (None, Some("cf_clearance=xyz".to_string()))
+        );
+
+        clear_clearance();
+        assert_eq!(CLEARANCE.snapshot(), (None, None));
+        assert_eq!(api.clearance().snapshot(), (None, None));
+        assert_eq!(bulk.clearance().snapshot(), (None, None));
+    }
 }

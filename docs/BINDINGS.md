@@ -34,6 +34,8 @@ All four languages expose the same functions:
 | `sign_payload(payload)` | `X-Signature` for the current time |
 | `sign_payload_at(payload, timestamp_secs)` | Pinned-clock signature |
 | `version()` | Binding crate version |
+| `set_clearance(cookie, user_agent)` | Set process-wide Cloudflare clearance |
+| `clear_clearance()` | Reset process-wide Cloudflare clearance |
 | `init_logging(listener)` | Route the crate's warnings to the host logger |
 
 `DownloadOptions` is a record with `track_id`, `api_base`, `delay_ms` and
@@ -45,6 +47,16 @@ thread and pass it to a call running on another. `ProgressListener` receives
 Only `download_to_file` streams. `download_bytes`, `download_cached_to_file`
 and the offline decrypts hold the container and the plaintext in memory
 (15–25 MB each), so prefer the file entry points on mobile.
+
+### Cloudflare clearance
+
+`set_clearance(cookie, user_agent)` sets the process-wide Cloudflare clearance
+cookie and User-Agent pair, captured from an in-app browser or WebView (for
+example Android's `CookieManager` + `WebSettings.userAgentString`). The pair is
+stored in process memory only and applied to every subsequent network client
+(`track_keys`, `download_to_file`, `download_bytes`, `download_cached_to_file`).
+Passing an empty string for either argument clears that half; `clear_clearance()`
+resets both.
 
 ### Errors
 
