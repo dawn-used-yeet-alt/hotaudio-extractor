@@ -83,6 +83,13 @@ Tip: you can also set `HOTAUDIO_COOKIE` and `HOTAUDIO_USER_AGENT` in your shell,
 6. Go to [what-is-my-user-agent](https://www.whatismybrowser.com/detect/what-is-my-user-agent/) and copy that.
 7. Copy the command from Linux part.
 
+## Bindings (Android, iOS, Python, Ruby)
+
+The UniFFI bindings expose `set_clearance(cookie, user_agent)` and
+`clear_clearance()` in process memory. Mobile apps can capture the cookie from an
+in-app WebView (e.g. Android's `CookieManager` + `WebSettings.userAgentString`)
+and pass them directly without shell environment variables. See `docs/BINDINGS.md`.
+
 ## Stopped working?
 
 Clearances are short lived and tied to your IP and browser. It breaks if you:

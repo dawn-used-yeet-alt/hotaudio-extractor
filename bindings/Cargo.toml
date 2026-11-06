@@ -10,7 +10,7 @@ members = ["hotaudio-ffi", "uniffi-bindgen"]
 # The bindings track stable Rust rather than the core's 1.87 floor: UniFFI's
 # codegen is a build-time tool, not code that ships inside the library.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/dawn-used-yeet-alt/hotaudio-extractor"

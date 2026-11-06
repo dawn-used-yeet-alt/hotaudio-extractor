@@ -243,7 +243,8 @@ impl Clearance {
     /// The pair a request sends, in the order every call site destructures:
     /// `(user_agent, cookie)`. Keeping one order is what makes a swap
     /// impossible; the two are only useful together.
-    fn snapshot(&self) -> (Option<String>, Option<String>) {
+    #[must_use]
+    pub fn snapshot(&self) -> (Option<String>, Option<String>) {
         let inner = self
             .inner
             .read()

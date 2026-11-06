@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use hotaudio_ffi::{
-    CancellationToken, DownloadOptions, FfiError, decrypt_hax, list_tracks, sign_payload_at,
-    version,
+    CancellationToken, DownloadOptions, FfiError, clear_clearance, decrypt_hax, list_tracks,
+    set_clearance, sign_payload_at, version,
 };
 
 const PAYLOAD: &str = r#"{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}"#;
@@ -55,6 +55,15 @@ fn options_are_optional_and_defaultable() {
     assert!(options.api_base.is_none());
     assert_eq!(options.delay_ms, 0);
     assert!(options.initial_keys_json.is_none());
+}
+
+#[test]
+fn clearance_smoke() {
+    set_clearance(
+        "cf_clearance=smoke".to_string(),
+        "SmokeAgent/1.0".to_string(),
+    );
+    clear_clearance();
 }
 
 #[test]
