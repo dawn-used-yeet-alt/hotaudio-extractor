@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-07
+
 ### Added
 
 - **CLI and webview: IP family detection, `--ip-family` flag, and dual-stack fallback.**
@@ -28,6 +30,18 @@ All notable changes to this project are documented here. Format follows
   subsequent network client (`track_keys`, `download_to_file`, `download_bytes`,
   `download_cached_to_file`). An empty string clears that half;
   `clear_clearance()` resets both.
+- **UniFFI downloads renew the page handshake automatically.** `download_to_file`
+  and `download_bytes` now install a `download::Renewal`, so a key-window
+  challenge mid-transfer refreshes the page tick and resumes the same segment
+  instead of failing the download.
+
+### Fixed
+
+- **HTTP 429 is retried with a rate-limit-aware backoff.** Small API clients now
+  make four attempts, and a 429 waits at least 2 s (growing by another 2 s per
+  retry, capped at 15 s) instead of the generic 1 s backoff. A rate-limited
+  listen page also renews the page handshake before retrying, rather than
+  treating it as a permanent failure.
 
 ## [2.2.0] - 2026-11-06
 
@@ -704,7 +718,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.1.3...v2.2.0
 [2.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.1...v1.2.2
