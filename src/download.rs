@@ -489,6 +489,10 @@ impl<'a> ListenPager<'a> {
                 self.renew_handshake(&detail)?;
                 listen::listen(self.client, &self.hs, first, self.delay_ms).await
             }
+            Err(Error::Listen(detail)) if detail.contains("429") && self.can_renew() => {
+                self.renew_handshake(&detail)?;
+                listen::listen(self.client, &self.hs, first, self.delay_ms).await
+            }
             Err(err) => Err(err),
         }
     }

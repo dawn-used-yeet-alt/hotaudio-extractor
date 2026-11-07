@@ -304,7 +304,11 @@ impl Client {
     /// Client for small API calls: 30 s per-attempt timeout.
     #[must_use]
     pub fn api() -> Self {
-        Self::with_timeout_ms(Some(API_TIMEOUT_MS))
+        Self::with_timeout_ms(Some(API_TIMEOUT_MS)).with_retries(Retry {
+            attempts: 4,
+            base_delay_ms: 1000,
+            max_delay_ms: 15_000,
+        })
     }
 
     /// Client for bulk `.hax` transfers: no global timeout.
@@ -512,10 +516,15 @@ impl Client {
                     if attempt == attempts {
                         return Ok(resp);
                     }
-                    let wait = self
-                        .retry
-                        .backoff(attempt, resp.header("retry-after"))
-                        .min(self.retry.remaining(started));
+                    let delay = if resp.status == 429 {
+                        let base_429 = Duration::from_millis(2000 * attempt as u64);
+                        self.retry
+                            .backoff(attempt, resp.header("retry-after"))
+                            .max(base_429)
+                    } else {
+                        self.retry.backoff(attempt, resp.header("retry-after"))
+                    };
+                    let wait = delay.min(self.retry.remaining(started));
                     clock::sleep(wait).await;
                 }
                 Err(err) => {
