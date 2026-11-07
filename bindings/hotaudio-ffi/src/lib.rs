@@ -574,11 +574,11 @@ pub fn download_to_file(
         ))?;
         let title = track_title(&handshake);
 
-        let renew_client = client.clone();
         let renew_url = page_url.clone();
         let renew_base = api_base.to_string();
         let renew_tid = options.track_id.clone();
         let renewal = download::Renewal::new(move || {
+            let renew_client = api_client();
             hotaudio::block_on(listen::load_handshake(
                 &renew_client,
                 &renew_url,
@@ -641,7 +641,6 @@ pub fn download_bytes(
             api: &api,
             bulk: &bulk,
         };
-        let renew_client = api.clone();
         let renew_url = page_url.clone();
         let renew_base = options
             .api_base
@@ -650,6 +649,7 @@ pub fn download_bytes(
             .to_string();
         let renew_tid = options.track_id.clone();
         let renewal = download::Renewal::new(move || {
+            let renew_client = api_client();
             hotaudio::block_on(listen::load_handshake(
                 &renew_client,
                 &renew_url,
