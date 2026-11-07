@@ -5,14 +5,19 @@
 //! one connection doing one request at a time is as fast as anything more
 //! elaborate and far easier to reason about (see `docs/ARCHITECTURE.md`).
 
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{PoisonError, RwLock};
+
 use ureq::{Agent, Proxy, ProxyProtocol};
 
 use crate::crypto::{Error, Result};
 use crate::http::{FullResponse, Head, Request};
 
 pub(super) struct Transport {
-    agent: Agent,
+    agent: RwLock<Agent>,
+    last_ip_family: AtomicU8,
     timeout_ms: Option<u64>,
+    proxy: Option<Proxy>,
 }
 
 // The shared client awaits these; this blocking backend has nothing to await,
@@ -20,9 +25,13 @@ pub(super) struct Transport {
 #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
 impl Transport {
     pub(super) fn new(timeout_ms: Option<u64>) -> Self {
+        let proxy = Proxy::try_from_env();
+        let family = crate::http::current_ip_family_code();
         Self {
-            agent: build_agent(timeout_ms, Proxy::try_from_env()),
+            agent: RwLock::new(build_agent(timeout_ms, proxy.clone())),
+            last_ip_family: AtomicU8::new(family),
             timeout_ms,
+            proxy,
         }
     }
 
@@ -45,9 +54,12 @@ impl Transport {
                  use an http(s) proxy"
             )));
         }
+        let family = crate::http::current_ip_family_code();
         Ok(Self {
-            agent: build_agent(self.timeout_ms, Some(parsed)),
+            agent: RwLock::new(build_agent(self.timeout_ms, Some(parsed.clone()))),
+            last_ip_family: AtomicU8::new(family),
             timeout_ms: self.timeout_ms,
+            proxy: Some(parsed),
         })
     }
 
@@ -91,17 +103,30 @@ impl Transport {
         ))
     }
 
+    fn sync_agent(&self) {
+        let current = crate::http::current_ip_family_code();
+        if current != self.last_ip_family.load(Ordering::Relaxed) {
+            let mut agent = self.agent.write().unwrap_or_else(PoisonError::into_inner);
+            if current != self.last_ip_family.load(Ordering::Relaxed) {
+                *agent = build_agent(self.timeout_ms, self.proxy.clone());
+                self.last_ip_family.store(current, Ordering::Relaxed);
+            }
+        }
+    }
+
     fn dispatch(&self, req: &Request<'_>) -> Result<ureq::http::Response<ureq::Body>> {
+        self.sync_agent();
+        let agent = self.agent.read().unwrap_or_else(PoisonError::into_inner);
         // ureq 3 is typed: GET uses the no-body builder, anything else the body
         // one.
         let raw = if req.method.eq_ignore_ascii_case("GET") {
-            let mut b = self.agent.get(req.url);
+            let mut b = agent.get(req.url);
             for (k, v) in req.headers {
                 b = b.header(*k, *v);
             }
             b.call()
         } else {
-            let mut b = self.agent.post(req.url);
+            let mut b = agent.post(req.url);
             for (k, v) in req.headers {
                 b = b.header(*k, *v);
             }

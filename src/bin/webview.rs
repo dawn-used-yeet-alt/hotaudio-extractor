@@ -26,7 +26,6 @@ use tao::event_loop::{ControlFlow, EventLoop};
 use tao::window::{Window, WindowBuilder};
 use wry::{WebContext, WebView, WebViewBuilder};
 
-const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// How long one script evaluation may stay outstanding before the next poll is
 /// allowed anyway.
@@ -54,25 +53,43 @@ struct Snapshot {
     user_agent: String,
     #[serde(default)]
     url: String,
+    #[serde(default, rename = "ipFamily")]
+    ip_family: Option<String>,
 }
 
 /// Read the page globals. Returning an object (not a string) lets wry hand the
 /// callback one JSON value instead of a doubly encoded one.
 const SCRIPT: &str = r#"(() => {
+    if (location.hostname.endsWith("hotaudio.net") && !window.__ha_ip_family && !window.__ha_ip_fetching) {
+        window.__ha_ip_fetching = true;
+        fetch("/cdn-cgi/trace")
+            .then(r => r.text())
+            .then(t => {
+                const m = t.match(/^ip=(.+)$/m);
+                if (m) {
+                    const ip = m[1].trim();
+                    window.__ha_ip_family = ip.includes(":") ? "ipv6" : (ip.includes(".") ? "ipv4" : null);
+                }
+            })
+            .catch(() => {
+                window.__ha_ip_fetching = false;
+            });
+    }
     try {
         return {
             state: (typeof __ha_state === "string" ? __ha_state : null),
             title: document.title || "",
             userAgent: navigator.userAgent || "",
-            url: location.href || ""
+            url: location.href || "",
+            ipFamily: window.__ha_ip_family || null
         };
     } catch (e) {
-        return { state: null, title: String(e), userAgent: "", url: "" };
+        return { state: null, title: String(e), userAgent: "", url: "", ipFamily: null };
     }
 })()"#;
 
 fn main() -> ExitCode {
-    let (url, timeout_secs) = match parse_args(std::env::args().skip(1)) {
+    let (url, timeout) = match parse_args(std::env::args().skip(1)) {
         Ok(pair) => pair,
         Err(message) => {
             eprintln!("error: {message}\n\n{USAGE}");
@@ -80,7 +97,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&url, Duration::from_secs(timeout_secs)) {
+    match run(&url, timeout) {
         Ok(json) => {
             println!("{json}");
             ExitCode::SUCCESS
@@ -92,9 +109,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, u64), String> {
+fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, Option<Duration>), String> {
     let mut url = None;
-    let mut timeout_secs = DEFAULT_TIMEOUT_SECS;
+    let mut timeout = None;
     let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -108,12 +125,14 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, u64), Strin
                 let value = args
                     .next()
                     .ok_or_else(|| "--timeout needs a value".to_string())?;
-                timeout_secs = value
-                    .parse()
-                    .map_err(|_| format!("--timeout must be a positive integer, got {value}"))?;
-                if timeout_secs == 0 {
-                    return Err("--timeout must be at least 1 second".into());
-                }
+                let secs: u64 = value.parse().map_err(|_| {
+                    format!("--timeout must be a non-negative integer, got {value}")
+                })?;
+                timeout = if secs == 0 {
+                    None
+                } else {
+                    Some(Duration::from_secs(secs))
+                };
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -123,7 +142,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(String, u64), Strin
         }
     }
     let url = url.ok_or_else(|| "--url is required".to_string())?;
-    Ok((url, timeout_secs))
+    Ok((url, timeout))
 }
 
 /// Where the helper keeps the browser's cookie jar and cache.
@@ -188,14 +207,14 @@ fn open(event_loop: &EventLoop<()>, url: &str) -> Result<(Window, WebContext, We
     Ok((window, context, webview))
 }
 
-fn run(url: &str, timeout: Duration) -> Result<String, String> {
+fn run(url: &str, timeout: Option<Duration>) -> Result<String, String> {
     // The event loop closure is `'static`, so own the URL before it is built.
     let url = url.to_string();
     let event_loop = EventLoop::new();
     let (window, context, webview) = open(&event_loop, &url)?;
 
     let (tx, rx) = mpsc::channel::<String>();
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.map(|t| Instant::now() + t);
     let mut next_poll = Instant::now();
     let mut in_flight_since: Option<Instant> = None;
     let mut last_title = String::new();
@@ -253,12 +272,14 @@ fn run(url: &str, timeout: Duration) -> Result<String, String> {
             }
         }
 
-        if Instant::now() >= deadline {
-            eprintln!(
-                "error: the challenge was not cleared within {} seconds",
-                timeout.as_secs()
-            );
-            std::process::exit(1);
+        if let Some(deadline) = deadline {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "error: the challenge was not cleared within {} seconds",
+                    timeout.map_or(0, |t| t.as_secs())
+                );
+                std::process::exit(1);
+            }
         }
 
         // A poll whose callback was dropped by a navigation must not freeze the
@@ -345,6 +366,7 @@ fn finish(
         "userAgent": &snapshot.user_agent,
         "state": state,
         "url": reported_url,
+        "ipFamily": snapshot.ip_family.as_deref(),
     })
     .to_string())
 }

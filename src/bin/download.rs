@@ -58,9 +58,9 @@ Exit status:
 
 Config file:
   A flat TOML file of 'key = value' lines. Recognised keys: output_dir,
-  filename_template, api_base, proxy, cookie, user_agent, retries, timeout
-  (seconds), delay (milliseconds). Command-line flags override the file; an
-  absent default file is not an error.";
+  filename_template, api_base, proxy, cookie, user_agent, ip_family, retries,
+  timeout (seconds), delay (milliseconds). Command-line flags override the file;
+  an absent default file is not an error.";
 
 /// Printed after a [`Error::Challenge`] so the next attempt can actually pass
 /// the gate: the cookie and the user agent are a pair, not independent options.
@@ -191,13 +191,17 @@ struct Cli {
     #[arg(long, value_name = "UA")]
     user_agent: Option<String>,
 
+    /// IP family to use for network connections ('any', 'ipv4', or 'ipv6')
+    #[arg(long, value_name = "FAMILY", value_parser = ["any", "ipv4", "ipv6"])]
+    ip_family: Option<String>,
+
     /// Open the track page in a browser window to clear the Cloudflare
     /// challenge, then use that browser's cookie, User-Agent and page state
     #[arg(long)]
     webview: bool,
 
-    /// How long `--webview` waits for the challenge, in seconds
-    #[arg(long, value_name = "SECS", requires = "webview", default_value_t = 300)]
+    /// How long `--webview` waits for the challenge, in seconds (default: 0, no timeout)
+    #[arg(long, value_name = "SECS", requires = "webview", default_value_t = 0)]
     webview_timeout: u64,
 
     /// Retry a failed request up to N times (default 2)
@@ -380,6 +384,11 @@ fn proactive_webview(
         Ok(payload) => {
             *cookie = Some(payload.cookie);
             *user_agent = Some(payload.user_agent);
+            if let Some(ref family) = payload.ip_family {
+                if !hotaudio::http::is_ip_family_pinned() {
+                    hotaudio::http::set_global_ip_family(family);
+                }
+            }
             Ok(true)
         }
         Err(e) => {
@@ -499,6 +508,15 @@ fn run() -> ExitCode {
     let progress_json = cli.progress.as_deref() == Some("json");
 
     let (mut cookie, mut user_agent) = identity(&cli, &config);
+
+    let ip_family = cli
+        .ip_family
+        .clone()
+        .or_else(|| env_value("HOTAUDIO_IP_FAMILY"))
+        .or_else(|| config.ip_family.clone());
+    if let Some(family) = &ip_family {
+        hotaudio::http::set_global_ip_family(family);
+    }
 
     let sources = match validated_sources(&cli) {
         Ok(sources) => sources,
@@ -1216,6 +1234,11 @@ impl Run {
                         Some(payload.cookie.clone()),
                         Some(payload.user_agent.clone()),
                     );
+                    if let Some(ref family) = payload.ip_family {
+                        if !hotaudio::http::is_ip_family_pinned() {
+                            hotaudio::http::set_global_ip_family(family);
+                        }
+                    }
                     if payload.state.is_some() {
                         handshake_from_payload(&payload, base, track_id.as_deref(), &source)
                     } else {
@@ -1258,6 +1281,9 @@ struct ClearancePayload {
     /// The final page URL, after any challenge redirect.
     #[allow(dead_code)]
     url: String,
+    /// The IP family used by the webview ("ipv4" or "ipv6"), if detected.
+    #[serde(default, rename = "ipFamily")]
+    ip_family: Option<String>,
 }
 
 /// Rebuild a handshake from a webview snapshot.
@@ -1285,11 +1311,12 @@ fn handshake_from_payload(
 #[cfg(feature = "webview")]
 fn run_webview(url: &str, timeout_secs: u64) -> Result<ClearancePayload, Error> {
     let exe = webview_exe()?;
-    let output = std::process::Command::new(&exe)
-        .arg("--url")
-        .arg(url)
-        .arg("--timeout")
-        .arg(timeout_secs.to_string())
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--url").arg(url);
+    if timeout_secs > 0 {
+        cmd.arg("--timeout").arg(timeout_secs.to_string());
+    }
+    let output = cmd
         .output()
         .map_err(|e| Error::Io(format!("cannot run {}: {e}", exe.display())))?;
     if !output.status.success() {
@@ -1691,6 +1718,7 @@ struct Config {
     proxy: Option<String>,
     cookie: Option<String>,
     user_agent: Option<String>,
+    ip_family: Option<String>,
     retries: Option<usize>,
     timeout_secs: Option<u64>,
     delay_ms: Option<u64>,
@@ -1752,6 +1780,18 @@ impl Config {
                 "proxy" => config.proxy = Some(parse_string(value, key, line_no)?),
                 "cookie" => config.cookie = Some(parse_string(value, key, line_no)?),
                 "user_agent" => config.user_agent = Some(parse_string(value, key, line_no)?),
+                "ip_family" => {
+                    let family = parse_string(value, key, line_no)?;
+                    if !matches!(
+                        family.to_ascii_lowercase().as_str(),
+                        "any" | "ipv4" | "ipv6"
+                    ) {
+                        return Err(format!(
+                            "line {line_no}: ip_family must be 'any', 'ipv4' or 'ipv6', got '{family}'"
+                        ));
+                    }
+                    config.ip_family = Some(family);
+                }
                 "retries" => {
                     let retries = parse_uint(value, key, line_no)?;
                     config.retries = Some(usize::try_from(retries).map_err(|_| {
@@ -1763,8 +1803,8 @@ impl Config {
                 other => {
                     return Err(format!(
                         "line {line_no}: unknown key '{other}' (expected output_dir, \
-                         filename_template, api_base, proxy, cookie, user_agent, retries, \
-                         timeout or delay)"
+                         filename_template, api_base, proxy, cookie, user_agent, ip_family, \
+                         retries, timeout or delay)"
                     ));
                 }
             }
@@ -2268,6 +2308,10 @@ mod tests {
         assert!(parse(&["-v"]).is_ok());
         assert!(parse(&["--json"]).is_ok());
         assert!(parse(&["--progress", "json"]).is_ok());
+        assert!(parse(&["--ip-family", "ipv4"]).is_ok());
+        assert!(parse(&["--ip-family", "ipv6"]).is_ok());
+        assert!(parse(&["--ip-family", "any"]).is_ok());
+        assert!(parse(&["--ip-family", "ipv5"]).is_err());
         // Inline JSON is a value, not a flag.
         assert!(parse(&["--keys", "{\"a\":1}"]).is_ok());
     }
@@ -2753,6 +2797,7 @@ mod tests {
              proxy = \"http://127.0.0.1:8080\"\n\
              cookie = \"cf_clearance=abc\"\n\
              user_agent = \"Mozilla/5.0 (X11; Linux x86_64) Chrome/156.0.0.0\"\n\
+             ip_family = \"ipv6\"\n\
              retries = 4\n\
              timeout = 60\n\
              delay = 250\n",
@@ -2767,6 +2812,7 @@ mod tests {
             cfg.user_agent.as_deref(),
             Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/156.0.0.0")
         );
+        assert_eq!(cfg.ip_family.as_deref(), Some("ipv6"));
         assert_eq!(cfg.retries, Some(4));
         assert_eq!(cfg.timeout_secs, Some(60));
         assert_eq!(cfg.delay_ms, Some(250));

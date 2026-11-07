@@ -108,12 +108,18 @@ hotaudio-download "$URL" \
 win over the environment, which wins over the config file.
 
 `--webview` is the shortcut: the bundled `hotaudio-webview` helper opens the
-track page in a real window, waits for the challenge (up to
-`--webview-timeout SECS`, default 300), and returns that browser's cookie,
-User-Agent and page state. If the helper or a webview toolkit is unavailable,
+track page in a real window, waits for the challenge (optionally bounded by
+`--webview-timeout SECS`, default 0 for no timeout), and returns that browser's cookie,
+User-Agent, page state and detected IP family. If the helper or a webview toolkit is unavailable,
 the run warns and continues rather than aborting. The extractor never solves or
 bypasses a challenge itself; the helper is an interactive browser the user
 drives.
+
+Dual-stack networks: Cloudflare binds `cf_clearance` to the IP family (IPv4 or IPv6)
+used during the challenge. The webview automatically detects this and configures the
+downloader to match. You can also explicitly set `--ip-family` (`any`, `ipv4`, or `ipv6`)
+or `HOTAUDIO_IP_FAMILY`. When unset, challenged requests on dual-stack automatically try
+the alternate IP family before falling back.
 
 Separately, a download that hits the site's per-tick key-window limit
 re-handshakes automatically: it re-reads the page for a fresh tick and resumes

@@ -268,23 +268,52 @@ pub fn set_global_ip_family(family: &str) {
     IP_FAMILY.store(code, Ordering::Relaxed);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn get_global_ip_family() -> ureq::config::IpFamily {
-    match IP_FAMILY.load(Ordering::Relaxed) {
-        1 => return ureq::config::IpFamily::Ipv4Only,
-        2 => return ureq::config::IpFamily::Ipv6Only,
-        3 => return ureq::config::IpFamily::Any,
-        _ => {}
+pub fn current_ip_family_code() -> u8 {
+    let code = IP_FAMILY.load(Ordering::Relaxed);
+    if code != 0 {
+        return code;
     }
     if let Ok(val) = std::env::var("HOTAUDIO_IP_FAMILY") {
         return match val.trim().to_ascii_lowercase().as_str() {
-            "ipv4" | "v4" | "4" => ureq::config::IpFamily::Ipv4Only,
-            "ipv6" | "v6" | "6" => ureq::config::IpFamily::Ipv6Only,
-            _ => ureq::config::IpFamily::Any,
+            "ipv4" | "v4" | "4" => 1,
+            "ipv6" | "v6" | "6" => 2,
+            _ => 3,
         };
     }
-    ureq::config::IpFamily::Any
+    3
+}
+
+#[must_use]
+pub fn is_ip_family_pinned() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        true
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let code = IP_FAMILY.load(Ordering::Relaxed);
+        if code == 1 || code == 2 {
+            return true;
+        }
+        if let Ok(val) = std::env::var("HOTAUDIO_IP_FAMILY") {
+            return matches!(
+                val.trim().to_ascii_lowercase().as_str(),
+                "ipv4" | "v4" | "4" | "ipv6" | "v6" | "6"
+            );
+        }
+        false
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn get_global_ip_family() -> ureq::config::IpFamily {
+    match current_ip_family_code() {
+        1 => ureq::config::IpFamily::Ipv4Only,
+        2 => ureq::config::IpFamily::Ipv6Only,
+        _ => ureq::config::IpFamily::Any,
+    }
 }
 
 /// An HTTP client: a transport plus the request policy applied to it.
@@ -509,6 +538,22 @@ impl Client {
             let started = clock::monotonic_ms();
             match self.backend.send(&req).await {
                 Ok(resp) => {
+                    if resp.challenge().is_some() && !is_ip_family_pinned() {
+                        let current = current_ip_family_code();
+                        let alternate = if current == 2 { "ipv4" } else { "ipv6" };
+                        set_global_ip_family(alternate);
+                        if let Ok(alt_resp) = self.backend.send(&req).await {
+                            if alt_resp.challenge().is_none() {
+                                return Ok(alt_resp);
+                            }
+                        }
+                        let orig = match current {
+                            1 => "ipv4",
+                            2 => "ipv6",
+                            _ => "any",
+                        };
+                        set_global_ip_family(orig);
+                    }
                     if !is_retryable(resp.status) {
                         return Ok(resp);
                     }
