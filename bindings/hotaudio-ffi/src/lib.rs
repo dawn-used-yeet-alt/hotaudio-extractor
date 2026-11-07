@@ -574,12 +574,26 @@ pub fn download_to_file(
         ))?;
         let title = track_title(&handshake);
 
+        let renew_client = client.clone();
+        let renew_url = page_url.clone();
+        let renew_base = api_base.to_string();
+        let renew_tid = options.track_id.clone();
+        let renewal = download::Renewal::new(move || {
+            hotaudio::block_on(listen::load_handshake(
+                &renew_client,
+                &renew_url,
+                &renew_base,
+                renew_tid.as_deref(),
+            ))
+        });
+
         let mut file = std::fs::File::create(&path).map_err(io_error)?;
-        let result = hotaudio::block_on(download::download_streaming(
+        let result = hotaudio::block_on(download::download_streaming_renewing(
             &client,
             &handshake,
             initial_keys.as_ref(),
             options.delay_ms,
+            Some(renewal),
             |fragment| {
                 file.write_all(fragment)
                     .map_err(|error| CoreError::Io(error.to_string()))
@@ -627,6 +641,23 @@ pub fn download_bytes(
             api: &api,
             bulk: &bulk,
         };
+        let renew_client = api.clone();
+        let renew_url = page_url.clone();
+        let renew_base = options
+            .api_base
+            .as_deref()
+            .unwrap_or(hotaudio::HOTAUDIO_API_BASE)
+            .to_string();
+        let renew_tid = options.track_id.clone();
+        let renewal = download::Renewal::new(move || {
+            hotaudio::block_on(listen::load_handshake(
+                &renew_client,
+                &renew_url,
+                &renew_base,
+                renew_tid.as_deref(),
+            ))
+        });
+
         let mut core_options = CoreDownloadOptions {
             initial_keys,
             on_progress: sink(&mut callback),
@@ -634,6 +665,7 @@ pub fn download_bytes(
             track_id: options.track_id.as_deref(),
             delay_ms: options.delay_ms,
             cancel,
+            renew: Some(renewal),
             ..CoreDownloadOptions::default()
         };
         let downloaded =

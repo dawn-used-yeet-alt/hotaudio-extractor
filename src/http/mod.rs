@@ -512,13 +512,10 @@ impl Client {
                     if attempt == attempts {
                         return Ok(resp);
                     }
-                    let delay = self.retry.backoff(attempt, resp.header("retry-after"));
-                    let backoff = if resp.status == 429 {
-                        delay.max(Duration::from_millis(1500 * attempt as u64))
-                    } else {
-                        delay
-                    };
-                    let wait = backoff.min(self.retry.remaining(started));
+                    let wait = self
+                        .retry
+                        .backoff(attempt, resp.header("retry-after"))
+                        .min(self.retry.remaining(started));
                     clock::sleep(wait).await;
                 }
                 Err(err) => {
