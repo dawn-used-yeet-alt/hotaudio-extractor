@@ -8,6 +8,15 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **CLI and webview: IP family detection, `--ip-family` flag, and dual-stack fallback.**
+  The `hotaudio-webview` helper now queries `/cdn-cgi/trace` to detect whether the
+  challenge was cleared over IPv4 or IPv6 and reports `ipFamily` in its clearance
+  payload. The downloader applies this stack automatically, supports the `--ip-family`
+  flag and `ip_family` in `config.toml`, and automatically retries with the alternate IP
+  family on dual-stack networks if a request is challenged.
+- **Webview: no timeout by default.** Webview helper now waits indefinitely by default
+  unless an explicit non-zero `--timeout` / `--webview-timeout` is given, avoiding
+  unexpected timeout aborts while solving challenges.
 - **UniFFI: `set_ip_family` and `HOTAUDIO_IP_FAMILY` support.** Configure
   the process-wide IP family ("ipv4", "ipv6", or "any") to match the network
   stack of the clearance provider and avoid dual-stack IP mismatch challenges.

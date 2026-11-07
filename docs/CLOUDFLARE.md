@@ -14,10 +14,12 @@ hotaudio-download --webview 'https://hotaudio.net/u/user/track'
 ```
 
 The helper is installed next to `hotaudio-download` by the release archives and
-`scripts/install.sh`. It waits up to five minutes by default; use
-`--webview-timeout SECS` to change that, and `HOTAUDIO_WEBVIEW` to point at a
+`scripts/install.sh`. It waits indefinitely by default (close the window to finish or cancel);
+use `--webview-timeout SECS` to bound it, and `HOTAUDIO_WEBVIEW` to point at a
 helper installed somewhere else. On a headless machine, pass the values by hand
-as below instead.
+as below instead. On dual-stack networks, the helper also detects whether IPv4 or IPv6
+was used to clear the challenge and instructs the downloader to match it, avoiding IP
+mismatch re-challenges.
 
 A missing helper, webview toolkit or display is not fatal: the downloader warns
 and continues with any clearance you supplied, then falls back to the normal
