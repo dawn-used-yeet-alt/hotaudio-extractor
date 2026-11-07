@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use hotaudio_ffi::{
     CancellationToken, DownloadOptions, FfiError, clear_clearance, decrypt_hax, list_tracks,
-    set_clearance, sign_payload_at, version,
+    set_clearance, set_ip_family, sign_payload_at, version,
 };
 
 const PAYLOAD: &str = r#"{"tid":"1","pid":"2","key":"k","tick":"t","first":-1}"#;
@@ -64,6 +64,8 @@ fn clearance_smoke() {
         "SmokeAgent/1.0".to_string(),
     );
     clear_clearance();
+    set_ip_family("ipv4".to_string());
+    set_ip_family("any".to_string());
 }
 
 #[test]

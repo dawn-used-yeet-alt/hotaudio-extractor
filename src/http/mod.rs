@@ -22,6 +22,7 @@
 //! `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables, and
 //! [`Client::with_proxy`] overrides them. The browser uses its own settings.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -251,6 +252,39 @@ impl Clearance {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (inner.user_agent.clone(), inner.cookie.clone())
     }
+}
+
+// 0 = Unset, 1 = Ipv4Only, 2 = Ipv6Only, 3 = Any
+static IP_FAMILY: AtomicU8 = AtomicU8::new(0);
+
+/// Set the process-wide IP family for network connections ("ipv4", "ipv6", or "any").
+pub fn set_global_ip_family(family: &str) {
+    let code = match family.trim().to_ascii_lowercase().as_str() {
+        "ipv4" | "v4" | "4" => 1,
+        "ipv6" | "v6" | "6" => 2,
+        "any" | "all" => 3,
+        _ => 0,
+    };
+    IP_FAMILY.store(code, Ordering::Relaxed);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn get_global_ip_family() -> ureq::config::IpFamily {
+    match IP_FAMILY.load(Ordering::Relaxed) {
+        1 => return ureq::config::IpFamily::Ipv4Only,
+        2 => return ureq::config::IpFamily::Ipv6Only,
+        3 => return ureq::config::IpFamily::Any,
+        _ => {}
+    }
+    if let Ok(val) = std::env::var("HOTAUDIO_IP_FAMILY") {
+        return match val.trim().to_ascii_lowercase().as_str() {
+            "ipv4" | "v4" | "4" => ureq::config::IpFamily::Ipv4Only,
+            "ipv6" | "v6" | "6" => ureq::config::IpFamily::Ipv6Only,
+            _ => ureq::config::IpFamily::Any,
+        };
+    }
+    ureq::config::IpFamily::Any
 }
 
 /// An HTTP client: a transport plus the request policy applied to it.

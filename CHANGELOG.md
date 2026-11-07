@@ -8,6 +8,9 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- **UniFFI: `set_ip_family` and `HOTAUDIO_IP_FAMILY` support.** Configure
+  the process-wide IP family ("ipv4", "ipv6", or "any") to match the network
+  stack of the clearance provider and avoid dual-stack IP mismatch challenges.
 - **UniFFI: `set_clearance` and `clear_clearance` expose Cloudflare clearance.**
   The bindings can now receive an interactive Cloudflare clearance
   (`cf_clearance` cookie and matching `User-Agent`) captured from a host webview

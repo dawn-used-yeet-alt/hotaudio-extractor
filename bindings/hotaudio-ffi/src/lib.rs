@@ -480,6 +480,12 @@ pub fn clear_clearance() {
     CLEARANCE.set(None, None);
 }
 
+/// Set the process-wide IP family for network requests ("ipv4", "ipv6", or "any").
+#[uniffi::export]
+pub fn set_ip_family(family: String) {
+    hotaudio::http::set_global_ip_family(&family);
+}
+
 /// List the tracks on a track page, without any network call.
 ///
 /// Takes page HTML, not a URL: a host that already fetched the page does not

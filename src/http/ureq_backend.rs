@@ -150,7 +150,8 @@ fn build_agent(timeout_ms: Option<u64>, proxy: Option<Proxy>) -> Agent {
         // Non-2xx is a normal outcome here: callers inspect statuses and read
         // the error body, which the default error path discards.
         .http_status_as_error(false)
-        .proxy(proxy);
+        .proxy(proxy)
+        .ip_family(crate::http::get_global_ip_family());
     let config = match timeout_ms {
         Some(ms) => config.timeout_global(Some(std::time::Duration::from_millis(ms))),
         None => config,

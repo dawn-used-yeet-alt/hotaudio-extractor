@@ -36,6 +36,7 @@ All four languages expose the same functions:
 | `version()` | Binding crate version |
 | `set_clearance(cookie, user_agent)` | Set process-wide Cloudflare clearance |
 | `clear_clearance()` | Reset process-wide Cloudflare clearance |
+| `set_ip_family(family)` | Set process-wide IP family ("ipv4", "ipv6", "any") |
 | `init_logging(listener)` | Route the crate's warnings to the host logger |
 
 `DownloadOptions` is a record with `track_id`, `api_base`, `delay_ms` and
