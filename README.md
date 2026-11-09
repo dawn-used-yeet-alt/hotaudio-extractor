@@ -63,10 +63,7 @@ Docs live in [`docs/`](docs/README.md), split by reader:
   [documentation index](docs/README.md)
 
 ## Plug
-If your goal is to just stream audios from GWA(or adjacant subreddits) check out [Dawngasm](https://github.com/dawn-used-yeet-alt/Dawngasm).
-It's a TUI app to do just that. It supports Whyp, Hotaudio, Audiochan and Soundgasm.  
-It runs on my database off all the posts ever posted on these subreddits.
-It lags behind ~1 day though.
+If your goal is to stream/download audios from GWA(or adjacant subreddits) check out [Dawngasm](https://github.com/dawn-used-yeet-alt/Dawngasm) and [Dawngasm-Android](https://github.com/dawn-used-yeet-alt/Dawngasm-Android). They currently are supposed to support soundgasm, whyp, audiochan and hotaudio. But the desktop version is currently lagging behind of Android so Audiochan is broken on desktop. Android app is generally more recommended since that's what I use mostly so it tends to be more updated.
 
 ## License
 
