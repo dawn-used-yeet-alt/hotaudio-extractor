@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.4.0-rc.1] - 2026-11-10
+
 ### Added
 
 - **CLI: persistent browser clearance and automatic challenge recovery.**
@@ -743,7 +745,8 @@ branch.
 - Player-faithful listen: `?key=` forwarding, 401 retries, plaintext error
   surfacing, conditional response decrypt.
 
-[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.4.0-rc.1...HEAD
+[2.4.0-rc.1]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.3.0...v2.4.0-rc.1
 [2.3.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v2.1.3...v2.2.0
 [2.0.0]: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/compare/v1.2.2...v2.0.0

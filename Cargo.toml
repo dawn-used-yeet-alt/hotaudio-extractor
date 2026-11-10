@@ -1,6 +1,6 @@
 [package]
 name = "hotaudio-rs"
-version = "2.3.0"
+version = "2.4.0-rc.1"
 edition = "2024"
 # `cargo run` now has two bins (`hotaudio-download` and the optional
 # `hotaudio-webview`); the downloader is the one people mean.
