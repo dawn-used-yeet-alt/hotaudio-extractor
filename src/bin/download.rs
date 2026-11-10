@@ -368,8 +368,7 @@ fn save_cached_clearance(payload: &ClearancePayload) {
 /// Create the cache's parent directory, if it has one.
 #[cfg(not(target_arch = "wasm32"))]
 fn ensure_cache_dir(path: &std::path::Path) -> std::io::Result<()> {
-    path.parent()
-        .map_or(Ok(()), |dir| std::fs::create_dir_all(dir))
+    path.parent().map_or(Ok(()), std::fs::create_dir_all)
 }
 
 /// Move `tmp` onto `path`, replacing an existing file.
@@ -620,9 +619,8 @@ fn probe_clearance(
         retry,
         delay_ms: 0,
     };
-    let client = match api_client(net) {
-        Ok(client) => client,
-        Err(_) => return,
+    let Ok(client) = api_client(net) else {
+        return;
     };
     let challenged = matches!(
         hotaudio::block_on(client.request("GET", url, &[], None)),
@@ -714,6 +712,7 @@ fn finish(result: Result<(), Error>) -> ExitCode {
 /// Parse arguments and run. The pipeline is `async` so one implementation serves
 /// both transports; natively it never suspends, so driving it is a single poll.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_lines)]
 fn run() -> ExitCode {
     let cli = Cli::parse();
 
