@@ -6,6 +6,31 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **CLI: persistent browser clearance and automatic challenge recovery.**
+  The downloader caches the `cf_clearance` cookie, exact User-Agent and detected
+  IP family from `--webview` under the platform cache directory
+  (`~/.cache/hotaudio/clearance.json` on Linux, override with
+  `HOTAUDIO_CLEARANCE`). Later runs load it when no cookie is configured, and a
+  one-request probe replaces a stale cookie before the download starts. A
+  challenge without a usable clearance now opens the helper automatically; use
+  `--no-webview` to fail with the challenge instead. A helper failure keeps the
+  site's original challenge error. The cache is written with owner-only
+  permissions on Unix.
+- **CLI: `--remove-downloaded` (alias `--prune-input`) for bulk runs.**
+  With `--input FILE`, each source is removed from the file after it downloads
+  successfully, so an interrupted run resumes from the remaining links. Blank
+  lines and non-matching lines are preserved; failures stay in the list;
+  `--list-tracks` never consumes it.
+
+### Fixed
+
+- **CLI: the initial page fetch can recover from a challenge.** Previously only
+  the key-paging renewal path could clear Cloudflare, so a challenge on the first
+  page fetch failed before any download started. The new probe covers that case,
+  and the cached clearance is validated before the pipeline runs.
+
 ## [2.3.0] - 2026-11-07
 
 ### Added

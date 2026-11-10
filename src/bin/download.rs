@@ -49,6 +49,10 @@ that browser's cookie, User-Agent and page state. The run also re-handshakes
 automatically when key paging hits the server's per-tick window limit, even
 without --webview.
 
+Without --webview, a challenge opens the helper automatically once, unless
+--no-webview is given. The clearance it earns is cached and reused by later
+runs, so the window normally appears only when the site stops trusting it.
+
 Guide: https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md
 
 Exit status:
@@ -71,6 +75,8 @@ hint: hotaudio.net is asking this network to pass a browser challenge.
         --cookie 'cf_clearance=...' --user-agent 'Mozilla/5.0 (...)'
       The clearance is bound to both the network and the exact User-Agent.
       The bundled helper does this for you: retry with `--webview`.
+      Without --webview, a challenge opens it automatically unless
+      --no-webview is set; the clearance is cached for later runs.
       Step-by-step guide:
       https://github.com/dawn-used-yeet-alt/hotaudio-extractor/blob/main/docs/CLOUDFLARE.md";
 
@@ -123,6 +129,11 @@ struct Cli {
     /// Read one source per line from FILE, or '-' for stdin; blank lines are skipped
     #[arg(long, value_name = "FILE")]
     input: Option<String>,
+
+    /// After each source from --input succeeds, remove it from that file
+    /// (tracks progress across runs; not usable with stdin)
+    #[arg(long, visible_alias = "prune-input", requires = "input")]
+    remove_downloaded: bool,
 
     /// Stream segments to PATH instead of buffering: one segment in memory, first playable fragment after one round trip
     #[arg(long, value_name = "PATH")]
@@ -197,11 +208,17 @@ struct Cli {
 
     /// Open the track page in a browser window to clear the Cloudflare
     /// challenge, then use that browser's cookie, User-Agent and page state
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_webview")]
     webview: bool,
 
-    /// How long `--webview` waits for the challenge, in seconds (default: 0, no timeout)
-    #[arg(long, value_name = "SECS", requires = "webview", default_value_t = 0)]
+    /// Never open the browser helper automatically; fail with the challenge
+    /// instead (a cached clearance is still used)
+    #[arg(long)]
+    no_webview: bool,
+
+    /// How long the browser helper waits for the challenge, in seconds
+    /// (default: 0, no timeout)
+    #[arg(long, value_name = "SECS", default_value_t = 0)]
     webview_timeout: u64,
 
     /// Retry a failed request up to N times (default 2)
@@ -274,12 +291,140 @@ mod code {
     pub const CANCELLED: u8 = 130;
 }
 
-/// Resolve the browser-clearance pair: flags, then environment, then config.
+/// A clearance saved from a browser helper, so later runs do not need to pop a
+/// window while Cloudflare still trusts the cookie.
+///
+/// The cookie, User-Agent and IP family are one unit: `cf_clearance` is rejected
+/// unless all three match the browser that earned it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedClearance {
+    cookie: String,
+    #[serde(rename = "userAgent")]
+    user_agent: String,
+    #[serde(default, rename = "ipFamily")]
+    ip_family: Option<String>,
+    /// Unix seconds when the cache was written; advisory only, because the
+    /// server decides when a clearance actually expires.
+    saved_at: f64,
+}
+
+/// The cache location: `$HOTAUDIO_CLEARANCE`, else
+/// `$XDG_CACHE_HOME/hotaudio/clearance.json` (an absolute `XDG_CACHE_HOME`
+/// only), else `$HOME/.cache/hotaudio/clearance.json`.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_clearance_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("HOTAUDIO_CLEARANCE") {
+        return Some(std::path::PathBuf::from(path));
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })?;
+    Some(base.join("hotaudio").join("clearance.json"))
+}
+
+/// Read the cached clearance, ignoring a missing or unreadable file: this is a
+/// convenience, never a source of failure.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_cached_clearance() -> Option<CachedClearance> {
+    let path = default_clearance_path()?;
+    let bytes = std::fs::read(&path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Persist a helper's clearance for the next run. Best-effort: a read-only cache
+/// directory only costs an extra browser pass later.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_cached_clearance(payload: &ClearancePayload) {
+    let Some(path) = default_clearance_path() else {
+        return;
+    };
+    let entry = CachedClearance {
+        cookie: payload.cookie.clone(),
+        user_agent: payload.user_agent.clone(),
+        ip_family: payload.ip_family.clone(),
+        saved_at: hotaudio::clock::unix_secs(),
+    };
+    let Ok(json) = serde_json::to_vec(&entry) else {
+        return;
+    };
+    if let Err(e) = ensure_cache_dir(&path) {
+        eprintln!(
+            "warning: cannot create the clearance cache directory for {}: {e}",
+            path.display()
+        );
+        return;
+    }
+    if let Err(e) = write_private(&path, &json) {
+        eprintln!(
+            "warning: cannot cache the browser clearance at {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Create the cache's parent directory, if it has one.
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_cache_dir(path: &std::path::Path) -> std::io::Result<()> {
+    path.parent().map_or(Ok(()), std::fs::create_dir_all)
+}
+
+/// Move `tmp` onto `path`, replacing an existing file.
+///
+/// Unix `rename` already replaces; Windows refuses to, so the destination is
+/// removed first. Both files live in the same directory, so this is not a
+/// cross-device move.
+fn replace_file(tmp: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::rename(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.exists() => {
+            std::fs::remove_file(path)?;
+            std::fs::rename(tmp, path)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `data` to `path` with owner-only permissions on Unix, replacing any
+/// previous file atomically.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(data)?;
+    }
+    replace_file(&tmp, path)
+}
+
+/// Apply a helper's detected IP family unless the user pinned one explicitly.
+///
+/// A family loaded from the cache is only a hint; when Cloudflare challenges it,
+/// the helper may have earned the new clearance on the other stack, so its
+/// answer must win. `user_pinned` records whether `--ip-family`, the environment
+/// or the config file chose the family.
+fn apply_ip_family(payload: &ClearancePayload, user_pinned: bool) {
+    if let Some(family) = payload.ip_family.as_ref().filter(|_| !user_pinned) {
+        hotaudio::http::set_global_ip_family(family);
+    }
+}
+
+/// Resolve the browser-clearance triple: flags, then environment, then config,
+/// then the cache written by an earlier browser pass.
 ///
 /// A cookie without its matching User-Agent is almost always a failed attempt,
 /// so warn while still letting the run proceed (the user may know better).
+/// Returns `(cookie, user_agent, cached_ip_family)`; the family is only a hint
+/// and is ignored when a flag, environment variable or config sets one.
 #[cfg(not(target_arch = "wasm32"))]
-fn identity(cli: &Cli, config: &Config) -> (Option<String>, Option<String>) {
+fn identity(cli: &Cli, config: &Config) -> (Option<String>, Option<String>, Option<String>) {
     let cookie = cli
         .cookie
         .clone()
@@ -290,13 +435,45 @@ fn identity(cli: &Cli, config: &Config) -> (Option<String>, Option<String>) {
         .clone()
         .or_else(|| env_value("HOTAUDIO_USER_AGENT"))
         .or_else(|| config.user_agent.clone());
+
+    let cached = if cookie.is_none() {
+        load_cached_clearance()
+    } else {
+        None
+    };
+    if let Some(cached) = cached {
+        match &user_agent {
+            Some(ua) if ua != &cached.user_agent => {
+                if cli.verbose {
+                    eprintln!(
+                        "verbose: ignoring the cached clearance; its User-Agent does not \
+                         match --user-agent"
+                    );
+                }
+            }
+            _ => {
+                if cli.verbose {
+                    eprintln!(
+                        "verbose: using a cached browser clearance (saved {}s ago)",
+                        (hotaudio::clock::unix_secs() - cached.saved_at).max(0.0) as u64
+                    );
+                }
+                return (
+                    Some(cached.cookie),
+                    Some(cached.user_agent),
+                    cached.ip_family,
+                );
+            }
+        }
+    }
+
     if cookie.is_some() && user_agent.is_none() {
         eprintln!(
             "warning: a cookie is set without a matching User-Agent; a cf_clearance \
              cookie is rejected unless the browser's exact User-Agent is sent too"
         );
     }
-    (cookie, user_agent)
+    (cookie, user_agent, None)
 }
 
 /// The exit code for a pipeline failure, by [`Error`] class.
@@ -357,20 +534,35 @@ fn main() -> ExitCode {
     run()
 }
 
+/// Whether the browser helper may run for this invocation.
+///
+/// The helper needs an online page URL and is pointless for a local `.hax`.
+/// Without `--webview` it stays lazy: it is used only if a request is actually
+/// challenged. `--no-webview` keeps the cache but never opens a window.
+#[cfg(not(target_arch = "wasm32"))]
+fn webview_usable(cli: &Cli, sources: &[String]) -> bool {
+    cfg!(feature = "webview")
+        && !cli.no_webview
+        && cli.hax.is_none()
+        && sources.iter().any(|source| is_url(source))
+}
+
 /// Clear Cloudflare up front when `--webview` is set.
 ///
-/// Returns whether the helper stays enabled for challenge renewal. Usage
-/// mistakes are exit codes; a helper that cannot start only warns, so a host
-/// without a webview toolkit, display or the helper binary still downloads.
+/// Returns whether the helper stays enabled for challenge renewal and for the
+/// optional probe in [`run`]. Usage mistakes are exit codes; a helper that
+/// cannot start only warns, so a host without a webview toolkit, display or the
+/// helper binary still downloads.
 #[cfg(not(target_arch = "wasm32"))]
 fn proactive_webview(
     cli: &Cli,
     sources: &[String],
+    user_pinned_family: bool,
     cookie: &mut Option<String>,
     user_agent: &mut Option<String>,
 ) -> Result<bool, ExitCode> {
     if !cli.webview {
-        return Ok(false);
+        return Ok(webview_usable(cli, sources));
     }
     if cli.hax.is_some() {
         eprintln!("error: --webview is for online pages; it cannot be used with --hax\n");
@@ -382,13 +574,10 @@ fn proactive_webview(
     };
     match run_webview(url, cli.webview_timeout) {
         Ok(payload) => {
-            *cookie = Some(payload.cookie);
-            *user_agent = Some(payload.user_agent);
-            if let Some(ref family) = payload.ip_family {
-                if !hotaudio::http::is_ip_family_pinned() {
-                    hotaudio::http::set_global_ip_family(family);
-                }
-            }
+            *cookie = Some(payload.cookie.clone());
+            *user_agent = Some(payload.user_agent.clone());
+            apply_ip_family(&payload, user_pinned_family);
+            save_cached_clearance(&payload);
             Ok(true)
         }
         Err(e) => {
@@ -398,6 +587,61 @@ fn proactive_webview(
                  if the site asks for a challenge"
             );
             Ok(false)
+        }
+    }
+}
+
+/// Probe `url` once and clear a challenge in the browser helper if it appears.
+///
+/// This covers the first page fetch, which happens before the pipeline can renew
+/// a handshake. A cached clearance is validated here too, so a stale cookie is
+/// replaced before the download starts instead of failing at segment 0. A
+/// helper failure keeps the original challenge: the real request then reports it
+/// with the usual hint.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn probe_clearance(
+    url: &str,
+    proxy: Option<&str>,
+    api_timeout_ms: Option<u64>,
+    retry: Retry,
+    webview_timeout: u64,
+    user_pinned_family: bool,
+    cookie: &mut Option<String>,
+    user_agent: &mut Option<String>,
+) {
+    let clearance = Clearance::new();
+    clearance.set(cookie.clone(), user_agent.clone());
+    let net = Net {
+        proxy,
+        clearance: &clearance,
+        api_timeout_ms,
+        retry,
+        delay_ms: 0,
+    };
+    let Ok(client) = api_client(net) else {
+        return;
+    };
+    let challenged = matches!(
+        hotaudio::block_on(client.request("GET", url, &[], None)),
+        Ok(response) if response.challenge().is_some()
+    );
+    if !challenged {
+        return;
+    }
+    eprintln!(
+        "warning: the site is challenging this network; opening a browser window to clear it \
+         (pass --no-webview to disable)"
+    );
+    match run_webview(url, webview_timeout) {
+        Ok(payload) => {
+            *cookie = Some(payload.cookie.clone());
+            *user_agent = Some(payload.user_agent.clone());
+            apply_ip_family(&payload, user_pinned_family);
+            save_cached_clearance(&payload);
+        }
+        Err(e) => {
+            eprintln!("warning: automatic browser clearance failed: {e}");
         }
     }
 }
@@ -468,6 +712,7 @@ fn finish(result: Result<(), Error>) -> ExitCode {
 /// Parse arguments and run. The pipeline is `async` so one implementation serves
 /// both transports; natively it never suspends, so driving it is a single poll.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_lines)]
 fn run() -> ExitCode {
     let cli = Cli::parse();
 
@@ -480,6 +725,13 @@ fn run() -> ExitCode {
     if let Err(e) = validate_mode(&cli) {
         eprintln!("error: {e}\n");
         eprintln!("{}", usage());
+        return ExitCode::from(code::USAGE);
+    }
+
+    if cli.remove_downloaded && cli.input.as_deref() == Some("-") {
+        eprintln!(
+            "error: --remove-downloaded rewrites a file, so --input must name one, not '-'\n"
+        );
         return ExitCode::from(code::USAGE);
     }
 
@@ -507,13 +759,18 @@ fn run() -> ExitCode {
     };
     let progress_json = cli.progress.as_deref() == Some("json");
 
-    let (mut cookie, mut user_agent) = identity(&cli, &config);
+    let (mut cookie, mut user_agent, cached_family) = identity(&cli, &config);
 
-    let ip_family = cli
+    // `--ip-family`, the environment and the config file are an explicit
+    // choice: a later browser pass must not override them. The cached family is
+    // only a hint, so the helper's answer wins when the cookie ages out.
+    let user_family = cli
         .ip_family
         .clone()
         .or_else(|| env_value("HOTAUDIO_IP_FAMILY"))
         .or_else(|| config.ip_family.clone());
+    let user_pinned_family = user_family.is_some();
+    let ip_family = user_family.or(cached_family);
     if let Some(family) = &ip_family {
         hotaudio::http::set_global_ip_family(family);
     }
@@ -526,15 +783,49 @@ fn run() -> ExitCode {
     // Proactive clearance: pass the challenge once, then hand the browser's
     // cookie and User-Agent to every client in the run. Renewal repeats this
     // against the same page when the server's key-window budget resets.
-    let webview_active = match proactive_webview(&cli, &sources, &mut cookie, &mut user_agent) {
+    let webview_active = match proactive_webview(
+        &cli,
+        &sources,
+        user_pinned_family,
+        &mut cookie,
+        &mut user_agent,
+    ) {
         Ok(active) => active,
         Err(code) => return code,
     };
 
+    // A cached clearance can age out, and the first page fetch has no renewal
+    // callback of its own. Probe it once so the helper can replace it before the
+    // download starts; an explicit --webview has already just run.
+    let probe_url = if webview_active && !cli.webview {
+        sources.iter().find(|source| is_url(source))
+    } else {
+        None
+    };
+    if let Some(url) = probe_url {
+        probe_clearance(
+            url,
+            cli.proxy.as_deref().or(config.proxy.as_deref()),
+            api_timeout_ms,
+            retry_for(cli.retries, config.retries),
+            cli.webview_timeout,
+            user_pinned_family,
+            &mut cookie,
+            &mut user_agent,
+        );
+    }
+
     let clearance = Clearance::new();
     clearance.set(cookie, user_agent);
 
-    finish(hotaudio::block_on(execute(Run {
+    // `--remove-downloaded` rewrites the input file as each source completes, so
+    // an interrupted run can be restarted without re-downloading what is done.
+    // `--list-tracks` only inspects the file, so it must not consume it.
+    let remove_downloaded = cli.remove_downloaded && !cli.list_tracks;
+    let input_path = cli.input.clone().filter(|path| path != "-");
+    let prune_sources = sources.clone();
+
+    let result = hotaudio::block_on(execute(Run {
         sources,
         out: cli.out,
         filename_template: cli.filename_template.or(config.filename_template),
@@ -563,8 +854,28 @@ fn run() -> ExitCode {
         verify: cli.verify,
         webview: webview_active,
         webview_timeout: cli.webview_timeout,
+        user_pinned_family,
+        remove_downloaded,
+        input_path: input_path.clone(),
         cancel: install_ctrlc(),
-    })))
+    }));
+
+    // Batch mode prunes each source as it completes; a single source (or a
+    // successful `--all-tracks` page) is pruned here. Removing a line twice is a
+    // no-op, so the two paths can overlap without coordination.
+    let prune_path = if result.is_ok() && remove_downloaded {
+        input_path.as_deref()
+    } else {
+        None
+    };
+    if let Some(path) = prune_path {
+        for source in &prune_sources {
+            if let Err(e) = prune_input_source(path, source) {
+                eprintln!("warning: cannot update {path}: {e}");
+            }
+        }
+    }
+    finish(result)
 }
 
 // A flat option bag built once from the parsed flags; each bool is an
@@ -609,6 +920,13 @@ struct Run {
     webview: bool,
     /// `--webview-timeout`: seconds the helper waits for the challenge.
     webview_timeout: u64,
+    /// Whether `--ip-family`, the environment or the config file pinned the
+    /// family; if so, a browser pass must not override it.
+    user_pinned_family: bool,
+    /// `--remove-downloaded`: rewrite the input file after each success.
+    remove_downloaded: bool,
+    /// The `--input` file to rewrite; `None` for positional sources or stdin.
+    input_path: Option<String>,
     /// Set when the user interrupts the run, so the pipeline can stop between
     /// segments and the temp-file sink can discard its partial output.
     cancel: download::Cancel,
@@ -1184,10 +1502,10 @@ impl Run {
     ///
     /// The pipeline calls this after a challenge and expects a handshake for the
     /// same track. It always re-fetches the page first, which is what resets the
-    /// server's per-tick key-window budget. With `--webview`, a page fetch that
-    /// is itself challenged falls back to the browser helper; a helper snapshot
-    /// without `__ha_state` is completed by fetching the page with the new
-    /// clearance. Local HTML has no page to refresh, so it gets no callback.
+    /// server's per-tick key-window budget. When the page fetch is itself
+    /// challenged, the browser helper runs (unless `--no-webview`); a helper
+    /// snapshot without `__ha_state` is completed by fetching the page with the
+    /// new clearance. Local HTML has no page to refresh, so it gets no callback.
     #[cfg(not(target_arch = "wasm32"))]
     fn renewal_for(&self, source: &str, track_id: Option<&str>) -> Option<download::Renewal> {
         if !is_url(source) {
@@ -1202,6 +1520,7 @@ impl Run {
         let api_timeout_ms = self.api_timeout_ms;
         let webview = self.webview;
         let webview_timeout = self.webview_timeout;
+        let user_pinned_family = self.user_pinned_family;
 
         Some(download::Renewal::new(move || {
             let base = api_base.as_deref().unwrap_or(hotaudio::HOTAUDIO_API_BASE);
@@ -1228,17 +1547,23 @@ impl Run {
             // browser again.
             match refresh() {
                 Ok(hs) => Ok(hs),
-                Err(Error::Challenge(_)) if webview => {
-                    let payload = run_webview(&source, webview_timeout)?;
+                Err(challenge @ Error::Challenge(_)) if webview => {
+                    let payload = match run_webview(&source, webview_timeout) {
+                        Ok(payload) => payload,
+                        Err(e) => {
+                            // Keep the site's own challenge: it is what tells the
+                            // user the network is blocked, and that the helper
+                            // could not replace the clearance either.
+                            eprintln!("warning: automatic browser clearance failed: {e}");
+                            return Err(challenge);
+                        }
+                    };
                     clearance.set(
                         Some(payload.cookie.clone()),
                         Some(payload.user_agent.clone()),
                     );
-                    if let Some(ref family) = payload.ip_family {
-                        if !hotaudio::http::is_ip_family_pinned() {
-                            hotaudio::http::set_global_ip_family(family);
-                        }
-                    }
+                    apply_ip_family(&payload, user_pinned_family);
+                    save_cached_clearance(&payload);
                     if payload.state.is_some() {
                         handshake_from_payload(&payload, base, track_id.as_deref(), &source)
                     } else {
@@ -1377,14 +1702,24 @@ async fn run_batch(r: &Run, report: download::ProgressFn<'_>) -> Result<(), Erro
     let mut written: HashSet<String> = HashSet::new();
     let mut failures = 0usize;
     for (i, source) in r.sources.iter().enumerate() {
-        if let Err(e) = batch_one(r, source, &mut *report, &mut written, None, i + 1).await {
-            // A cancel applies to the whole run, not one item: stop instead of
-            // working down the remaining sources.
-            if matches!(e, Error::Cancelled) {
-                return Err(e);
+        match batch_one(r, source, &mut *report, &mut written, None, i + 1).await {
+            Ok(()) => {
+                let path = r.input_path.as_deref().filter(|_| r.remove_downloaded);
+                if let Some(path) = path {
+                    if let Err(e) = prune_input_source(path, source) {
+                        eprintln!("warning: cannot update {path}: {e}");
+                    }
+                }
             }
-            eprintln!("error: {source}: {e}");
-            failures += 1;
+            Err(e) => {
+                // A cancel applies to the whole run, not one item: stop instead
+                // of working down the remaining sources.
+                if matches!(e, Error::Cancelled) {
+                    return Err(e);
+                }
+                eprintln!("error: {source}: {e}");
+                failures += 1;
+            }
         }
     }
     if failures > 0 {
@@ -1705,6 +2040,38 @@ fn collect_sources(cli: &Cli) -> Result<Vec<String>, String> {
         }
     }
     Ok(sources)
+}
+
+/// Remove the first line of `path` equal to `source`, preserving every other
+/// line (including blanks) so hand annotations survive.
+///
+/// The rewrite goes through a sibling temp file and a rename, so an interrupted
+/// run leaves the original list intact. Returns `Ok(false)` when the line was
+/// already gone, which makes a repeated prune harmless.
+fn prune_input_source(path: &str, source: &str) -> Result<bool, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut removed = false;
+    let mut remaining = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if !removed && line.trim() == source {
+            removed = true;
+        } else {
+            remaining.push_str(line);
+        }
+    }
+    if !removed {
+        return Ok(false);
+    }
+    let tmp = format!("{path}.hotaudio-tmp");
+    std::fs::write(&tmp, remaining).map_err(|e| format!("cannot write {tmp}: {e}"))?;
+    // Keep the list's existing permissions; a fresh temp file would otherwise
+    // replace, say, a group-writable shared queue with the process default.
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    replace_file(std::path::Path::new(&tmp), std::path::Path::new(path))
+        .map_err(|e| format!("cannot replace {path}: {e}"))?;
+    Ok(true)
 }
 
 /// Defaults from the config file. Every field is `None` when the file is absent
@@ -2312,6 +2679,14 @@ mod tests {
         assert!(parse(&["--ip-family", "ipv6"]).is_ok());
         assert!(parse(&["--ip-family", "any"]).is_ok());
         assert!(parse(&["--ip-family", "ipv5"]).is_err());
+        assert!(parse(&["--webview"]).is_ok());
+        assert!(parse(&["--no-webview"]).is_ok());
+        assert!(parse(&["--webview", "--no-webview"]).is_err());
+        // The helper timeout also bounds an automatic pass.
+        assert!(parse(&["--webview-timeout", "30"]).is_ok());
+        assert!(parse(&["--input", "urls.txt", "--remove-downloaded"]).is_ok());
+        // Rewriting a file needs a file; stdin cannot be pruned.
+        assert!(parse(&["--remove-downloaded"]).is_err());
         // Inline JSON is a value, not a flag.
         assert!(parse(&["--keys", "{\"a\":1}"]).is_ok());
     }
@@ -2909,5 +3284,48 @@ proxy = "a\\b\tc"
             default_output(Some("{ext}/{index}"), Some("out"), "x", 3),
             under("out", "m4a/3.m4a")
         );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prune_input_removes_one_matching_line() {
+        let path = std::env::temp_dir().join(format!(
+            "hotaudio-prune-{}-{}.txt",
+            std::process::id(),
+            hotaudio::clock::monotonic_ms()
+        ));
+        std::fs::write(&path, "a\n\n# note\nb\na\n").unwrap();
+        let path = path.to_string_lossy().into_owned();
+        assert!(prune_input_source(&path, "a").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "\n# note\nb\na\n");
+        assert!(prune_input_source(&path, "a").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "\n# note\nb\n");
+        // Already consumed: no rewrite and no error.
+        assert!(!prune_input_source(&path, "a").unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cached_clearance_round_trips() {
+        let entry = CachedClearance {
+            cookie: "cf_clearance=abc".into(),
+            user_agent: "Mozilla/5.0".into(),
+            ip_family: Some("ipv6".into()),
+            saved_at: 1.5,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        // The JSON keys match the webview helper's `ClearancePayload`.
+        assert!(json.contains("\"userAgent\""));
+        assert!(json.contains("\"ipFamily\""));
+        let back: CachedClearance = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cookie, entry.cookie);
+        assert_eq!(back.user_agent, entry.user_agent);
+        assert_eq!(back.ip_family, entry.ip_family);
+        assert!((back.saved_at - entry.saved_at).abs() < f64::EPSILON);
+
+        // `ipFamily` is optional in a file written without family detection.
+        let legacy: CachedClearance =
+            serde_json::from_str(r#"{"cookie":"c","userAgent":"u","saved_at":0}"#).unwrap();
+        assert_eq!(legacy.ip_family, None);
     }
 }
