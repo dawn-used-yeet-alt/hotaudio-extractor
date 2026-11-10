@@ -14,7 +14,15 @@ A page URL is the usual input. Several can go in one run, or a list from a file:
 ```bash
 hotaudio-download "$URL" "$OTHER_URL"
 hotaudio-download --input urls.txt        # one URL per line; - reads stdin
+hotaudio-download --input urls.txt --remove-downloaded  # consume the list as it goes
 ```
+
+`--input` is the bulk mode: sources are downloaded one at a time, in file order.
+With `--remove-downloaded` (alias `--prune-input`) each line is removed from the
+file as soon as that source succeeds, so an interrupted run can be restarted and
+only picks up what is left. Failures stay in the file and the run exits non-zero;
+blank lines and other lines are preserved. `--list-tracks` never consumes the
+list.
 
 Pages can carry several tracks. `--track ID` picks one (`--list-tracks` prints
 the ids), `--all-tracks` downloads every track on the page, each to its own
@@ -84,7 +92,8 @@ destination.
 --api-base https://mirror.example  # talk to a mirror, or override the listen API
 --cookie 'cf_clearance=...'        # reuse a browser's Cloudflare clearance
 --user-agent 'Mozilla/5.0 (...)'   # the exact UA that earned that clearance
---webview                          # open a browser window and do both for you
+--webview                          # open a browser window now and do both for you
+--no-webview                       # never open it automatically; use cache only
 ```
 
 Transfers resume themselves across dropped connections, and a dropped body is
@@ -115,6 +124,14 @@ the run warns and continues rather than aborting. The extractor never solves or
 bypasses a challenge itself; the helper is an interactive browser the user
 drives.
 
+Without `--webview`, the downloader probes the track page once and opens the
+helper only if the request is actually challenged. The clearance it returns is
+cached in `~/.cache/hotaudio/clearance.json` (override with
+`HOTAUDIO_CLEARANCE`; written `0600` on Unix) and reused by later runs, so the
+window normally appears only when the site stops trusting the old cookie. Pass
+`--no-webview` to disable the automatic pass and fail with the challenge
+instead; an explicitly supplied `--cookie` or a cached clearance is still used.
+
 Dual-stack networks: Cloudflare binds `cf_clearance` to the IP family (IPv4 or IPv6)
 used during the challenge. The webview automatically detects this and configures the
 downloader to match. You can also explicitly set `--ip-family` (`any`, `ipv4`, or `ipv6`)
@@ -124,7 +141,8 @@ the alternate IP family before falling back.
 Separately, a download that hits the site's per-tick key-window limit
 re-handshakes automatically: it re-reads the page for a fresh tick and resumes
 at the segment that failed, keeping every key it already decrypted. That applies
-even without `--webview`; with it, the refresh also renews the clearance.
+even without `--webview`; if Cloudflare challenges the refresh as well, the
+helper renews the clearance (unless `--no-webview` is set).
 
 The flags are native-transport concerns. The wasm build has no flag of this
 kind: a page cannot choose its proxy, so proxying there belongs to the host.

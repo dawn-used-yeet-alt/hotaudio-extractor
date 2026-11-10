@@ -26,6 +26,21 @@ and continues with any clearance you supplied, then falls back to the normal
 page re-handshake. The helper itself is a separate binary, so `hotaudio-download`
 never needs GTK/WebKit to start.
 
+You do not have to pass `--webview` every time. Without it, the downloader
+probes the track page once and opens the helper only if Cloudflare actually
+challenges the request. The cookie, User-Agent and detected IP family are then
+cached, so later runs reuse them silently until the site stops trusting them.
+Pass `--no-webview` to fail with the challenge instead of opening a window:
+
+```bash
+hotaudio-download 'https://hotaudio.net/u/user/track'               # cache, else helper on challenge
+hotaudio-download --no-webview 'https://hotaudio.net/u/user/track'  # cache only
+```
+
+The cache is `~/.cache/hotaudio/clearance.json` on Linux (and the platform cache
+directory elsewhere); set `HOTAUDIO_CLEARANCE` to move it. It is written with
+owner-only permissions on Unix. Deleting it only costs one extra browser pass.
+
 The helper finishes on its own once the track page exposes `__ha_state`. Closing
 the window also finishes: it prints the browser's cookie and User-Agent, and if
 the page state was not captured the downloader re-fetches the page with that
@@ -42,8 +57,8 @@ A run also re-handshakes by itself when key paging hits the site's per-tick
 key-window limit: the server answers with a challenge (or stalls the request),
 the downloader fetches a fresh page tick and resumes at the segment that
 failed. The existing clearance usually covers that page fetch, so no window
-opens; with `--webview`, the helper runs again only if the page itself is
-challenged.
+opens; if Cloudflare challenges the page too, the helper runs again (unless
+`--no-webview` is set).
 
 ## By hand
 
