@@ -63,7 +63,8 @@ Docs live in [`docs/`](docs/README.md), split by reader:
   [documentation index](docs/README.md)
 
 ## Plug
-If your goal is to stream/download audios from GWA(or adjacant subreddits) check out [Dawngasm](https://github.com/dawn-used-yeet-alt/Dawngasm) and [Dawngasm-Android](https://github.com/dawn-used-yeet-alt/Dawngasm-Android). They currently support soundgasm, whyp, audiochan and hotaudio. Android app is generally more recommended since that's what I use mostly so it tends to be more updated.
+If your goal is to stream/download audios from GWA(or adjacant subreddits) check out [Dawngasm-Android](https://github.com/dawn-used-yeet-alt/Dawngasm-Android).
+Well it may called Dawngasm-Android, but it compiles natively for all OS(Windows, Linux, Mac, ios, and ofc Android). Soundgasm, whyp and audiochan work on all platforms. Hotaudio currently only works on Android, and probably on iOS(no one has tested). It needs to be implemented on desktop OS'. 
 
 ## License
 
